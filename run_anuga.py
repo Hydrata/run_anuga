@@ -19,23 +19,25 @@ import logging
 def run(username=None, password=None):
     # mpirun -np 8 /opt/venv/hydrata/bin/python /opt/hydrata/gn_anuga/run_code/run_anuga.py "test"
 
-    scenario_config = json.load(open('./scenario.json'))
+    scenario_config = json.load(open('../scenario.json'))
     scenario_id = scenario_config.get('id')
     run_id = scenario_config.get('run_id', 0)
     project_id = scenario_config.get('project')
     duration = scenario_config.get('duration')
     maximum_triangle_area = scenario_config.get('maximum_triangle_area')
     constant_rainfall = scenario_config.get('constant_rainfall')
-    boundary = json.load(open(f'./inputs/{scenario_config.get("boundary")}'))
+    boundary = json.load(open(f'../inputs/{scenario_config.get("boundary")}'))
+    elevation_filename = f'../inputs/{scenario_config.get("elevation")}'
     run_label = f"{project_id}_{scenario_id}_{run_id}"
-    output_directory = f'./outputs_{project_id}_{scenario_id}_{run_id}'
+    output_directory = f'../outputs_{project_id}_{scenario_id}_{run_id}'
     Path(output_directory).mkdir(parents=True, exist_ok=True)
-    logging.basicConfig(filename=f'./anuga_{run_id}', level=logging.INFO)
+    logging.basicConfig(filename=f'../anuga_{run_id}', level=logging.INFO)
     logger = logging.getLogger()
     logger.addHandler(logging.StreamHandler(sys.stdout))
     logger.info(f"using run_label: {run_label}")
     logger.info(f"__version__: {anuga.__version__}")
     logger.info(f"__git_sha__: {anuga.__git_sha__}")
+    logger.info(f"elevation_filename: {elevation_filename}")
     logger.info(f"boundary: {boundary}")
 
     client = None
@@ -61,8 +63,6 @@ def run(username=None, password=None):
     rain_df = pd.DataFrame(date_rng, columns=['datetime'])
     rain_df['rate_m_s'] = constant_rainfall/1000
 
-    elevation_filename = f'./inputs/{scenario_config.get("elevation")}'
-    logger.info(f"elevation_filename: {elevation_filename}")
     logger.info("Logging is configured.")
     output_stats = dict()
     logger.info(f'run started on processor {anuga.myid}')
