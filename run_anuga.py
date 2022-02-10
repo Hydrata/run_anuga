@@ -2,6 +2,8 @@ import json
 import traceback
 import sys
 import math
+
+import os
 import requests
 import pandas as pd
 from pathlib import Path
@@ -34,6 +36,7 @@ def run(username=None, password=None):
     logging.basicConfig(filename=f'../anuga_{run_id}', level=logging.INFO)
     logger = logging.getLogger()
     logger.addHandler(logging.StreamHandler(sys.stdout))
+    logger.info(f'os.getcwd() {os.getcwd()}')
     logger.info(f"using run_label: {run_label}")
     logger.info(f"__version__: {anuga.__version__}")
     logger.info(f"__git_sha__: {anuga.__git_sha__}")
