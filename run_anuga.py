@@ -124,7 +124,7 @@ def run(username=None, password=None):
             }
         )
         Polygonal_rate_operator(domain, rate=rain, factor=1, polygon=bounding_polygon, default_rate=0.00)
-        yieldstep = math.floor(duration / 100)
+        yieldstep = round(duration / 10)
         logger.info(f'{yieldstep=}')
         logger.info(f'{duration=}')
         for t in domain.evolve(yieldstep=yieldstep, finaltime=duration):
