@@ -23,6 +23,7 @@ def run(username=None, password=None):
     logging.basicConfig(filename=f'../anuga_tmp.log', level=logging.INFO)
     logger = logging.getLogger()
     logger.addHandler(logging.StreamHandler(sys.stdout))
+    logger.info(f'os.getcwd() {os.getcwd()}')
     scenario_config = json.load(open('../scenario.json'))
     scenario_id = scenario_config.get('id')
     run_id = scenario_config.get('run_id', 0)
@@ -35,7 +36,6 @@ def run(username=None, password=None):
     run_label = f"{project_id}_{scenario_id}_{run_id}"
     output_directory = f'../outputs_{project_id}_{scenario_id}_{run_id}'
     Path(output_directory).mkdir(parents=True, exist_ok=True)
-    logger.info(f'os.getcwd() {os.getcwd()}')
     logger.info(f"using run_label: {run_label}")
     logger.info(f"__version__: {anuga.__version__}")
     logger.info(f"__git_sha__: {anuga.__git_sha__}")
