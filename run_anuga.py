@@ -123,7 +123,7 @@ def run(username=None, password=None):
 
         domain.set_boundary(
             {
-                'exterior': transmissive_boundary,
+                'exterior': dirichlet_boundary,
                 'interior': reflective_boundary
             }
         )
