@@ -64,6 +64,8 @@ def run(username=None, password=None):
     date_rng = pd.date_range(start='1/1/2022', periods=duration + 1, freq='s')
     rain_df = pd.DataFrame(date_rng, columns=['datetime'])
     rain_df['rate_m_s'] = constant_rainfall/1000
+    logger.info("rainfall")
+    logger.info(rain_df.head(10))
 
     logger.info("Logging is configured.")
     output_stats = dict()
@@ -126,7 +128,7 @@ def run(username=None, password=None):
             }
         )
         Polygonal_rate_operator(domain, rate=rain, factor=1, polygon=bounding_polygon, default_rate=0.00)
-        yieldstep = round(duration / 10)
+        yieldstep = 60
         logger.info(f'{yieldstep=}')
         logger.info(f'{duration=}')
         for t in domain.evolve(yieldstep=yieldstep, finaltime=duration):
