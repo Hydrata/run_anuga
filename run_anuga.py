@@ -121,8 +121,8 @@ def run(username=None, password=None):
 
         domain.set_boundary(
             {
-                'exterior': dirichlet_boundary,
-                'interior': dirichlet_boundary
+                'exterior': transmissive_boundary,
+                'interior': reflective_boundary
             }
         )
         Polygonal_rate_operator(domain, rate=rain, factor=1, polygon=bounding_polygon, default_rate=0.00)
