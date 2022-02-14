@@ -48,7 +48,7 @@ def run(username=None, password=None):
             client = requests.Session()
             client.auth = requests.auth.HTTPBasicAuth(username, password)
             response_2 = client.post(
-                f'https://hydrata.com/anuga/api/{project_id}/{scenario_id}/run/{run_id}',
+                f'https://hydrata.com/anuga/api/{project_id}/{scenario_id}/run/{run_id}/',
                 data={
                     "log": "Starting run...",
                     "project": project_id,
@@ -77,8 +77,10 @@ def run(username=None, password=None):
     try:
         if anuga.myid == 0:
             if username and password:
-                response_3 = client.patch(f'https://hydrata.com/anuga/api/{project_id}/{scenario_id}/run/{run_id}', data={
-                    "status": "creating mesh"
+                response_3 = client.patch(
+                    url=f'https://hydrata.com/anuga/api/{project_id}/{scenario_id}/run/{run_id}/',
+                    data={
+                        "status": f"creating mesh"
                 })
                 print(response_3)
             anuga.pmesh.mesh_interface.create_mesh_from_regions(
@@ -111,7 +113,9 @@ def run(username=None, password=None):
         else:
             domain = None
         if anuga.myid == 0 and username and password:
-            response_4 = client.patch(f'https://hydrata.com/anuga/api/{project_id}/{scenario_id}/run/{run_id}', data={
+            response_4 = client.patch(
+                url=f'https://hydrata.com/anuga/api/{project_id}/{scenario_id}/run/{run_id}/',
+                data={
                 "status": f"created mesh"
             })
             print(response_4)
@@ -123,7 +127,7 @@ def run(username=None, password=None):
 
         domain.set_boundary(
             {
-                'exterior': transmissive_boundary,
+                'exterior': dirichlet_boundary,
                 'interior': reflective_boundary
             }
         )
@@ -136,7 +140,9 @@ def run(username=None, password=None):
             logger.info(f'domain.evolve {t} on processor {anuga.myid}')
             if anuga.myid == 0:
                 if username and password:
-                    response_5 = client.patch(f'https://hydrata.com/anuga/api/{project_id}/{scenario_id}/run/{run_id}', data={
+                    response_5 = client.patch(
+                        url=f'https://hydrata.com/anuga/api/{project_id}/{scenario_id}/run/{run_id}/',
+                        data={
                         "status": f"{round(t/duration * 100, 0)}%"
                     })
                     logger.info(f"{round(t/duration * 100, 0)}%")
