@@ -181,17 +181,36 @@ def run(username=None, password=None):
             logger.info('Successfully generated depth, velocity, momentum outputs')
             if anuga.myid == 0 and username and password:
                 url = f'https://hydrata.com/anuga/api/{project_id}/{scenario_id}/run/{run_id}/'
-                response_5 = client.patch(
+                response_6 = client.patch(
                     url=url,
                     data={
-                        "status": "uploading results",
+                        "status": "uploading depth_max",
                     },
                     files={
                         "tif_depth_max": open(f'{output_directory}/{run_label}_depth_max.tif', 'rb'),
+                    }
+                )
+                logger.info(response_6)
+                response_7 = client.patch(
+                    url=url,
+                    data={
+                        "status": "uploading depthIntegratedVelocity_max",
+                    },
+                    files={
                         "tif_depth_integrated_velocity_max": open(f'{output_directory}/{run_label}_depthIntegratedVelocity_max.tif', 'rb'),
+                    }
+                )
+                logger.info(response_7)
+                response_8 = client.patch(
+                    url=url,
+                    data={
+                        "status": "uploading velocity_max",
+                    },
+                    files={
                         "tif_velocity_max": open(f'{output_directory}/{run_label}_velocity_max.tif', 'rb'),
                     }
                 )
+                logger.info(response_8)
             logger.info('Successfully uploaded outputs')
     except Exception as e:
         logger.error(traceback.format_exc())
