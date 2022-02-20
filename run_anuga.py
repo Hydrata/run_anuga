@@ -33,7 +33,7 @@ def run(username=None, password=None):
     constant_rainfall = scenario_config.get('constant_rainfall')
     boundary = json.load(open(f'../inputs/{scenario_config.get("boundary")}'))
     elevation_filename = f'../inputs/{scenario_config.get("elevation")}'
-    run_label = f"{project_id}_{scenario_id}_{run_id}"
+    run_label = f"run_{project_id}_{scenario_id}_{run_id}"
     output_directory = f'../outputs_{project_id}_{scenario_id}_{run_id}'
     Path(output_directory).mkdir(parents=True, exist_ok=True)
     logger.info(f"using run_label: {run_label}")
