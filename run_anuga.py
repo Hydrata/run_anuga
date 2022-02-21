@@ -188,6 +188,7 @@ def run(username=None, password=None):
                     },
                     files={
                         "tif_depth_max": open(f'{output_directory}/{run_label}_depth_max.tif', 'rb'),
+                        "sld_files": open('./styles/depth_6m.sld', 'r')
                     }
                 )
                 logger.info(response_6)
@@ -198,6 +199,7 @@ def run(username=None, password=None):
                     },
                     files={
                         "tif_depth_integrated_velocity_max": open(f'{output_directory}/{run_label}_depthIntegratedVelocity_max.tif', 'rb'),
+                        "sld_files": open('./styles/flow_20m3s.sld', 'r')
                     }
                 )
                 logger.info(response_7)
@@ -208,6 +210,7 @@ def run(username=None, password=None):
                     },
                     files={
                         "tif_velocity_max": open(f'{output_directory}/{run_label}_velocity_max.tif', 'rb'),
+                        "sld_files": open('./styles/velocity_6ms.sld', 'r')
                     }
                 )
                 logger.info(response_8)
