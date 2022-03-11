@@ -12,7 +12,7 @@ from anuga import distribute, finalize, barrier
 from anuga.utilities import quantity_setting_functions as qs
 from anuga.utilities import plot_utils as util
 from anuga.operators.rate_operators import Polygonal_rate_operator
-from run_anuga.utils import is_dir_check, setup_input_data, update_web_interface, create_boundary_polygon_from_boundaries
+from run_anuga.run_anuga.utils import is_dir_check, setup_input_data, update_web_interface, create_boundary_polygon_from_boundaries
 
 logger = logging.getLogger(__name__)
 
