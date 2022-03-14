@@ -49,7 +49,7 @@ def setup_input_data(package_dir):
     )
     input_data['elevation_filename'] = os.path.join(package_dir, f"inputs/{input_data['scenario_config'].get('elevation')}")
 
-    boundary_polygon, boundary_tags = create_boundary_polygon_from_boundaries(input_data['boundaries'])
+    boundary_polygon, boundary_tags = create_boundary_polygon_from_boundaries(input_data['boundaries'], input_data['run_label'])
     input_data['boundary_polygon'] = boundary_polygon
     input_data['boundary_tags'] = boundary_tags
 
@@ -71,15 +71,16 @@ def update_web_interface(run_args, data, files=None):
         run_id = input_data['scenario_config'].get('run_id')
         client = requests.Session()
         client.auth = requests.auth.HTTPBasicAuth(username, password)
-        response = client.patch(
+        logger.info(f"hydrata.com post:{data}")
+        response = client.post(
             f"https://hydrata.com/anuga/api/{data['project']}/{data['scenario']}/run/{run_id}/",
             data=data,
             files=files
         )
-        logger.info(f"{response.status_code}, {response.content}")
+        logger.info(f"hydrata.com response:{response.status_code}")
 
 
-def create_boundary_polygon_from_boundaries(boundaries_geojson):
+def create_boundary_polygon_from_boundaries(boundaries_geojson, run_label):
     geometry_collection = ogr.Geometry(ogr.wkbGeometryCollection)
     # Create a dict of the available boundary tags
     boundary_tags = dict()
@@ -130,7 +131,7 @@ def create_boundary_polygon_from_boundaries(boundaries_geojson):
     for coordinate in boundary_polygon:
         ring.AddPoint(coordinate[0], coordinate[1])
     geojson = ring.ExportToJson()
-    filepath = os.path.join(os.getcwd(), 'test.geojson')
+    filepath = os.path.join(os.getcwd(), '..', 'outputs', f'{run_label}_boundary_polygon.geojson')
     print(filepath)
     with open(filepath, 'w', encoding='utf-8') as f:
         json.dump(json.loads(geojson), f, ensure_ascii=False, indent=4)
