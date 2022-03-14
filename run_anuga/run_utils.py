@@ -127,7 +127,7 @@ def create_boundary_polygon_from_boundaries(boundaries_geojson, run_label):
         boundary_tags[line.get("boundary")].append(index)
 
     # Save a GeoJson copy so we can debug/test what happened, if it's not working for any reason
-    ring = ogr.Geometry(ogr.wkbLinearRing)
+    ring = ogr.Geometry(ogr.wkbPolygon)
     for coordinate in boundary_polygon:
         ring.AddPoint(coordinate[0], coordinate[1])
     geojson = ring.ExportToJson()
