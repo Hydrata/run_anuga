@@ -164,6 +164,6 @@ if __name__ == '__main__':
     package_dir = args.package_dir
     print(f'run.py got {package_dir}')
     if not package_dir:
-        package_dir = os.path.join('..', '..', os.path.dirname(__file__))
+        package_dir = os.path.join('..', '..', '..', os.path.dirname(__file__))
     print(f'run.py using {package_dir}')
     run_sim(package_dir, username, password)
