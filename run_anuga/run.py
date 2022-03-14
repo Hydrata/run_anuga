@@ -162,6 +162,8 @@ if __name__ == '__main__':
     username = args.username
     password = args.password
     package_dir = args.package_dir
+    print(f'run.py got {package_dir}')
     if not package_dir:
         package_dir = os.path.join('..', '..', os.getcwd())
+    print(f'run.py using {package_dir}')
     run_sim(package_dir, username, password)
