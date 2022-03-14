@@ -62,7 +62,7 @@ def setup_input_data(package_dir):
     return input_data
 
 
-def update_web_interface(run_args, data, files):
+def update_web_interface(run_args, data, files=None):
     package_dir, username, password = run_args
     if username and password:
         input_data = setup_input_data(package_dir)
