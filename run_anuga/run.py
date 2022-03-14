@@ -163,5 +163,5 @@ if __name__ == '__main__':
     password = args.password
     package_dir = args.package_dir
     if not package_dir:
-        package_dir = os.path.join('..', os.getcwd())
+        package_dir = os.path.join('..', '..', os.getcwd())
     run_sim(package_dir, username, password)
