@@ -76,7 +76,7 @@ def update_web_interface(run_args, data, files=None):
             data=data,
             files=files
         )
-        logger.info(response.status_code, response.content)
+        logger.info(f"{response.status_code}, {response.content}")
 
 
 def create_boundary_polygon_from_boundaries(boundaries_geojson):
