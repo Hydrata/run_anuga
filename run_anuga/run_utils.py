@@ -72,7 +72,7 @@ def update_web_interface(run_args, data, files=None):
         client = requests.Session()
         client.auth = requests.auth.HTTPBasicAuth(username, password)
         logger.info(f"hydrata.com post:{data}")
-        response = client.post(
+        response = client.patch(
             f"https://hydrata.com/anuga/api/{data['project']}/{data['scenario']}/run/{run_id}/",
             data=data,
             files=files
