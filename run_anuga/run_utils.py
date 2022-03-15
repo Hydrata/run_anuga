@@ -49,7 +49,12 @@ def setup_input_data(package_dir):
     )
     input_data['elevation_filename'] = os.path.join(package_dir, f"inputs/{input_data['scenario_config'].get('elevation')}")
 
-    boundary_polygon, boundary_tags = create_boundary_polygon_from_boundaries(input_data['boundaries'], input_data['run_label'])
+    boundary_polygon, boundary_tags = create_boundary_polygon_from_boundaries(
+        input_data['boundaries'],
+        input_data['run_label'],
+        input_data['scenario_config'].get('epsg'),
+        package_dir
+    )
     input_data['boundary_polygon'] = boundary_polygon
     input_data['boundary_tags'] = boundary_tags
 
@@ -80,8 +85,24 @@ def update_web_interface(run_args, data, files=None):
         logger.info(f"hydrata.com response:{response.status_code}")
 
 
-def create_boundary_polygon_from_boundaries(boundaries_geojson, run_label):
+def correction_for_polar_quadrants(base, height):
+    result = 0
+    result = 0 if base > 0 and height > 0 else result
+    result = math.pi if base < 0 and height > 0 else result
+    result = math.pi if base < 0 and height < 0 else result
+    result = 2 * math.pi if base > 0 and height < 0 else result
+    return result
+
+
+def lookup_boundary_tag(index, boundary_tags):
+    for key in boundary_tags.keys():
+        if index in boundary_tags[key]:
+            return key
+
+
+def create_boundary_polygon_from_boundaries(boundaries_geojson, run_label, epsg_code, package_dir):
     geometry_collection = ogr.Geometry(ogr.wkbGeometryCollection)
+
     # Create a dict of the available boundary tags
     boundary_tags = dict()
     all_x_coordinates = list()
@@ -97,8 +118,11 @@ def create_boundary_polygon_from_boundaries(boundaries_geojson, run_label):
         for coordinate in feature_coordinates:
             all_x_coordinates.append(coordinate[0])
             all_y_coordinates.append(coordinate[1])
+    srs = ogr.osr.SpatialReference()
+    epsg_integer = int(epsg_code.split(':')[1] if ':' in epsg_code else epsg_code)
+    srs.ImportFromEPSG(epsg_integer)
 
-    # Find the center of our project, the sort the boundary lines in clockwise direction around it
+    # Find the center of our project
     max_x = max(all_x_coordinates)
     max_y = max(all_y_coordinates)
     min_x = min(all_x_coordinates)
@@ -106,34 +130,81 @@ def create_boundary_polygon_from_boundaries(boundaries_geojson, run_label):
     mid_x = max_x - (max_x - min_x) / 2
     mid_y = max_y - (max_y - min_y) / 2
     line_list = list()
+
+    # Now create and sort the line_list of boundary lines in a clockwise direction around it
     for index, feature in enumerate(boundaries_geojson.get('features')):
         if feature.get('properties').get('location') != "External":
+            # discard any internal boundaries from the boundary_polygon
             continue
         geometry = ogr.CreateGeometryFromJson(json.dumps(feature.get('geometry')))
         centroid = json.loads(geometry.Centroid().ExportToJson()).get('coordinates')
+        base = centroid[0] - mid_x
+        height = centroid[1] - mid_y
+        # the angle in polar coordinates will sort our boundary lines into the correct order
+        angle = math.atan(height/base) + correction_for_polar_quadrants(base, height)
+        print(round(base, 2), round(height, 2), round(angle, 2))
         line_list.append({
             "centroid": centroid,
             "boundary": feature.get('properties').get('boundary'),
             "id": feature.get('id'),
-            "angle": math.atan((centroid[0] - mid_x)/(centroid[1] - mid_y)),
+            "angle": angle,
             "coordinates": feature.get('geometry').get('coordinates')
         })
-    line_list.sort(key=lambda line: line.get('angle'))
+    line_list.sort(key=lambda line: line.get('angle'), reverse=True)
 
-    # Now join all our lines in clockwise order
+    # Now join all our lines in clockwise order and create the boundary tags object
     boundary_polygon = list()
-    for index, line in enumerate(line_list):
-        boundary_polygon.extend(line.get("coordinates"))
-        boundary_tags[line.get("boundary")].append(index)
+    boundary_tags_list = list()
+    counter = 0
+    for line in line_list:
+        for coordinate in line.get("coordinates"):
+            boundary_polygon.append(coordinate)
+            boundary_tags[line.get("boundary")].append(counter)
+            boundary_tags_list.append(lookup_boundary_tag(counter, boundary_tags))
+            counter += 1
 
-    # Save a GeoJson copy so we can debug/test what happened, if it's not working for any reason
-    ring = ogr.Geometry(ogr.wkbPolygon)
-    for coordinate in boundary_polygon:
-        ring.AddPoint(coordinate[0], coordinate[1])
-    geojson = ring.ExportToJson()
-    filepath = os.path.join(os.getcwd(), '..', 'outputs', f'{run_label}_boundary_polygon.geojson')
-    print(filepath)
-    with open(filepath, 'w', encoding='utf-8') as f:
-        json.dump(json.loads(geojson), f, ensure_ascii=False, indent=4)
+    # Make a dump of the centroids geometry (for debugging only - not returned anywhere).
+    output_driver_centroids = ogr.GetDriverByName('GeoJSON')
+    filepath_geojson_driver_centroids = os.path.join(package_dir, f'outputs_{run_label.split("run_")[1]}', f'{run_label}_boundary_centroids.geojson')
+    output_data_source_centroids = output_driver_centroids.CreateDataSource(filepath_geojson_driver_centroids)
+    output_layer_centroids = output_data_source_centroids.CreateLayer(filepath_geojson_driver_centroids, srs, geom_type=ogr.wkbPolygon)
+    feature_definition_centroids = output_layer_centroids.GetLayerDefn()
+    field_definition_centroids_1 = ogr.FieldDefn('index', ogr.OFTReal)
+    output_layer_centroids.CreateField(field_definition_centroids_1)
+    field_definition_centroids_2 = ogr.FieldDefn('angle', ogr.OFTReal)
+    output_layer_centroids.CreateField(field_definition_centroids_2)
+    field_definition_centroids_3 = ogr.FieldDefn('id', ogr.OFTString)
+    field_definition_centroids_3.SetWidth(1000)
+    output_layer_centroids.CreateField(field_definition_centroids_3)
+    for index, line in enumerate(line_list):
+        output_feature_centroids = ogr.Feature(feature_definition_centroids)
+        centroid = line.get('centroid')
+        point = ogr.Geometry(ogr.wkbPoint)
+        point.AddPoint(centroid[0], centroid[1])
+        output_feature_centroids.SetGeometry(point)
+        output_feature_centroids.SetField('index', index)
+        output_feature_centroids.SetField('angle', line.get('angle'))
+        output_feature_centroids.SetField('id', line.get('id'))
+        output_layer_centroids.CreateFeature(output_feature_centroids)
+
+    # Make a dump of the boundary polygon geometry (for debugging only - not returned anywhere).
+    output_driver = ogr.GetDriverByName('GeoJSON')
+    filepath_geojson_driver = os.path.join(package_dir, f'outputs_{run_label.split("run_")[1]}', f'{run_label}_boundary_polygon.geojson')
+    output_data_source = output_driver.CreateDataSource(filepath_geojson_driver)
+    output_layer = output_data_source.CreateLayer(filepath_geojson_driver, srs, geom_type=ogr.wkbPolygon)
+    feature_definition = output_layer.GetLayerDefn()
+    field_definition_1 = ogr.FieldDefn('index', ogr.OFTReal)
+    output_layer.CreateField(field_definition_1)
+    field_definition_2 = ogr.FieldDefn('boundary', ogr.OFTString)
+    field_definition_2.SetWidth(1000)
+    output_layer_centroids.CreateField(field_definition_2)
+    for index, coordinate in enumerate(boundary_polygon):
+        output_feature = ogr.Feature(feature_definition)
+        point = ogr.Geometry(ogr.wkbPoint)
+        point.AddPoint(coordinate[0], coordinate[1])
+        output_feature.SetGeometry(point)
+        output_feature.SetField('index', index)
+        output_feature.SetField('boundary', boundary_tags_list[index])
+        output_layer.CreateFeature(output_feature)
 
     return boundary_polygon, boundary_tags
