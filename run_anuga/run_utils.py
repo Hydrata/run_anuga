@@ -142,7 +142,6 @@ def create_boundary_polygon_from_boundaries(boundaries_geojson, run_label, epsg_
         height = centroid[1] - mid_y
         # the angle in polar coordinates will sort our boundary lines into the correct order
         angle = math.atan(height/base) + correction_for_polar_quadrants(base, height)
-        print(round(base, 2), round(height, 2), round(angle, 2))
         line_list.append({
             "centroid": centroid,
             "boundary": feature.get('properties').get('boundary'),
@@ -163,48 +162,48 @@ def create_boundary_polygon_from_boundaries(boundaries_geojson, run_label, epsg_
             boundary_tags_list.append(lookup_boundary_tag(counter, boundary_tags))
             counter += 1
 
-    # Make a dump of the centroids geometry (for debugging only - not returned anywhere).
-    output_driver_centroids = ogr.GetDriverByName('GeoJSON')
-    filepath_geojson_driver_centroids = os.path.join(package_dir, f'outputs_{run_label.split("run_")[1]}', f'{run_label}_boundary_centroids.geojson')
-    output_data_source_centroids = output_driver_centroids.CreateDataSource(filepath_geojson_driver_centroids)
-    output_layer_centroids = output_data_source_centroids.CreateLayer(filepath_geojson_driver_centroids, srs, geom_type=ogr.wkbPolygon)
-    feature_definition_centroids = output_layer_centroids.GetLayerDefn()
-    field_definition_centroids_1 = ogr.FieldDefn('index', ogr.OFTReal)
-    output_layer_centroids.CreateField(field_definition_centroids_1)
-    field_definition_centroids_2 = ogr.FieldDefn('angle', ogr.OFTReal)
-    output_layer_centroids.CreateField(field_definition_centroids_2)
-    field_definition_centroids_3 = ogr.FieldDefn('id', ogr.OFTString)
-    field_definition_centroids_3.SetWidth(1000)
-    output_layer_centroids.CreateField(field_definition_centroids_3)
-    for index, line in enumerate(line_list):
-        output_feature_centroids = ogr.Feature(feature_definition_centroids)
-        centroid = line.get('centroid')
-        point = ogr.Geometry(ogr.wkbPoint)
-        point.AddPoint(centroid[0], centroid[1])
-        output_feature_centroids.SetGeometry(point)
-        output_feature_centroids.SetField('index', index)
-        output_feature_centroids.SetField('angle', line.get('angle'))
-        output_feature_centroids.SetField('id', line.get('id'))
-        output_layer_centroids.CreateFeature(output_feature_centroids)
-
-    # Make a dump of the boundary polygon geometry (for debugging only - not returned anywhere).
-    output_driver = ogr.GetDriverByName('GeoJSON')
-    filepath_geojson_driver = os.path.join(package_dir, f'outputs_{run_label.split("run_")[1]}', f'{run_label}_boundary_polygon.geojson')
-    output_data_source = output_driver.CreateDataSource(filepath_geojson_driver)
-    output_layer = output_data_source.CreateLayer(filepath_geojson_driver, srs, geom_type=ogr.wkbPolygon)
-    feature_definition = output_layer.GetLayerDefn()
-    field_definition_1 = ogr.FieldDefn('index', ogr.OFTReal)
-    output_layer.CreateField(field_definition_1)
-    field_definition_2 = ogr.FieldDefn('boundary', ogr.OFTString)
-    field_definition_2.SetWidth(1000)
-    output_layer_centroids.CreateField(field_definition_2)
-    for index, coordinate in enumerate(boundary_polygon):
-        output_feature = ogr.Feature(feature_definition)
-        point = ogr.Geometry(ogr.wkbPoint)
-        point.AddPoint(coordinate[0], coordinate[1])
-        output_feature.SetGeometry(point)
-        output_feature.SetField('index', index)
-        output_feature.SetField('boundary', boundary_tags_list[index])
-        output_layer.CreateFeature(output_feature)
+    # # Make a dump of the centroids geometry (for debugging only - not returned anywhere).
+    # output_driver_centroids = ogr.GetDriverByName('GeoJSON')
+    # filepath_geojson_driver_centroids = os.path.join(package_dir, f'outputs_{run_label.split("run_")[1]}', f'{run_label}_boundary_centroids.geojson')
+    # output_data_source_centroids = output_driver_centroids.CreateDataSource(filepath_geojson_driver_centroids)
+    # output_layer_centroids = output_data_source_centroids.CreateLayer(filepath_geojson_driver_centroids, srs, geom_type=ogr.wkbPolygon)
+    # feature_definition_centroids = output_layer_centroids.GetLayerDefn()
+    # field_definition_centroids_1 = ogr.FieldDefn('index', ogr.OFTReal)
+    # output_layer_centroids.CreateField(field_definition_centroids_1)
+    # field_definition_centroids_2 = ogr.FieldDefn('angle', ogr.OFTReal)
+    # output_layer_centroids.CreateField(field_definition_centroids_2)
+    # field_definition_centroids_3 = ogr.FieldDefn('id', ogr.OFTString)
+    # field_definition_centroids_3.SetWidth(1000)
+    # output_layer_centroids.CreateField(field_definition_centroids_3)
+    # for index, line in enumerate(line_list):
+    #     output_feature_centroids = ogr.Feature(feature_definition_centroids)
+    #     centroid = line.get('centroid')
+    #     point = ogr.Geometry(ogr.wkbPoint)
+    #     point.AddPoint(centroid[0], centroid[1])
+    #     output_feature_centroids.SetGeometry(point)
+    #     output_feature_centroids.SetField('index', index)
+    #     output_feature_centroids.SetField('angle', line.get('angle'))
+    #     output_feature_centroids.SetField('id', line.get('id'))
+    #     output_layer_centroids.CreateFeature(output_feature_centroids)
+    #
+    # # Make a dump of the boundary polygon geometry (for debugging only - not returned anywhere).
+    # output_driver = ogr.GetDriverByName('GeoJSON')
+    # filepath_geojson_driver = os.path.join(package_dir, f'outputs_{run_label.split("run_")[1]}', f'{run_label}_boundary_polygon.geojson')
+    # output_data_source = output_driver.CreateDataSource(filepath_geojson_driver)
+    # output_layer = output_data_source.CreateLayer(filepath_geojson_driver, srs, geom_type=ogr.wkbPolygon)
+    # feature_definition = output_layer.GetLayerDefn()
+    # field_definition_1 = ogr.FieldDefn('index', ogr.OFTReal)
+    # output_layer.CreateField(field_definition_1)
+    # field_definition_2 = ogr.FieldDefn('boundary', ogr.OFTString)
+    # field_definition_2.SetWidth(1000)
+    # output_layer_centroids.CreateField(field_definition_2)
+    # for index, coordinate in enumerate(boundary_polygon):
+    #     output_feature = ogr.Feature(feature_definition)
+    #     point = ogr.Geometry(ogr.wkbPoint)
+    #     point.AddPoint(coordinate[0], coordinate[1])
+    #     output_feature.SetGeometry(point)
+    #     output_feature.SetField('index', index)
+    #     output_feature.SetField('boundary', boundary_tags_list[index])
+    #     output_layer.CreateFeature(output_feature)
 
     return boundary_polygon, boundary_tags
