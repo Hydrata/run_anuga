@@ -32,25 +32,30 @@ def setup_input_data(package_dir):
     input_data['mesh_filepath'] = f"{input_data['output_directory']}/run_{scenario_id}_{run_id}.msh"
     Path(input_data['output_directory']).mkdir(parents=True, exist_ok=True)
 
-    input_data['boundaries'] = json.load(
+    input_data['boundary'] = json.load(
         open(os.path.join(package_dir, f"inputs/{input_data['scenario_config'].get('boundary')}"))
     )
-    input_data['friction_maps'] = json.load(
-        open(os.path.join(package_dir, f"inputs/{input_data['scenario_config'].get('friction')}"))
-    )
-    input_data['inflows'] = json.load(
-        open(os.path.join(package_dir, f"inputs/{input_data['scenario_config'].get('inflow')}"))
-    )
-    input_data['structures'] = json.load(
-        open(os.path.join(package_dir, f"inputs/{input_data['scenario_config'].get('structure')}"))
-    )
-    input_data['mesh_regions'] = json.load(
-        open(os.path.join(package_dir, f"inputs/{input_data['scenario_config'].get('mesh_region')}"))
-    )
-    input_data['elevation_filename'] = os.path.join(package_dir, f"inputs/{input_data['scenario_config'].get('elevation')}")
+    if input_data['scenario_config'].get('friction'):
+        input_data['friction'] = json.load(
+            open(os.path.join(package_dir, f"inputs/{input_data['scenario_config'].get('friction')}"))
+        )
+    if input_data['scenario_config'].get('inflow'):
+        input_data['inflow'] = json.load(
+            open(os.path.join(package_dir, f"inputs/{input_data['scenario_config'].get('inflow')}"))
+        )
+    if input_data['scenario_config'].get('structure'):
+        input_data['structure'] = json.load(
+            open(os.path.join(package_dir, f"inputs/{input_data['scenario_config'].get('structure')}"))
+        )
+    if input_data['scenario_config'].get('mesh_region'):
+        input_data['mesh_region'] = json.load(
+            open(os.path.join(package_dir, f"inputs/{input_data['scenario_config'].get('mesh_region')}"))
+        )
+    if input_data['scenario_config'].get('elevation'):
+        input_data['elevation_filename'] = os.path.join(package_dir, f"inputs/{input_data['scenario_config'].get('elevation')}")
 
     boundary_polygon, boundary_tags = create_boundary_polygon_from_boundaries(
-        input_data['boundaries'],
+        input_data['boundary'],
         input_data['run_label'],
         input_data['scenario_config'].get('epsg'),
         package_dir
@@ -58,12 +63,12 @@ def setup_input_data(package_dir):
     input_data['boundary_polygon'] = boundary_polygon
     input_data['boundary_tags'] = boundary_tags
 
-    logger.debug(f"{input_data['boundaries']=}")
-    logger.debug(f"{input_data['friction_maps']=}")
-    logger.debug(f"{input_data['inflows']=}")
-    logger.debug(f"{input_data['structures']=}")
-    logger.debug(f"{input_data['mesh_regions']=}")
-    logger.debug(f"{input_data['elevation_filename']=}")
+    logger.debug(f"{input_data.get('boundary')=}")
+    logger.debug(f"{input_data.get('friction')=}")
+    logger.debug(f"{input_data.get('inflow')=}")
+    logger.debug(f"{input_data.get('structure')=}")
+    logger.debug(f"{input_data.get('mesh_region')=}")
+    logger.debug(f"{input_data.get('elevation_filename')=}")
     return input_data
 
 
