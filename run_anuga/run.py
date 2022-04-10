@@ -6,6 +6,7 @@ import os
 import pandas as pd
 import traceback
 
+from logging import handlers
 from osgeo import gdal
 
 from anuga import distribute, finalize, barrier
@@ -21,6 +22,41 @@ def run_sim(package_dir, username=None, password=None):
     run_args = package_dir, username, password
     input_data = setup_input_data(package_dir)
     output_stats = dict()
+
+    # Create handlers
+    console_handler = logging.StreamHandler()
+    file_handler = logging.FileHandler(os.path.join(input_data['output_directory'], 'run_anuga.log'))
+    console_handler.setLevel(logging.DEBUG)
+    file_handler.setLevel(logging.DEBUG)
+
+    # Create formatters and add it to handlers
+    console_format = logging.Formatter('%(levelname)s:%(name)s:%(message)s')
+    file_format = logging.Formatter('%(levelname)s:%(name)s:%(message)s')
+    console_handler.setFormatter(console_format)
+    file_handler.setFormatter(file_format)
+
+    # Add handlers to the logger
+    logger.addHandler(console_handler)
+    logger.addHandler(file_handler)
+
+    if username and password:
+        web_handler = logging.handlers.HTTPHandler(
+            host='hydrata.com',
+            url=f"/anuga/api/{input_data['scenario_config'].get('project')}/{input_data['scenario_config'].get('id')}/run/{input_data['scenario_config'].get('run_id')}/log/",
+            method='POST',
+            secure=True,
+            credentials=(username, password,)
+        )
+        web_handler.setLevel(logging.DEBUG)
+        web_format = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+        web_handler.setFormatter(web_format)
+        logger.addHandler(web_handler)
+
+    logger.debug('* This is a test debug')
+    logger.info('* This is a test info')
+    logger.error('* This is a test error')
+    logger.error(f"* This is a test error with string substitution: {input_data['output_directory']}")
+
     try:
         if anuga.myid == 0:
             update_web_interface(run_args, data={'status': 'building mesh'})
@@ -34,7 +70,7 @@ def run_sim(package_dir, username=None, password=None):
                 use_cache=False,
                 verbose=True
             )
-            print(input_data['mesh_filepath'])
+            logger.info(f"{input_data['mesh_filepath']}")
             domain = anuga.shallow_water.shallow_water_domain.Domain(
                 mesh_filename=input_data['mesh_filepath'],
                 use_cache=False,
@@ -81,14 +117,14 @@ def run_sim(package_dir, username=None, password=None):
 
         for t in domain.evolve(yieldstep=60, finaltime=duration):
             domain.write_time()
-            print(f'domain.evolve {t} on processor {anuga.myid}')
+            logger.info(f'domain.evolve {t} on processor {anuga.myid}')
             update_web_interface(run_args, data={"status": f"{round(t/duration * 100, 0)}%"}) if anuga.myid == 0 else None
-            print(domain.timestepping_statistics())
+            logger.info(f"{domain.timestepping_statistics()}")
         domain.sww_merge(verbose=True, delete_old=True)
         barrier()
 
         if anuga.myid == 0:
-            print('Generating output rasters...')
+            logger.info('Generating output rasters...')
             raster = gdal.Open(input_data['elevation_filename'])
             gt = raster.GetGeoTransform()
             resolution = 1 if math.floor(gt[1] / 4) == 0 else math.floor(gt[1] / 4)
@@ -146,7 +182,7 @@ def run_sim(package_dir, username=None, password=None):
             )
             logger.info('Successfully uploaded outputs')
     except Exception as e:
-        logger.error(traceback.format_exc())
+        logger.error(f"{traceback.format_exc()}")
     finally:
         barrier()
         finalize()
@@ -162,8 +198,8 @@ if __name__ == '__main__':
     username = args.username
     password = args.password
     package_dir = args.package_dir
-    print(f'run.py got {package_dir}')
+    logger.info(f'run.py got {package_dir}')
     if not package_dir:
         package_dir = os.path.join(os.path.dirname(__file__), '..', '..')
-    print(f'run.py using {package_dir}')
+    logger.info(f'run.py using {package_dir}')
     run_sim(package_dir, username, password)
