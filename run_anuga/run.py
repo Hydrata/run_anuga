@@ -52,11 +52,6 @@ def run_sim(package_dir, username=None, password=None):
         web_handler.setFormatter(web_format)
         logger.addHandler(web_handler)
 
-    logger.debug('* This is a test debug')
-    logger.info('* This is a test info')
-    logger.error('* This is a test error')
-    logger.error(f"* This is a test error with string substitution: {input_data['output_directory']}")
-
     try:
         if anuga.myid == 0:
             update_web_interface(run_args, data={'status': 'building mesh'})
