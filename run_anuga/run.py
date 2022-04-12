@@ -55,16 +55,28 @@ def run_sim(package_dir, username=None, password=None):
     try:
         if anuga.myid == 0:
             update_web_interface(run_args, data={'status': 'building mesh'})
-            anuga.pmesh.mesh_interface.create_mesh_from_regions(
-                bounding_polygon=input_data['boundary_polygon'],
-                boundary_tags=input_data['boundary_tags'],
-                maximum_triangle_area=input_data['scenario_config'].get('maximum_triangle_area'),
-                interior_regions=[],
-                interior_holes=[],
-                filename=input_data['mesh_filepath'],
-                use_cache=False,
-                verbose=True
-            )
+            raster = gdal.Open(input_data['elevation_filename'])
+            gt = raster.GetGeoTransform()
+            mesh_resolution = gt[1]
+            maximum_triangle_area = 5 if (mesh_resolution ** 2) < 5 else (mesh_resolution ** 2)
+            # for now, don't allow models with more than 1 million triangles
+            for attempt in range(10):
+                mesh = anuga.pmesh.mesh_interface.create_mesh_from_regions(
+                    bounding_polygon=input_data['boundary_polygon'],
+                    boundary_tags=input_data['boundary_tags'],
+                    maximum_triangle_area=maximum_triangle_area,
+                    interior_regions=[],
+                    interior_holes=[],
+                    filename=input_data['mesh_filepath'],
+                    use_cache=False,
+                    verbose=True,
+                    fail_if_polygons_outside=False
+                )
+                if mesh.tri_mesh.triangles.size > 1000000:
+                    maximum_triangle_area += 10
+                    continue
+                else:
+                    break
             logger.info(f"{input_data['mesh_filepath']}")
             domain = anuga.shallow_water.shallow_water_domain.Domain(
                 mesh_filename=input_data['mesh_filepath'],
@@ -104,6 +116,8 @@ def run_sim(package_dir, username=None, password=None):
             return rain_df['rate_m_s'][t_sec]
 
         duration = input_data['scenario_config'].get('duration')
+        # for testing, don't allow model runs longer than one hour
+        duration = 60 * 60 if duration > 60 * 60 else duration
         constant_rainfall = input_data['scenario_config'].get('constant_rainfall') or 100
         date_rng = pd.date_range(start='1/1/2022', periods=duration + 1, freq='s')
         rain_df = pd.DataFrame(date_rng, columns=['datetime'])
