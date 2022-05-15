@@ -102,14 +102,17 @@ def run_sim(package_dir, username=None, password=None):
             domain = None
         barrier()
         domain = distribute(domain, verbose=True)
-        domain.set_boundary({
-                'exterior': anuga.Dirichlet_boundary([0, 0, 0]),
-                'interior': anuga.Reflective_boundary(domain),
-                'Dirichlet': anuga.Dirichlet_boundary([0, 0, 0]),
-                'Reflective': anuga.Reflective_boundary(domain),
-                'Transmissive': anuga.Transmissive_boundary(domain)
-            })
-
+        default_boundary_maps = {
+            'exterior': anuga.Dirichlet_boundary([0, 0, 0]),
+            'interior': anuga.Reflective_boundary(domain),
+            'Dirichlet': anuga.Dirichlet_boundary([0, 0, 0]),
+            'Reflective': anuga.Reflective_boundary(domain),
+            'Transmissive': anuga.Transmissive_boundary(domain)
+        }
+        boundaries = dict()
+        for tag in input_data['boundary_tags'].keys():
+            boundaries[tag] = default_boundary_maps[tag]
+        domain.set_boundary(boundaries)
         # setup rainfall
         def rain(time_in_seconds):
             t_sec = int(math.floor(time_in_seconds))
