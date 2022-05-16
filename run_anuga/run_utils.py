@@ -1,12 +1,13 @@
+import anuga
 import argparse
-import math
 import json
 import logging
+import math
 import os
 import requests
 
 from pathlib import Path
-from osgeo import ogr
+from osgeo import ogr, gdal
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +89,34 @@ def update_web_interface(run_args, data, files=None):
             files=files
         )
         logger.info(f"hydrata.com response:{response.status_code}")
+
+
+def create_mesh(input_data):
+    raster = gdal.Open(input_data['elevation_filename'])
+    gt = raster.GetGeoTransform()
+    mesh_resolution = gt[1]
+    maximum_triangle_area = 5 if (mesh_resolution ** 2) < 5 else (mesh_resolution ** 2)
+    mesh = None
+    # for now, don't allow models with more than 1 million triangles
+    for attempt in range(10):
+        mesh = anuga.pmesh.mesh_interface.create_mesh_from_regions(
+            bounding_polygon=input_data['boundary_polygon'],
+            boundary_tags=input_data['boundary_tags'],
+            maximum_triangle_area=maximum_triangle_area,
+            interior_regions=[],
+            interior_holes=[],
+            filename=input_data['mesh_filepath'],
+            use_cache=False,
+            verbose=True,
+            fail_if_polygons_outside=False
+        )
+        if mesh.tri_mesh.triangles.size > 1000000:
+            maximum_triangle_area += 10
+            continue
+        else:
+            logger.error('mesh building failed.')
+    logger.info(f"{input_data['mesh_filepath']}")
+    return mesh
 
 
 def correction_for_polar_quadrants(base, height):

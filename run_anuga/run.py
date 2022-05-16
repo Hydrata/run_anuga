@@ -13,7 +13,7 @@ from anuga import distribute, finalize, barrier
 from anuga.utilities import quantity_setting_functions as qs
 from anuga.utilities import plot_utils as util
 from anuga.operators.rate_operators import Polygonal_rate_operator
-from run_utils import is_dir_check, setup_input_data, update_web_interface, create_boundary_polygon_from_boundaries
+from run_utils import is_dir_check, setup_input_data, update_web_interface, create_mesh
 
 logger = logging.getLogger(__name__)
 
@@ -55,29 +55,7 @@ def run_sim(package_dir, username=None, password=None):
     try:
         if anuga.myid == 0:
             update_web_interface(run_args, data={'status': 'building mesh'})
-            raster = gdal.Open(input_data['elevation_filename'])
-            gt = raster.GetGeoTransform()
-            mesh_resolution = gt[1]
-            maximum_triangle_area = 5 if (mesh_resolution ** 2) < 5 else (mesh_resolution ** 2)
-            # for now, don't allow models with more than 1 million triangles
-            for attempt in range(10):
-                mesh = anuga.pmesh.mesh_interface.create_mesh_from_regions(
-                    bounding_polygon=input_data['boundary_polygon'],
-                    boundary_tags=input_data['boundary_tags'],
-                    maximum_triangle_area=maximum_triangle_area,
-                    interior_regions=[],
-                    interior_holes=[],
-                    filename=input_data['mesh_filepath'],
-                    use_cache=False,
-                    verbose=True,
-                    fail_if_polygons_outside=False
-                )
-                if mesh.tri_mesh.triangles.size > 1000000:
-                    maximum_triangle_area += 10
-                    continue
-                else:
-                    break
-            logger.info(f"{input_data['mesh_filepath']}")
+            mesh = create_mesh(input_data)
             domain = anuga.shallow_water.shallow_water_domain.Domain(
                 mesh_filename=input_data['mesh_filepath'],
                 use_cache=False,
