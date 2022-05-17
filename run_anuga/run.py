@@ -13,7 +13,7 @@ from anuga import distribute, finalize, barrier
 from anuga.utilities import quantity_setting_functions as qs
 from anuga.utilities import plot_utils as util
 from anuga.operators.rate_operators import Polygonal_rate_operator
-from run_utils import is_dir_check, setup_input_data, update_web_interface, create_mesh
+from run_utils import is_dir_check, setup_input_data, update_web_interface, create_mesh, make_interior_holes
 
 logger = logging.getLogger(__name__)
 
@@ -121,6 +121,7 @@ def run_sim(package_dir, username=None, password=None):
             epsg_integer = int(input_data['scenario_config'].get("epsg").split(":")[1]
                                if ":" in input_data['scenario_config'].get("epsg")
                                else input_data['scenario_config'].get("epsg"))
+            interior_holes = make_interior_holes(input_data)
             util.Make_Geotif(
                 swwFile=f"{input_data['output_directory']}/{input_data['run_label']}.sww",
                 output_quantities=['depth', 'velocity', 'depthIntegratedVelocity'],
@@ -134,7 +135,7 @@ def run_sim(package_dir, username=None, password=None):
                 min_allowed_height=1.0e-05,
                 output_dir=input_data['output_directory'],
                 bounding_polygon=input_data['boundary_polygon'],
-                internal_holes=None,
+                internal_holes=interior_holes,
                 verbose=False,
                 k_nearest_neighbours=3,
                 creation_options=[]
