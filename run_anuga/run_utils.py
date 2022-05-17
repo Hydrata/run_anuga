@@ -98,24 +98,24 @@ def create_mesh(input_data):
     maximum_triangle_area = 5 if (mesh_resolution ** 2) < 5 else (mesh_resolution ** 2)
     mesh = None
     # for now, don't allow models with more than 1 million triangles
-    for attempt in range(10):
-        mesh = anuga.pmesh.mesh_interface.create_mesh_from_regions(
-            bounding_polygon=input_data['boundary_polygon'],
-            boundary_tags=input_data['boundary_tags'],
-            maximum_triangle_area=maximum_triangle_area,
-            interior_regions=[],
-            interior_holes=[],
-            filename=input_data['mesh_filepath'],
-            use_cache=False,
-            verbose=True,
-            fail_if_polygons_outside=False
-        )
-        if mesh.tri_mesh.triangles.size > 1000000:
-            maximum_triangle_area += 10
-            continue
-        else:
-            logger.error('mesh building failed.')
-    logger.info(f"{input_data['mesh_filepath']}")
+    interior_regions = list()
+    for mesh_region in input_data['mesh_region']['features']:
+        mesh_polygon = mesh_region.get('geometry').get('coordinates')[0]
+        mesh_resolution = mesh_region.get('properties').get('resolution')
+        interior_regions.append((mesh_polygon, mesh_resolution,))
+    logger.debug(f"{interior_regions=}")
+    mesh = anuga.pmesh.mesh_interface.create_mesh_from_regions(
+        bounding_polygon=input_data['boundary_polygon'],
+        boundary_tags=input_data['boundary_tags'],
+        maximum_triangle_area=maximum_triangle_area,
+        interior_regions=interior_regions,
+        interior_holes=[],
+        filename=input_data['mesh_filepath'],
+        use_cache=False,
+        verbose=True,
+        fail_if_polygons_outside=False
+    )
+    logger.debug(f"{mesh.tri_mesh.triangles.size=}")
     return mesh
 
 
