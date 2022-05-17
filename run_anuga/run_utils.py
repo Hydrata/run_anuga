@@ -120,41 +120,45 @@ def create_mesh(input_data):
 
 def make_interior_regions(input_data):
     interior_regions = list()
-    for mesh_region in input_data['mesh_region']['features']:
-        mesh_polygon = mesh_region.get('geometry').get('coordinates')[0]
-        mesh_resolution = mesh_region.get('properties').get('resolution')
-        interior_regions.append((mesh_polygon, mesh_resolution,))
+    if input_data.get('mesh_region'):
+        for mesh_region in input_data['mesh_region']['features']:
+            mesh_polygon = mesh_region.get('geometry').get('coordinates')[0]
+            mesh_resolution = mesh_region.get('properties').get('resolution')
+            interior_regions.append((mesh_polygon, mesh_resolution,))
     return interior_regions
 
 
 def make_interior_holes_and_tags(input_data):
     interior_holes = list()
     hole_tags = list()
-    for structure in input_data['structure']['features']:
-        if structure.get('properties').get('method') == 'Mannings':
-            continue
-        structure_polygon = structure.get('geometry').get('coordinates')[0]
-        interior_holes.append(structure_polygon)
-        if structure.get('properties').get('method') == 'Holes':
-            hole_tags.append(None)
-        elif structure.get('properties').get('method') == 'Reflective':
-            hole_tags.append({'reflective': [i for i in range(len(structure_polygon))]})
-        else:
-            logger.error(f"Unknown interior hole type found: {structure.get('properties').get('method')}")
+    if input_data.get('structure'):
+        for structure in input_data['structure']['features']:
+            if structure.get('properties').get('method') == 'Mannings':
+                continue
+            structure_polygon = structure.get('geometry').get('coordinates')[0]
+            interior_holes.append(structure_polygon)
+            if structure.get('properties').get('method') == 'Holes':
+                hole_tags.append(None)
+            elif structure.get('properties').get('method') == 'Reflective':
+                hole_tags.append({'reflective': [i for i in range(len(structure_polygon))]})
+            else:
+                logger.error(f"Unknown interior hole type found: {structure.get('properties').get('method')}")
 
     return interior_holes, hole_tags
 
 
 def make_frictions(input_data):
     frictions = list()
-    for structure in input_data['structure']['features']:
-        if structure.get('properties').get('method') == 'Mannings':
-            structure_polygon = structure.get('geometry').get('coordinates')[0]
-            frictions.append((structure_polygon, 10,))  # TODO: maybe make building value customisable
-    for friction in input_data['friction']['features']:
-        friction_polygon = friction.get('geometry').get('coordinates')[0]
-        friction_value = friction.get('properties').get('mannings')
-        frictions.append((friction_polygon, friction_value,))
+    if input_data.get('structure'):
+        for structure in input_data['structure']['features']:
+            if structure.get('properties').get('method') == 'Mannings':
+                structure_polygon = structure.get('geometry').get('coordinates')[0]
+                frictions.append((structure_polygon, 10,))  # TODO: maybe make building value customisable
+    if input_data.get('friction'):
+        for friction in input_data['friction']['features']:
+            friction_polygon = friction.get('geometry').get('coordinates')[0]
+            friction_value = friction.get('properties').get('mannings')
+            frictions.append((friction_polygon, friction_value,))
     frictions.append(['All', 0.04])  # TODO: make default value customisable
     return frictions
 
