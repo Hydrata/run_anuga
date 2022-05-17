@@ -94,7 +94,8 @@ def run_sim(package_dir, username=None, password=None):
             'Reflective': anuga.Reflective_boundary(domain),
             'reflective': anuga.Reflective_boundary(domain),
             'Transmissive': anuga.Transmissive_boundary(domain),
-            'transmissive': anuga.Transmissive_boundary(domain)
+            'transmissive': anuga.Transmissive_boundary(domain),
+            'ghost': None
         }
         boundaries = dict()
         for tag in domain.boundary.values():
