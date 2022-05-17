@@ -209,5 +209,6 @@ if __name__ == '__main__':
         run_sim(package_dir, username, password)
     except Exception as e:
         run_args = (package_dir, username, password)
+        logging.exception(e, exc_info=True)
         update_web_interface(run_args, data={'status': 'error'})
         raise e
