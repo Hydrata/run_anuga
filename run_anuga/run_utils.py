@@ -128,8 +128,9 @@ def make_interior_regions(input_data):
 def make_interior_holes(input_data):
     interior_holes = list()
     for hole in input_data['structure']['features']:
-        hole_polygon = hole.get('geometry').get('coordinates')[0]
-        interior_holes.append(hole_polygon)
+        if hole.get('properties').get('method') == 'Holes':
+            hole_polygon = hole.get('geometry').get('coordinates')[0]
+            interior_holes.append(hole_polygon)
     return interior_holes
 
 
