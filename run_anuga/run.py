@@ -208,5 +208,6 @@ if __name__ == '__main__':
     try:
         run_sim(package_dir, username, password)
     except Exception as e:
-        update_web_interface((package_dir, username, password), data={'status': 'error'})
+        run_args = (package_dir, username, password)
+        update_web_interface(run_args, data={'status': 'error'})
         raise e
