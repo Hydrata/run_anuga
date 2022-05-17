@@ -94,19 +94,21 @@ def update_web_interface(run_args, data, files=None):
 def create_mesh(input_data):
     raster = gdal.Open(input_data['elevation_filename'])
     gt = raster.GetGeoTransform()
-    mesh_resolution = gt[1]
-    maximum_triangle_area = 5 if (mesh_resolution ** 2) < 5 else (mesh_resolution ** 2)
-    mesh = None
-    # for now, don't allow models with more than 1 million triangles
+    grid_resolution = gt[1]
+    # the lowest triangle area we can have is 5m2 or the grid resolution squared
+    maximum_triangle_area = 5 if (grid_resolution ** 2) < 5 else (grid_resolution ** 2)
     interior_regions = make_interior_regions(input_data)
-    interior_holes = make_interior_holes(input_data)
+    interior_holes, hole_tags = make_interior_holes_and_tags(input_data)
     logger.debug(f"{interior_regions=}")
+    bounding_polygon = input_data['boundary_polygon']
+    boundary_tags = input_data['boundary_tags']
     mesh = anuga.pmesh.mesh_interface.create_mesh_from_regions(
-        bounding_polygon=input_data['boundary_polygon'],
-        boundary_tags=input_data['boundary_tags'],
+        bounding_polygon=bounding_polygon,
+        boundary_tags=boundary_tags,
         maximum_triangle_area=maximum_triangle_area,
         interior_regions=interior_regions,
         interior_holes=interior_holes,
+        hole_tags=hole_tags,
         filename=input_data['mesh_filepath'],
         use_cache=False,
         verbose=True,
@@ -125,13 +127,36 @@ def make_interior_regions(input_data):
     return interior_regions
 
 
-def make_interior_holes(input_data):
+def make_interior_holes_and_tags(input_data):
     interior_holes = list()
-    for hole in input_data['structure']['features']:
-        if hole.get('properties').get('method') == 'Holes':
-            hole_polygon = hole.get('geometry').get('coordinates')[0]
-            interior_holes.append(hole_polygon)
-    return interior_holes
+    hole_tags = list()
+    for structure in input_data['structure']['features']:
+        if structure.get('properties').get('method') == 'Mannings':
+            continue
+        structure_polygon = structure.get('geometry').get('coordinates')[0]
+        interior_holes.append(structure_polygon)
+        if structure.get('properties').get('method') == 'Holes':
+            hole_tags.append(None)
+        elif structure.get('properties').get('method') == 'Reflective':
+            hole_tags.append({'reflective': [i for i in range(len(structure_polygon))]})
+        else:
+            logger.error(f"Unknown interior hole type found: {structure.get('properties').get('method')}")
+
+    return interior_holes, hole_tags
+
+
+def make_frictions(input_data):
+    frictions = list()
+    for friction in input_data['friction']['features']:
+        friction_polygon = friction.get('geometry').get('coordinates')[0]
+        friction_value = friction.get('properties').get('mannings')
+        frictions.append((friction_polygon, friction_value,))
+    for structure in input_data['structure']['features']:
+        if structure.get('properties').get('method') == 'Mannings':
+            structure_polygon = structure.get('geometry').get('coordinates')[0]
+            frictions.append((structure_polygon, 10,))  # TODO: maybe make building value customisable
+    frictions.append(['All', 0.04])  # TODO: make default value customisable
+    return frictions
 
 
 def correction_for_polar_quadrants(base, height):

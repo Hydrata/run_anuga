@@ -13,7 +13,8 @@ from anuga import distribute, finalize, barrier
 from anuga.utilities import quantity_setting_functions as qs
 from anuga.utilities import plot_utils as util
 from anuga.operators.rate_operators import Polygonal_rate_operator
-from run_utils import is_dir_check, setup_input_data, update_web_interface, create_mesh, make_interior_holes
+from run_utils import is_dir_check, setup_input_data, update_web_interface, create_mesh, make_interior_holes_and_tags, \
+    make_frictions
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +73,12 @@ def run_sim(package_dir, username=None, password=None):
                 nan_treatment='exception',
             )
             domain.set_quantity('elevation', elevation_function, verbose=True, alpha=0.99)
-            domain.set_quantity('friction', 0.06, verbose=True)
+            frictions = make_frictions(input_data)
+            friction_function = qs.composite_quantity_setting_function(
+                frictions,
+                domain
+            )
+            domain.set_quantity('friction', friction_function, verbose=True)
             domain.set_quantity('stage', 0.0, verbose=True)
 
             update_web_interface(run_args, data={'status': 'created mesh'})
@@ -84,13 +90,17 @@ def run_sim(package_dir, username=None, password=None):
             'exterior': anuga.Dirichlet_boundary([0, 0, 0]),
             'interior': anuga.Reflective_boundary(domain),
             'Dirichlet': anuga.Dirichlet_boundary([0, 0, 0]),
+            'dirichlet': anuga.Dirichlet_boundary([0, 0, 0]),
             'Reflective': anuga.Reflective_boundary(domain),
-            'Transmissive': anuga.Transmissive_boundary(domain)
+            'reflective': anuga.Reflective_boundary(domain),
+            'Transmissive': anuga.Transmissive_boundary(domain),
+            'transmissive': anuga.Transmissive_boundary(domain)
         }
         boundaries = dict()
-        for tag in input_data['boundary_tags'].keys():
+        for tag in domain.boundary.values():
             boundaries[tag] = default_boundary_maps[tag]
         domain.set_boundary(boundaries)
+
         # setup rainfall
         def rain(time_in_seconds):
             t_sec = int(math.floor(time_in_seconds))
@@ -107,9 +117,10 @@ def run_sim(package_dir, username=None, password=None):
 
         for t in domain.evolve(yieldstep=60, finaltime=duration):
             domain.write_time()
-            logger.info(f'domain.evolve {t} on processor {anuga.myid}')
-            update_web_interface(run_args, data={"status": f"{round(t/duration * 100, 0)}%"}) if anuga.myid == 0 else None
-            logger.info(f"{domain.timestepping_statistics()}")
+            if anuga.myid == 0:
+                logger.info(f'domain.evolve {t} on processor {anuga.myid}')
+                logger.info(f"{domain.timestepping_statistics()}")
+                update_web_interface(run_args, data={"status": f"{round(t/duration * 100, 0)}%"})
         domain.sww_merge(verbose=True, delete_old=True)
         barrier()
 
@@ -121,7 +132,7 @@ def run_sim(package_dir, username=None, password=None):
             epsg_integer = int(input_data['scenario_config'].get("epsg").split(":")[1]
                                if ":" in input_data['scenario_config'].get("epsg")
                                else input_data['scenario_config'].get("epsg"))
-            interior_holes = make_interior_holes(input_data)
+            interior_holes, _ = make_interior_holes_and_tags(input_data)
             util.Make_Geotif(
                 swwFile=f"{input_data['output_directory']}/{input_data['run_label']}.sww",
                 output_quantities=['depth', 'velocity', 'depthIntegratedVelocity'],
