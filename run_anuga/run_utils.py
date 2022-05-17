@@ -103,6 +103,10 @@ def create_mesh(input_data):
         mesh_polygon = mesh_region.get('geometry').get('coordinates')[0]
         mesh_resolution = mesh_region.get('properties').get('resolution')
         interior_regions.append((mesh_polygon, mesh_resolution,))
+    interior_holes = list()
+    for hole in input_data['structure']['features']:
+        hole_polygon = hole.get('geometry').get('coordinates')[0]
+        interior_holes.append(hole_polygon)
     logger.debug(f"{interior_regions=}")
     mesh = anuga.pmesh.mesh_interface.create_mesh_from_regions(
         bounding_polygon=input_data['boundary_polygon'],
