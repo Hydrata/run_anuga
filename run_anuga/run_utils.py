@@ -147,15 +147,15 @@ def make_interior_holes_and_tags(input_data):
 
 def make_frictions(input_data):
     frictions = list()
-    for friction in input_data['friction']['features']:
-        friction_polygon = friction.get('geometry').get('coordinates')[0]
-        friction_value = friction.get('properties').get('mannings')
-        frictions.append((friction_polygon, friction_value,))
+    frictions.append(['All', 0.04])  # TODO: make default value customisable
     for structure in input_data['structure']['features']:
         if structure.get('properties').get('method') == 'Mannings':
             structure_polygon = structure.get('geometry').get('coordinates')[0]
             frictions.append((structure_polygon, 10,))  # TODO: maybe make building value customisable
-    frictions.append(['All', 0.04])  # TODO: make default value customisable
+    for friction in input_data['friction']['features']:
+        friction_polygon = friction.get('geometry').get('coordinates')[0]
+        friction_value = friction.get('properties').get('mannings')
+        frictions.append((friction_polygon, friction_value,))
     return frictions
 
 

@@ -205,4 +205,8 @@ if __name__ == '__main__':
     if not package_dir:
         package_dir = os.path.join(os.path.dirname(__file__), '..', '..')
     logger.info(f'run.py using {package_dir}')
-    run_sim(package_dir, username, password)
+    try:
+        run_sim(package_dir, username, password)
+    except Exception as e:
+        update_web_interface((package_dir, username, password), data={'status': 'error'})
+        raise e
