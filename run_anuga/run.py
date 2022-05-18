@@ -132,15 +132,19 @@ def run_sim(package_dir, username=None, password=None):
             resolution = 1 if math.floor(gt[1] / 4) == 0 else math.floor(gt[1] / 4)
             resolutions = list()
             for feature in input_data.get('mesh_region') or list():
+                logger.info(f'{feature=}')
                 resolutions.append(feature.get('properties').get('resolution'))
+            logger.info(f'{resolutions=}')
             if len(resolutions) == 0:
                 resolutions = [1000]
             highest_grid_resolution = math.floor(math.sqrt(2 * min(resolutions)))
+            logger.info(f'{highest_grid_resolution=}')
             logger.info(f'raster resolution: {highest_grid_resolution}m')
             epsg_integer = int(input_data['scenario_config'].get("epsg").split(":")[1]
                                if ":" in input_data['scenario_config'].get("epsg")
                                else input_data['scenario_config'].get("epsg"))
             interior_holes, _ = make_interior_holes_and_tags(input_data)
+            logger.info(f'{interior_holes=}')
             util.Make_Geotif(
                 swwFile=f"{input_data['output_directory']}/{input_data['run_label']}.sww",
                 output_quantities=['depth', 'velocity', 'depthIntegratedVelocity'],
