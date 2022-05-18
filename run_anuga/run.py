@@ -131,7 +131,7 @@ def run_sim(package_dir, username=None, password=None):
             gt = raster.GetGeoTransform()
             resolution = 1 if math.floor(gt[1] / 4) == 0 else math.floor(gt[1] / 4)
             resolutions = list()
-            for feature in input_data.get('mesh_regions') or list():
+            for feature in input_data.get('mesh_region') or list():
                 resolutions.append(feature.get('properties').get('resolution'))
             if len(resolutions) == 0:
                 resolutions = [1000]
