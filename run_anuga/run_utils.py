@@ -97,7 +97,7 @@ def create_mesh(input_data):
     grid_resolution = gt[1]
     # the lowest triangle area we can have is 5m2 or the grid resolution squared
     minimum_triangle_area = 5 if (grid_resolution ** 2) < 5 else (grid_resolution ** 2)
-    maximum_triangle_area = 100000
+    maximum_triangle_area = 1000
     interior_regions = make_interior_regions(input_data)
     interior_holes, hole_tags = make_interior_holes_and_tags(input_data)
     logger.debug(f"{interior_regions=}")

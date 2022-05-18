@@ -130,10 +130,13 @@ def run_sim(package_dir, username=None, password=None):
             raster = gdal.Open(input_data['elevation_filename'])
             gt = raster.GetGeoTransform()
             resolution = 1 if math.floor(gt[1] / 4) == 0 else math.floor(gt[1] / 4)
+            resolution = 50  # temp value for testing prod file transfer sizes
+            logger.info(f'raster resolution: {resolution}m')
             epsg_integer = int(input_data['scenario_config'].get("epsg").split(":")[1]
                                if ":" in input_data['scenario_config'].get("epsg")
                                else input_data['scenario_config'].get("epsg"))
             interior_holes, _ = make_interior_holes_and_tags(input_data)
+            logger.info(f'raster resolution: {resolution}m')
             util.Make_Geotif(
                 swwFile=f"{input_data['output_directory']}/{input_data['run_label']}.sww",
                 output_quantities=['depth', 'velocity', 'depthIntegratedVelocity'],
