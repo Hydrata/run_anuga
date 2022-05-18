@@ -96,12 +96,14 @@ def create_mesh(input_data):
     gt = raster.GetGeoTransform()
     grid_resolution = gt[1]
     # the lowest triangle area we can have is 5m2 or the grid resolution squared
-    maximum_triangle_area = 5 if (grid_resolution ** 2) < 5 else (grid_resolution ** 2)
+    minimum_triangle_area = 5 if (grid_resolution ** 2) < 5 else (grid_resolution ** 2)
+    maximum_triangle_area = 100000
     interior_regions = make_interior_regions(input_data)
     interior_holes, hole_tags = make_interior_holes_and_tags(input_data)
     logger.debug(f"{interior_regions=}")
     bounding_polygon = input_data['boundary_polygon']
     boundary_tags = input_data['boundary_tags']
+    # zone = input_data.get('scenario_config').get('epsg').split(':')[1][3:]
     mesh = anuga.pmesh.mesh_interface.create_mesh_from_regions(
         bounding_polygon=bounding_polygon,
         boundary_tags=boundary_tags,

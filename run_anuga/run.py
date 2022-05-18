@@ -72,7 +72,7 @@ def run_sim(package_dir, username=None, password=None):
                 domain,
                 nan_treatment='exception',
             )
-            domain.set_quantity('elevation', elevation_function, verbose=True, alpha=0.99)
+            domain.set_quantity('elevation', elevation_function, verbose=True, alpha=0.99, location='centroids')
             frictions = make_frictions(input_data)
             friction_function = qs.composite_quantity_setting_function(
                 frictions,
