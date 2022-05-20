@@ -54,18 +54,18 @@ def run_sim(package_dir, username=None, password=None):
         logger.addHandler(web_handler)
 
     try:
-        logger.debug(f"{anuga.myid=}")
+        logger.info(f"{anuga.myid=}")
         if anuga.myid == 0:
-            logger.debug(f"update_web_interface - building mesh")
+            logger.info(f"update_web_interface - building mesh")
             update_web_interface(run_args, data={'status': 'building mesh'})
             mesh = create_mesh(input_data)
-            logger.debug(f"create_mesh")
+            logger.info(f"create_mesh")
             domain = anuga.shallow_water.shallow_water_domain.Domain(
                 mesh_filename=input_data['mesh_filepath'],
                 use_cache=False,
                 verbose=True,
             )
-            logger.debug(f"TODO: check if mesh exists on each processor here")
+            logger.info(f"TODO: check if mesh exists on each processor here")
             domain.set_name(input_data['run_label'])
             domain.set_datadir(input_data['output_directory'])
             domain.set_minimum_storable_height(0.005)
@@ -88,10 +88,10 @@ def run_sim(package_dir, username=None, password=None):
             update_web_interface(run_args, data={'status': 'created mesh'})
         else:
             domain = None
-        logger.debug(f"domain on anuga.myid {anuga.myid}: {domain}")
+        logger.info(f"domain on anuga.myid {anuga.myid}: {domain}")
         barrier()
         domain = distribute(domain, verbose=True)
-        logger.debug(f"domain on anuga.myid {anuga.myid} after distribute(): {domain}")
+        logger.info(f"domain on anuga.myid {anuga.myid} after distribute(): {domain}")
         default_boundary_maps = {
             'exterior': anuga.Dirichlet_boundary([0, 0, 0]),
             'interior': anuga.Reflective_boundary(domain),
@@ -124,7 +124,7 @@ def run_sim(package_dir, username=None, password=None):
 
         for t in domain.evolve(yieldstep=60, finaltime=duration):
             domain.write_time()
-            logger.debug(f"domain.timestepping_statistics() on anuga.myid {anuga.myid}: {domain.timestepping_statistics()}")
+            logger.info(f"domain.timestepping_statistics() on anuga.myid {anuga.myid}: {domain.timestepping_statistics()}")
             if anuga.myid == 0:
                 logger.info(f'domain.evolve {t} on processor {anuga.myid}')
                 logger.info(f"{domain.timestepping_statistics()}")
