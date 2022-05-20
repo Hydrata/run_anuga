@@ -54,14 +54,18 @@ def run_sim(package_dir, username=None, password=None):
         logger.addHandler(web_handler)
 
     try:
+        logger.debug(f"{anuga.myid=}")
         if anuga.myid == 0:
+            logger.debug(f"update_web_interface - building mesh")
             update_web_interface(run_args, data={'status': 'building mesh'})
             mesh = create_mesh(input_data)
+            logger.debug(f"create_mesh")
             domain = anuga.shallow_water.shallow_water_domain.Domain(
                 mesh_filename=input_data['mesh_filepath'],
                 use_cache=False,
                 verbose=True,
             )
+            logger.debug(f"TODO: check if mesh exists on each processor here")
             domain.set_name(input_data['run_label'])
             domain.set_datadir(input_data['output_directory'])
             domain.set_minimum_storable_height(0.005)
@@ -84,8 +88,10 @@ def run_sim(package_dir, username=None, password=None):
             update_web_interface(run_args, data={'status': 'created mesh'})
         else:
             domain = None
+        logger.debug(f"domain on anuga.myid {anuga.myid}: {domain}")
         barrier()
         domain = distribute(domain, verbose=True)
+        logger.debug(f"domain on anuga.myid {anuga.myid} after distribute(): {domain}")
         default_boundary_maps = {
             'exterior': anuga.Dirichlet_boundary([0, 0, 0]),
             'interior': anuga.Reflective_boundary(domain),
@@ -118,15 +124,17 @@ def run_sim(package_dir, username=None, password=None):
 
         for t in domain.evolve(yieldstep=60, finaltime=duration):
             domain.write_time()
+            logger.debug(f"domain.timestepping_statistics() on anuga.myid {anuga.myid}: {domain.timestepping_statistics()}")
             if anuga.myid == 0:
                 logger.info(f'domain.evolve {t} on processor {anuga.myid}')
                 logger.info(f"{domain.timestepping_statistics()}")
                 update_web_interface(run_args, data={"status": f"{round(t/duration * 100, 0)}%"})
+        barrier()
         domain.sww_merge(verbose=True, delete_old=True)
         barrier()
 
         if anuga.myid == 0:
-            logger.info('Generating output rasters...')
+            logger.info(f'Generating output rasters on {anuga.myid}...')
             raster = gdal.Open(input_data['elevation_filename'])
             gt = raster.GetGeoTransform()
             resolution = 1 if math.floor(gt[1] / 4) == 0 else math.floor(gt[1] / 4)
@@ -200,7 +208,6 @@ def run_sim(package_dir, username=None, password=None):
     except Exception as e:
         logger.error(f"{traceback.format_exc()}")
     finally:
-        barrier()
         finalize()
     return f"finished: {input_data['run_label']}"
 
