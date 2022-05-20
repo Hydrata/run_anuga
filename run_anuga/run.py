@@ -139,6 +139,7 @@ def run_sim(package_dir, username=None, password=None):
             if len(resolutions) == 0:
                 resolutions = [1000]
             highest_grid_resolution = math.floor(math.sqrt(2 * min(resolutions)))
+            highest_grid_resolution = 1
             logger.info(f'{highest_grid_resolution=}')
             logger.info(f'raster resolution: {highest_grid_resolution}m')
             epsg_integer = int(input_data['scenario_config'].get("epsg").split(":")[1]
