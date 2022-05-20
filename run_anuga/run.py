@@ -1,3 +1,6 @@
+import time
+from pathlib import Path
+
 import anuga
 import argparse
 import logging
@@ -60,6 +63,17 @@ def run_sim(package_dir, username=None, password=None):
             update_web_interface(run_args, data={'status': 'building mesh'})
             mesh = create_mesh(input_data)
             logger.info(f"create_mesh")
+            # wait for mesh to be fully written before continuing...
+            current_size = 0
+            new_size = Path(input_data['mesh_filepath']).stat().st_size
+            logger.debug(f'{current_size=}')
+            logger.debug(f'{new_size=}')
+            while current_size != new_size:
+                current_size = Path(input_data['mesh_filepath']).stat().st_size
+                time.sleep(1)
+                new_size = Path(input_data['mesh_filepath']).stat().st_size
+                logger.debug(f'{current_size=}')
+                logger.debug(f'{new_size=}')
             domain = anuga.shallow_water.shallow_water_domain.Domain(
                 mesh_filename=input_data['mesh_filepath'],
                 use_cache=False,
