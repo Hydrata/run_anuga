@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 
 
 def run_sim(package_dir, username=None, password=None):
+    print('this is a test print to stdout')
     run_args = package_dir, username, password
     input_data = setup_input_data(package_dir)
     output_stats = dict()
@@ -52,8 +53,6 @@ def run_sim(package_dir, username=None, password=None):
             credentials=(username, password,)
         )
         web_handler.setLevel(logging.DEBUG)
-        web_format = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-        web_handler.setFormatter(web_format)
         logger.addHandler(web_handler)
 
     try:
