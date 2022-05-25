@@ -84,7 +84,8 @@ def update_web_interface(run_args, data, files=None):
             data=data,
             files=files
         )
-        logger.info(f"hydrata.com response:{response.status_code}")
+        status_code = response.status_code
+        logger.info(f"hydrata.com response: {status_code}")
 
 
 def create_mesh(input_data):
