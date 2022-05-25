@@ -119,7 +119,7 @@ def make_interior_regions(input_data):
     if input_data.get('mesh_region'):
         for mesh_region in input_data['mesh_region']['features']:
             mesh_polygon = mesh_region.get('geometry').get('coordinates')[0]
-            mesh_resolution = mesh_region.get('properties').get('max_triangle_area')
+            mesh_resolution = mesh_region.get('properties').get('resolution')
             interior_regions.append((mesh_polygon, mesh_resolution,))
     return interior_regions
 
