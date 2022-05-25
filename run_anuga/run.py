@@ -149,7 +149,7 @@ def run_sim(package_dir, username=None, password=None):
             logger.info(f'Generating output rasters on {anuga.myid}...')
             raster = gdal.Open(input_data['elevation_filename'])
             gt = raster.GetGeoTransform()
-            resolution = 1 if math.floor(gt[1] / 4) == 0 else math.floor(gt[1] / 4)
+            # resolution = 1 if math.floor(gt[1] / 4) == 0 else math.floor(gt[1] / 4)
             resolutions = list()
             if input_data.get('mesh_region'):
                 for feature in input_data.get('mesh_region').get('features') or list():
@@ -157,9 +157,9 @@ def run_sim(package_dir, username=None, password=None):
                     resolutions.append(feature.get('properties').get('resolution'))
             logger.info(f'{resolutions=}')
             if len(resolutions) == 0:
-                resolutions = [input_data.get('resolution') or 1000]
-            highest_grid_resolution = math.floor(math.sqrt(2 * min(resolutions)))
-            logger.info(f'raster resolution: {highest_grid_resolution}m')
+                resolutions = [input_data.get('max_triangle_area') or 1000]
+            finest_grid_resolution = math.floor(math.sqrt(2 * min(resolutions)))
+            logger.info(f'raster resolution: {finest_grid_resolution}m')
             epsg_integer = int(input_data['scenario_config'].get("epsg").split(":")[1]
                                if ":" in input_data['scenario_config'].get("epsg")
                                else input_data['scenario_config'].get("epsg"))
@@ -168,7 +168,7 @@ def run_sim(package_dir, username=None, password=None):
                 swwFile=f"{input_data['output_directory']}/{input_data['run_label']}.sww",
                 output_quantities=['depth', 'velocity', 'depthIntegratedVelocity'],
                 myTimeStep='max',
-                CellSize=highest_grid_resolution,
+                CellSize=finest_grid_resolution,
                 lower_left=None,
                 upper_right=None,
                 EPSG_CODE=epsg_integer,

@@ -55,8 +55,8 @@ def setup_input_data(package_dir):
     if input_data['scenario_config'].get('elevation'):
         input_data['elevation_filename'] = os.path.join(package_dir, f"inputs/{input_data['scenario_config'].get('elevation')}")
 
-    if input_data['scenario_config'].get('resolution'):
-        input_data['resolution'] = input_data['scenario_config'].get('resolution')
+    if input_data['scenario_config'].get('maximum_triangle_area'):
+        input_data['maximum_triangle_area'] = input_data['scenario_config'].get('maximum_triangle_area')
 
     boundary_polygon, boundary_tags = create_boundary_polygon_from_boundaries(
         input_data['boundary'],
@@ -92,8 +92,8 @@ def create_mesh(input_data):
     gt = raster.GetGeoTransform()
     grid_resolution = gt[1]
     # the lowest triangle area we can have is 5m2 or the grid resolution squared
-    minimum_triangle_area = 5 if (grid_resolution ** 2) < 5 else (grid_resolution ** 2)
-    maximum_triangle_area = input_data.get('resolution') or 1000
+    # minimum_triangle_area = 5 if (grid_resolution ** 2) < 5 else (grid_resolution ** 2)
+    maximum_triangle_area = input_data.get('maximum_triangle_area') or 1000
     interior_regions = make_interior_regions(input_data)
     interior_holes, hole_tags = make_interior_holes_and_tags(input_data)
     bounding_polygon = input_data['boundary_polygon']
@@ -119,7 +119,7 @@ def make_interior_regions(input_data):
     if input_data.get('mesh_region'):
         for mesh_region in input_data['mesh_region']['features']:
             mesh_polygon = mesh_region.get('geometry').get('coordinates')[0]
-            mesh_resolution = mesh_region.get('properties').get('resolution')
+            mesh_resolution = mesh_region.get('properties').get('max_triangle_area')
             interior_regions.append((mesh_polygon, mesh_resolution,))
     return interior_regions
 
