@@ -55,6 +55,9 @@ def setup_input_data(package_dir):
     if input_data['scenario_config'].get('elevation'):
         input_data['elevation_filename'] = os.path.join(package_dir, f"inputs/{input_data['scenario_config'].get('elevation')}")
 
+    if input_data['scenario_config'].get('resolution'):
+        input_data['resolution'] = input_data['scenario_config'].get('resolution')
+
     boundary_polygon, boundary_tags = create_boundary_polygon_from_boundaries(
         input_data['boundary'],
         input_data['run_label'],
@@ -63,13 +66,6 @@ def setup_input_data(package_dir):
     )
     input_data['boundary_polygon'] = boundary_polygon
     input_data['boundary_tags'] = boundary_tags
-
-    logger.debug(f"{input_data.get('boundary')=}")
-    logger.debug(f"{input_data.get('friction')=}")
-    logger.debug(f"{input_data.get('inflow')=}")
-    logger.debug(f"{input_data.get('structure')=}")
-    logger.debug(f"{input_data.get('mesh_region')=}")
-    logger.debug(f"{input_data.get('elevation_filename')=}")
     return input_data
 
 
@@ -82,7 +78,7 @@ def update_web_interface(run_args, data, files=None):
         run_id = input_data['scenario_config'].get('run_id')
         client = requests.Session()
         client.auth = requests.auth.HTTPBasicAuth(username, password)
-        logger.info(f"hydrata.com post:{data}")
+        # logger.info(f"hydrata.com post:{data}")
         response = client.patch(
             f"https://hydrata.com/anuga/api/{data['project']}/{data['scenario']}/run/{run_id}/",
             data=data,
@@ -97,13 +93,11 @@ def create_mesh(input_data):
     grid_resolution = gt[1]
     # the lowest triangle area we can have is 5m2 or the grid resolution squared
     minimum_triangle_area = 5 if (grid_resolution ** 2) < 5 else (grid_resolution ** 2)
-    maximum_triangle_area = 50
+    maximum_triangle_area = input_data.get('resolution') or 1000
     interior_regions = make_interior_regions(input_data)
     interior_holes, hole_tags = make_interior_holes_and_tags(input_data)
-    logger.debug(f"{interior_regions=}")
     bounding_polygon = input_data['boundary_polygon']
     boundary_tags = input_data['boundary_tags']
-    # zone = input_data.get('scenario_config').get('epsg').split(':')[1][3:]
     mesh = anuga.pmesh.mesh_interface.create_mesh_from_regions(
         bounding_polygon=bounding_polygon,
         boundary_tags=boundary_tags,

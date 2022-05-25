@@ -23,7 +23,6 @@ logger = logging.getLogger(__name__)
 
 
 def run_sim(package_dir, username=None, password=None):
-    print('this is a test print to stdout')
     run_args = package_dir, username, password
     input_data = setup_input_data(package_dir)
     output_stats = dict()
@@ -34,11 +33,11 @@ def run_sim(package_dir, username=None, password=None):
     console_handler.setLevel(logging.DEBUG)
     file_handler.setLevel(logging.DEBUG)
 
-    # Create formatters and add it to handlers
-    console_format = logging.Formatter('%(levelname)s:%(name)s:%(message)s')
-    file_format = logging.Formatter('%(levelname)s:%(name)s:%(message)s')
-    console_handler.setFormatter(console_format)
-    file_handler.setFormatter(file_format)
+    # # Create formatters and add it to handlers
+    # console_format = logging.Formatter('%(levelname)s:%(name)s:%(message)s')
+    # file_format = logging.Formatter('%(levelname)s:%(name)s:%(message)s')
+    # console_handler.setFormatter(console_format)
+    # file_handler.setFormatter(file_format)
 
     # Add handlers to the logger
     logger.addHandler(console_handler)
@@ -62,23 +61,23 @@ def run_sim(package_dir, username=None, password=None):
             update_web_interface(run_args, data={'status': 'building mesh'})
             mesh = create_mesh(input_data)
             logger.info(f"create_mesh")
-            # wait for mesh to be fully written before continuing...
-            current_size = 0
-            new_size = Path(input_data['mesh_filepath']).stat().st_size
-            logger.debug(f'{current_size=}')
-            logger.debug(f'{new_size=}')
-            while current_size != new_size:
-                current_size = Path(input_data['mesh_filepath']).stat().st_size
-                time.sleep(1)
-                new_size = Path(input_data['mesh_filepath']).stat().st_size
-                logger.debug(f'{current_size=}')
-                logger.debug(f'{new_size=}')
+            # # wait for mesh to be fully written before continuing...
+            # current_size = 0
+            # new_size = Path(input_data['mesh_filepath']).stat().st_size
+            # logger.debug(f'{current_size=}')
+            # logger.debug(f'{new_size=}')
+            # while current_size != new_size:
+            #     current_size = Path(input_data['mesh_filepath']).stat().st_size
+            #     time.sleep(1)
+            #     new_size = Path(input_data['mesh_filepath']).stat().st_size
+            #     logger.debug(f'{current_size=}')
+            #     logger.debug(f'{new_size=}')
             domain = anuga.shallow_water.shallow_water_domain.Domain(
                 mesh_filename=input_data['mesh_filepath'],
                 use_cache=False,
                 verbose=True,
             )
-            logger.info(f"TODO: check if mesh exists on each processor here")
+            # logger.info(f"TODO: check if mesh exists on each processor here")
             domain.set_name(input_data['run_label'])
             domain.set_datadir(input_data['output_directory'])
             domain.set_minimum_storable_height(0.005)
@@ -101,10 +100,10 @@ def run_sim(package_dir, username=None, password=None):
             update_web_interface(run_args, data={'status': 'created mesh'})
         else:
             domain = None
-        logger.info(f"domain on anuga.myid {anuga.myid}: {domain}")
+        # logger.info(f"domain on anuga.myid {anuga.myid}: {domain}")
         barrier()
         domain = distribute(domain, verbose=True)
-        logger.info(f"domain on anuga.myid {anuga.myid} after distribute(): {domain}")
+        # logger.info(f"domain on anuga.myid {anuga.myid} after distribute(): {domain}")
         default_boundary_maps = {
             'exterior': anuga.Dirichlet_boundary([0, 0, 0]),
             'interior': anuga.Reflective_boundary(domain),
@@ -137,9 +136,9 @@ def run_sim(package_dir, username=None, password=None):
 
         for t in domain.evolve(yieldstep=60, finaltime=duration):
             domain.write_time()
-            logger.info(f"domain.timestepping_statistics() on anuga.myid {anuga.myid}: {domain.timestepping_statistics()}")
+            # logger.info(f"domain.timestepping_statistics() on anuga.myid {anuga.myid}: {domain.timestepping_statistics()}")
             if anuga.myid == 0:
-                logger.info(f'domain.evolve {t} on processor {anuga.myid}')
+                # logger.info(f'domain.evolve {t} on processor {anuga.myid}')
                 logger.info(f"{domain.timestepping_statistics()}")
                 update_web_interface(run_args, data={"status": f"{round(t/duration * 100, 0)}%"})
         barrier()
@@ -154,20 +153,17 @@ def run_sim(package_dir, username=None, password=None):
             resolutions = list()
             if input_data.get('mesh_region'):
                 for feature in input_data.get('mesh_region').get('features') or list():
-                    logger.info(f'{feature=}')
+                    # logger.info(f'{feature=}')
                     resolutions.append(feature.get('properties').get('resolution'))
             logger.info(f'{resolutions=}')
             if len(resolutions) == 0:
-                resolutions = [1000]
+                resolutions = [input_data.get('resolution') or 1000]
             highest_grid_resolution = math.floor(math.sqrt(2 * min(resolutions)))
-            highest_grid_resolution = 1
-            logger.info(f'{highest_grid_resolution=}')
             logger.info(f'raster resolution: {highest_grid_resolution}m')
             epsg_integer = int(input_data['scenario_config'].get("epsg").split(":")[1]
                                if ":" in input_data['scenario_config'].get("epsg")
                                else input_data['scenario_config'].get("epsg"))
             interior_holes, _ = make_interior_holes_and_tags(input_data)
-            logger.info(f'{interior_holes=}')
             util.Make_Geotif(
                 swwFile=f"{input_data['output_directory']}/{input_data['run_label']}.sww",
                 output_quantities=['depth', 'velocity', 'depthIntegratedVelocity'],
@@ -219,10 +215,12 @@ def run_sim(package_dir, username=None, password=None):
             )
             logger.info('Successfully uploaded outputs')
     except Exception as e:
+        update_web_interface(run_args, data={'status': 'error'})
         logger.error(f"{traceback.format_exc()}")
     finally:
         finalize()
-    return f"finished: {input_data['run_label']}"
+    logger.info(f"finished run: {input_data['run_label']}")
+    return f"finished run: {input_data['run_label']}"
 
 
 if __name__ == '__main__':
@@ -234,14 +232,14 @@ if __name__ == '__main__':
     username = args.username
     password = args.password
     package_dir = args.package_dir
-    logger.info(f'run.py got {package_dir}')
+    # logger.info(f'run.py got {package_dir}')
     if not package_dir:
         package_dir = os.path.join(os.path.dirname(__file__), '..', '..')
-    logger.info(f'run.py using {package_dir}')
+    # logger.info(f'run.py using {package_dir}')
     try:
         run_sim(package_dir, username, password)
     except Exception as e:
         run_args = (package_dir, username, password)
-        logging.exception(e, exc_info=True)
+        logger.exception(e, exc_info=True)
         update_web_interface(run_args, data={'status': 'error'})
         raise e
