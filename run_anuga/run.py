@@ -136,8 +136,8 @@ def run_sim(package_dir, username=None, password=None):
             domain.write_time()
             # logger.info(f"domain.timestepping_statistics() on anuga.myid {anuga.myid}: {domain.timestepping_statistics()}")
             if anuga.myid == 0:
-                # logger.info(f'domain.evolve {t} on processor {anuga.myid}')
-                logger.info(f"{domain.timestepping_statistics()}")
+                logger.info(f'domain.evolve {t} on processor {anuga.myid}')
+                # logger.info(f"{domain.timestepping_statistics()}")
                 update_web_interface(run_args, data={"status": f"{round(t/duration * 100, 0)}%"})
         barrier()
         domain.sww_merge(verbose=True, delete_old=True)
