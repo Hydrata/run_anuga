@@ -1,6 +1,3 @@
-import time
-from pathlib import Path
-
 import anuga
 import argparse
 import logging
@@ -19,7 +16,8 @@ from anuga.operators.rate_operators import Polygonal_rate_operator
 from run_utils import is_dir_check, setup_input_data, update_web_interface, create_mesh, make_interior_holes_and_tags, \
     make_frictions
 
-logger = logging.getLogger(__name__)
+from celery.utils.log import get_task_logger
+logger = get_task_logger(__name__)
 
 
 def run_sim(package_dir, username=None, password=None):
@@ -157,7 +155,7 @@ def run_sim(package_dir, username=None, password=None):
                     resolutions.append(feature.get('properties').get('resolution'))
             logger.info(f'{resolutions=}')
             if len(resolutions) == 0:
-                resolutions = [input_data.get('max_triangle_area') or 1000]
+                resolutions = [input_data.get('maximum_triangle_area') or 1000]
             finest_grid_resolution = math.floor(math.sqrt(2 * min(resolutions)))
             logger.info(f'raster resolution: {finest_grid_resolution}m')
             epsg_integer = int(input_data['scenario_config'].get("epsg").split(":")[1]
