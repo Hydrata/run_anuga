@@ -13,7 +13,7 @@ from anuga import distribute, finalize, barrier
 from anuga.utilities import quantity_setting_functions as qs
 from anuga.operators.rate_operators import Polygonal_rate_operator
 from run_utils import is_dir_check, setup_input_data, update_web_interface, create_mesh, make_interior_holes_and_tags, \
-    make_frictions, post_process_sww
+    make_frictions, post_process_sww, zip_result_package
 
 from celery.utils.log import get_task_logger
 logger = get_task_logger(__name__)
@@ -133,6 +133,9 @@ def run_sim(package_dir, username=None, password=None):
 
         if anuga.myid == 0:
             post_process_sww(package_dir)
+            if run_args:
+                zip_result_package(package_dir, run_args=run_args, remove=True)
+                update_web_interface(run_args, data={"status": f"archive complete"})
     except Exception as e:
         update_web_interface(run_args, data={'status': 'error'})
         logger.error(f"{traceback.format_exc()}")
