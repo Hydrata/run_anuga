@@ -11,10 +11,9 @@ from osgeo import gdal
 
 from anuga import distribute, finalize, barrier
 from anuga.utilities import quantity_setting_functions as qs
-from anuga.utilities import plot_utils as util
 from anuga.operators.rate_operators import Polygonal_rate_operator
 from run_utils import is_dir_check, setup_input_data, update_web_interface, create_mesh, make_interior_holes_and_tags, \
-    make_frictions
+    make_frictions, post_process_sww
 
 from celery.utils.log import get_task_logger
 logger = get_task_logger(__name__)
@@ -59,17 +58,6 @@ def run_sim(package_dir, username=None, password=None):
             update_web_interface(run_args, data={'status': 'building mesh'})
             mesh = create_mesh(input_data)
             logger.info(f"create_mesh")
-            # # wait for mesh to be fully written before continuing...
-            # current_size = 0
-            # new_size = Path(input_data['mesh_filepath']).stat().st_size
-            # logger.debug(f'{current_size=}')
-            # logger.debug(f'{new_size=}')
-            # while current_size != new_size:
-            #     current_size = Path(input_data['mesh_filepath']).stat().st_size
-            #     time.sleep(1)
-            #     new_size = Path(input_data['mesh_filepath']).stat().st_size
-            #     logger.debug(f'{current_size=}')
-            #     logger.debug(f'{new_size=}')
             domain = anuga.shallow_water.shallow_water_domain.Domain(
                 mesh_filename=input_data['mesh_filepath'],
                 use_cache=False,
@@ -144,74 +132,7 @@ def run_sim(package_dir, username=None, password=None):
         barrier()
 
         if anuga.myid == 0:
-            logger.info(f'Generating output rasters on {anuga.myid}...')
-            raster = gdal.Open(input_data['elevation_filename'])
-            gt = raster.GetGeoTransform()
-            # resolution = 1 if math.floor(gt[1] / 4) == 0 else math.floor(gt[1] / 4)
-            resolutions = list()
-            if input_data.get('mesh_region'):
-                for feature in input_data.get('mesh_region').get('features') or list():
-                    # logger.info(f'{feature=}')
-                    resolutions.append(feature.get('properties').get('resolution'))
-            logger.info(f'{resolutions=}')
-            if len(resolutions) == 0:
-                resolutions = [input_data.get('maximum_triangle_area') or 1000]
-            finest_grid_resolution = math.floor(math.sqrt(2 * min(resolutions)))
-            logger.info(f'raster resolution: {finest_grid_resolution}m')
-            epsg_integer = int(input_data['scenario_config'].get("epsg").split(":")[1]
-                               if ":" in input_data['scenario_config'].get("epsg")
-                               else input_data['scenario_config'].get("epsg"))
-            interior_holes, _ = make_interior_holes_and_tags(input_data)
-            util.Make_Geotif(
-                swwFile=f"{input_data['output_directory']}/{input_data['run_label']}.sww",
-                output_quantities=['depth', 'velocity', 'depthIntegratedVelocity'],
-                myTimeStep='max',
-                CellSize=finest_grid_resolution,
-                lower_left=None,
-                upper_right=None,
-                EPSG_CODE=epsg_integer,
-                proj4string=None,
-                velocity_extrapolation=True,
-                min_allowed_height=1.0e-05,
-                output_dir=input_data['output_directory'],
-                bounding_polygon=input_data['boundary_polygon'],
-                internal_holes=interior_holes,
-                verbose=False,
-                k_nearest_neighbours=3,
-                creation_options=[]
-            )
-            logger.info('Successfully generated depth, velocity, momentum outputs')
-            update_web_interface(
-                run_args,
-                data={"status": "uploading depth_max"},
-                files={
-                    "tif_depth_max": open(
-                        f"{input_data['output_directory']}/{input_data['run_label']}_depth_max.tif",
-                        'rb'
-                    )
-                }
-            )
-            update_web_interface(
-                run_args,
-                data={"status": "uploading depthIntegratedVelocity_max"},
-                files={
-                    "tif_depth_integrated_velocity_max": open(
-                        f"{input_data['output_directory']}/{input_data['run_label']}_depthIntegratedVelocity_max.tif",
-                        'rb'
-                    )
-                }
-            )
-            update_web_interface(
-                run_args,
-                data={"status": "uploading velocity_max"},
-                files={
-                    "tif_velocity_max": open(
-                        f"{input_data['output_directory']}/{input_data['run_label']}_velocity_max.tif",
-                        'rb'
-                    )
-                }
-            )
-            logger.info('Successfully uploaded outputs')
+            post_process_sww(package_dir)
     except Exception as e:
         update_web_interface(run_args, data={'status': 'error'})
         logger.error(f"{traceback.format_exc()}")

@@ -8,6 +8,7 @@ import requests
 
 from pathlib import Path
 from osgeo import ogr, gdal
+from anuga.utilities import plot_utils as util
 
 logger = logging.getLogger(__name__)
 
@@ -284,3 +285,76 @@ def create_boundary_polygon_from_boundaries(boundaries_geojson, run_label, epsg_
     #     output_layer.CreateFeature(output_feature)
 
     return boundary_polygon, boundary_tags
+
+
+def post_process_sww(package_dir, run_args=None, output_raster_resolution=None):
+    input_data = setup_input_data(package_dir)
+    logger.info(f'Generating output rasters on {anuga.myid}...')
+    raster = gdal.Open(input_data['elevation_filename'])
+    gt = raster.GetGeoTransform()
+    # resolution = 1 if math.floor(gt[1] / 4) == 0 else math.floor(gt[1] / 4)
+    resolutions = list()
+    if input_data.get('mesh_region'):
+        for feature in input_data.get('mesh_region').get('features') or list():
+            # logger.info(f'{feature=}')
+            resolutions.append(feature.get('properties').get('resolution'))
+    logger.info(f'{resolutions=}')
+    if len(resolutions) == 0:
+        resolutions = [input_data.get('maximum_triangle_area') or 1000]
+    finest_grid_resolution = math.floor(math.sqrt(2 * min(resolutions)))
+    logger.info(f'raster resolution: {finest_grid_resolution}m')
+    epsg_integer = int(input_data['scenario_config'].get("epsg").split(":")[1]
+                       if ":" in input_data['scenario_config'].get("epsg")
+                       else input_data['scenario_config'].get("epsg"))
+    interior_holes, _ = make_interior_holes_and_tags(input_data)
+    util.Make_Geotif(
+        swwFile=f"{input_data['output_directory']}/{input_data['run_label']}.sww",
+        output_quantities=['depth', 'velocity', 'depthIntegratedVelocity'],
+        myTimeStep='max',
+        CellSize=finest_grid_resolution,
+        lower_left=None,
+        upper_right=None,
+        EPSG_CODE=epsg_integer,
+        proj4string=None,
+        velocity_extrapolation=True,
+        min_allowed_height=1.0e-05,
+        output_dir=input_data['output_directory'],
+        bounding_polygon=input_data['boundary_polygon'],
+        internal_holes=interior_holes,
+        verbose=False,
+        k_nearest_neighbours=3,
+        creation_options=[]
+    )
+    logger.info('Successfully generated depth, velocity, momentum outputs')
+    if run_args:
+        update_web_interface(
+            run_args,
+            data={"status": "uploading depth_max"},
+            files={
+                "tif_depth_max": open(
+                    f"{input_data['output_directory']}/{input_data['run_label']}_depth_max.tif",
+                    'rb'
+                )
+            }
+        )
+        update_web_interface(
+            run_args,
+            data={"status": "uploading depthIntegratedVelocity_max"},
+            files={
+                "tif_depth_integrated_velocity_max": open(
+                    f"{input_data['output_directory']}/{input_data['run_label']}_depthIntegratedVelocity_max.tif",
+                    'rb'
+                )
+            }
+        )
+        update_web_interface(
+            run_args,
+            data={"status": "uploading velocity_max"},
+            files={
+                "tif_velocity_max": open(
+                    f"{input_data['output_directory']}/{input_data['run_label']}_velocity_max.tif",
+                    'rb'
+                )
+            }
+        )
+        logger.info('Successfully uploaded outputs')
