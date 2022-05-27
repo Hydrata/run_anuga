@@ -120,7 +120,9 @@ def run_sim(package_dir, username=None, password=None):
         rain_df['rate_m_s'] = constant_rainfall / 1000
         Polygonal_rate_operator(domain, rate=rain, factor=1.0e-3, polygon=input_data['boundary_polygon'], default_rate=0.00)
 
-        for t in domain.evolve(yieldstep=60, finaltime=duration):
+        # Don't yield more than 1000 timesteps into the SWW file, and smallest resolution is 60 seconds:
+        yieldstep = 60 if math.floor(duration/1000) < 60 else math.floor(duration/1000)
+        for t in domain.evolve(yieldstep=yieldstep, finaltime=duration):
             domain.write_time()
             # logger.info(f"domain.timestepping_statistics() on anuga.myid {anuga.myid}: {domain.timestepping_statistics()}")
             if anuga.myid == 0:
