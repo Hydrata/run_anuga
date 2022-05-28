@@ -136,7 +136,7 @@ def run_sim(package_dir, username=None, password=None):
         if anuga.myid == 0:
             post_process_sww(package_dir)
             if run_args:
-                zip_result_package(package_dir, username, password, remove=True)
+                zip_result_package(package_dir, username, password, remove=False)
                 update_web_interface(run_args, data={"status": f"archive complete"})
     except Exception as e:
         update_web_interface(run_args, data={'status': 'error'})
