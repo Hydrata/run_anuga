@@ -134,7 +134,7 @@ def run_sim(package_dir, username=None, password=None):
         barrier()
 
         if anuga.myid == 0:
-            post_process_sww(package_dir)
+            post_process_sww(package_dir, run_args=run_args)
             if run_args:
                 zip_result_package(package_dir, username, password, remove=False)
     except Exception as e:
