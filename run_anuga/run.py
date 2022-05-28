@@ -137,7 +137,6 @@ def run_sim(package_dir, username=None, password=None):
             post_process_sww(package_dir)
             if run_args:
                 zip_result_package(package_dir, username, password, remove=False)
-                update_web_interface(run_args, data={"status": f"archive complete"})
     except Exception as e:
         update_web_interface(run_args, data={'status': 'error'})
         logger.error(f"{traceback.format_exc()}")
