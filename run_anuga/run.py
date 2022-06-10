@@ -56,19 +56,18 @@ def run_sim(package_dir, username=None, password=None):
         if anuga.myid == 0:
             logger.info(f"update_web_interface - building mesh")
             update_web_interface(run_args, data={'status': 'building mesh'})
-            mesh = create_mesh(input_data)
+            anuga_mesh_filepath, elevation_data = create_mesh(input_data)
             logger.info(f"create_mesh")
             domain = anuga.shallow_water.shallow_water_domain.Domain(
-                mesh_filename=input_data['mesh_filepath'],
+                mesh_filename=anuga_mesh_filepath,
                 use_cache=False,
                 verbose=True,
             )
-            # logger.info(f"TODO: check if mesh exists on each processor here")
             domain.set_name(input_data['run_label'])
             domain.set_datadir(input_data['output_directory'])
             domain.set_minimum_storable_height(0.005)
 
-            poly_fun_pairs = [['Extent', input_data['elevation_filename']]]
+            poly_fun_pairs = [['Extent', elevation_data]]
             elevation_function = qs.composite_quantity_setting_function(
                 poly_fun_pairs,
                 domain,

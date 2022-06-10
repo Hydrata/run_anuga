@@ -5,8 +5,10 @@ import argparse
 import json
 import logging
 import math
+import subprocess
 import os
 import requests
+import numpy as np
 
 from pathlib import Path
 from osgeo import ogr, gdal
@@ -96,7 +98,8 @@ def create_mesh(input_data):
     gt = raster.GetGeoTransform()
     grid_resolution = gt[1]
     # the lowest triangle area we can have is 5m2 or the grid resolution squared
-    # minimum_triangle_area = 5 if (grid_resolution ** 2) < 5 else (grid_resolution ** 2)
+    minimum_triangle_area = 5 if (grid_resolution ** 2) < 5 else (grid_resolution ** 2)
+    mesh_filepath = input_data['mesh_filepath']
     maximum_triangle_area = input_data.get('maximum_triangle_area') or 1000
     interior_regions = make_interior_regions(input_data)
     interior_holes, hole_tags = make_interior_holes_and_tags(input_data)
@@ -109,13 +112,28 @@ def create_mesh(input_data):
         interior_regions=interior_regions,
         interior_holes=interior_holes,
         hole_tags=hole_tags,
-        filename=input_data['mesh_filepath'],
+        filename=mesh_filepath,
         use_cache=False,
         verbose=True,
         fail_if_polygons_outside=False
     )
     logger.debug(f"{mesh.tri_mesh.triangles.size=}")
-    return mesh
+    mesher_exe = os.getenv("MESHER_EXE")
+    mesher_config_filepath = f"{input_data['output_directory']}/mesher.mesh"
+    max_rmse_tolerance = input_data['scenario_config'].get('max_rmse_tolerance', 1)
+    make_mesher_config_file(
+        mesher_config_filepath,
+        input_data['elevation_filename'],
+        max_rmse_tolerance,
+        minimum_triangle_area
+    )
+    mesher_out = subprocess.run(['python', 'mesher.py', mesher_config_filepath])
+    elevation_data = np.array([
+        [1, 1, 1],
+        [2, 2, 2]
+    ])
+
+    return mesh_filepath, elevation_data
 
 
 def make_interior_regions(input_data):
@@ -382,3 +400,28 @@ def zip_result_package(package_dir, username=None, password=None, remove=False):
         )
     if remove:
         shutil.rmtree(package_dir)
+
+
+def make_mesher_config_file(
+        mesher_config_filepath,
+        dem_filepath,
+        max_rmse_tolerance,
+        min_triangle_area
+):
+    text_blob = f"""
+mesher_path = '/home/ubuntu/anuga/bin/mesher'
+dem_filename = {dem_filepath}
+errormetric = 'rmse'
+max_tolerance = {max_rmse_tolerance}  # 1m max RMSE between triangle and underlying elevation
+max_area = 9999999 ** 2  # Effectively unlimited upper area -- allow tolerance check to refine it further
+min_area = {min_triangle_area}  # triangle area below which we will no longer refine, regardless of max_tolerance
+constraints = {
+    'river_network': {
+        'file': '../dems/AHGF_mapped_streams.shp',
+        'simplify': 1  # will be in original projection units
+    }
+}
+"""
+    with open(mesher_config_filepath, "w+") as mesher_config:
+        mesher_config.write(text_blob)
+    return True
