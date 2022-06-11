@@ -1,3 +1,7 @@
+import json
+
+import numpy
+
 import anuga
 import argparse
 import logging
@@ -56,24 +60,33 @@ def run_sim(package_dir, username=None, password=None):
         if anuga.myid == 0:
             logger.info(f"update_web_interface - building mesh")
             update_web_interface(run_args, data={'status': 'building mesh'})
-            anuga_mesh_filepath, elevation_data = create_mesh(input_data)
+            anuga_mesh, mesher_mesh_filepath = create_mesh(input_data)
             logger.info(f"create_mesh")
             domain = anuga.shallow_water.shallow_water_domain.Domain(
-                mesh_filename=anuga_mesh_filepath,
+                mesh_filename=input_data['mesh_filepath'],
                 use_cache=False,
                 verbose=True,
+            )
+            with open(mesher_mesh_filepath, 'r') as mesh_file:
+                mesh_dict = json.load(mesh_file)
+
+            mesh = mesh_dict['mesh']
+            vertex = mesh_dict['vertex']
+            vertices = numpy.array(vertex)
+            elem = mesh['elem']
+            points = vertices[:, :2]
+            elev = vertices[:, 2]
+            domain = anuga.Domain(
+                points,
+                elem,
+                mesh_filename=input_data['mesh_filepath'],
+                use_cache=False,
+                verbose=True
             )
             domain.set_name(input_data['run_label'])
             domain.set_datadir(input_data['output_directory'])
             domain.set_minimum_storable_height(0.005)
-
-            poly_fun_pairs = [['Extent', elevation_data]]
-            elevation_function = qs.composite_quantity_setting_function(
-                poly_fun_pairs,
-                domain,
-                nan_treatment='exception',
-            )
-            domain.set_quantity('elevation', elevation_function, verbose=True, alpha=0.99, location='centroids')
+            domain.set_quantity('elevation', elev, locations=vertices)
             frictions = make_frictions(input_data)
             friction_function = qs.composite_quantity_setting_function(
                 frictions,
