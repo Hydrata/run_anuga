@@ -62,6 +62,8 @@ def run_sim(package_dir, username=None, password=None):
             update_web_interface(run_args, data={'status': 'building mesh'})
             anuga_mesh, mesher_mesh_filepath = create_mesh(input_data)
             logger.info(f"create_mesh")
+            logger.info(f"{anuga_mesh}")
+            logger.info(f"{mesher_mesh_filepath}")
             domain = anuga.shallow_water.shallow_water_domain.Domain(
                 mesh_filename=input_data['mesh_filepath'],
                 use_cache=False,
@@ -69,7 +71,6 @@ def run_sim(package_dir, username=None, password=None):
             )
             with open(mesher_mesh_filepath, 'r') as mesh_file:
                 mesh_dict = json.load(mesh_file)
-
             mesh = mesh_dict['mesh']
             vertex = mesh_dict['vertex']
             vertices = numpy.array(vertex)

@@ -118,16 +118,19 @@ def create_mesh(input_data):
     logger.debug(f"{anuga_mesh.tri_mesh.triangles.size=}")
     mesher_config_filepath = f"{input_data['output_directory']}/mesher_config.py"
     max_rmse_tolerance = input_data['scenario_config'].get('max_rmse_tolerance', 1)
+    mesher_bin = '/opt/venv/hydrata/bin/mesher'
     make_mesher_config_file(
         mesher_config_filepath,
-        input_data['output_directory'],
+        f"{input_data['output_directory']}/",
         input_data['elevation_filename'],
+        mesher_bin,
         max_rmse_tolerance,
         minimum_triangle_area,
         maximum_triangle_area
     )
     logger.debug(f"{mesher_config_filepath=}")
-    mesher_out = subprocess.run(['python', 'mesher.py', mesher_config_filepath])
+    logger.debug(f"python {mesher_bin}.py {mesher_config_filepath}")
+    mesher_out = subprocess.run(['python', f'{mesher_bin}.py', mesher_config_filepath])
     mesher_mesh_filepath = os.path.join(input_data['output_directory'], f"{input_data['elevation_filename'].split('/')[-1][:-4]}.mesh")
     logger.debug(f"{mesher_out=}")
     logger.debug(f"{mesher_mesh_filepath=}")
@@ -406,17 +409,23 @@ def make_mesher_config_file(
     mesher_config_filepath,
     user_output_dir,
     dem_filepath,
+    mesher_bin,
     max_rmse_tolerance,
     min_triangle_area,
     maximum_triangle_area
 ):
-    text_blob = f"""mesher_path = '/opt/venv/hydrata/bin/mesher'
-dem_filename = {dem_filepath}
+    text_blob = f"""mesher_path = '{mesher_bin}'
+dem_filename = '{dem_filepath}'
 errormetric = 'rmse'
 max_tolerance = {max_rmse_tolerance}  # 1m max RMSE between triangle and underlying elevation
 max_area = {maximum_triangle_area}  # Effectively unlimited upper area -- allow tolerance check to refine it further
 min_area = {min_triangle_area}  # triangle area below which we will no longer refine, regardless of max_tolerance
-user_output_dir = {user_output_dir}
+user_output_dir = '{user_output_dir}'
+nworkers = 2
+nworkers_gdal = 2
+write_vtu = False
+simplify = True
+simplify_tol = 10
 """
     with open(mesher_config_filepath, "w+") as mesher_config:
         mesher_config.write(text_blob)
