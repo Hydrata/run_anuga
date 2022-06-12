@@ -436,7 +436,6 @@ nworkers_gdal = 2
 write_vtu = False
 simplify = True
 simplify_tol = 10
-clip_to_shp = None
 """
     with open(mesher_config_filepath, "w+") as mesher_config:
         mesher_config.write(text_blob)
