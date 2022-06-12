@@ -14,7 +14,8 @@ from pathlib import Path
 from osgeo import ogr, gdal
 from anuga.utilities import plot_utils as util
 
-logger = logging.getLogger(__name__)
+from celery.utils.log import get_task_logger
+logger = get_task_logger('run')
 
 
 def is_dir_check(path):
@@ -91,7 +92,7 @@ def update_web_interface(run_args, data, files=None):
 
 
 def create_mesh(input_data):
-    logger = setup_logger(input_data)
+    # logger = setup_logger(input_data)
     logger.info(f"create_mesh running")
     raster = gdal.Open(input_data['elevation_filename'])
     gt = raster.GetGeoTransform()
