@@ -415,12 +415,12 @@ def make_mesher_config_file(
     maximum_triangle_area
 ):
     text_blob = f"""mesher_path = '{mesher_bin}'
-dem_filename = '{dem_filepath}'
+dem_filename = '{dem_filepath.split("/")[-1]}'
 errormetric = 'rmse'
 max_tolerance = {max_rmse_tolerance}  # 1m max RMSE between triangle and underlying elevation
 max_area = {maximum_triangle_area}  # Effectively unlimited upper area -- allow tolerance check to refine it further
 min_area = {min_triangle_area}  # triangle area below which we will no longer refine, regardless of max_tolerance
-user_output_dir = '{user_output_dir}'
+user_output_dir = './'
 nworkers = 2
 nworkers_gdal = 2
 write_vtu = False
@@ -431,3 +431,14 @@ clip_to_shp = None
     with open(mesher_config_filepath, "w+") as mesher_config:
         mesher_config.write(text_blob)
     return True
+
+a="""
+--poly-file /opt/deploy/vagrant/include/package_testfour_testone_567/outputs_252_172_567//opt/deploy/vagrant/include/package_testfour_testone_567/outputs_252_172_567/ele_290_utm_ATestFourDem/PLGSele_290_utm_ATestFourDem.poly
+--tolerance 1
+--raster /opt/deploy/vagrant/include/package_testfour_testone_567/outputs_252_172_567//opt/deploy/vagrant/include/package_testfour_testone_567/outputs_252_172_567/ele_290_utm_ATestFourDem/ele_290_utm_ATestFourDem_projected.tif
+--area 1000000
+--min-area 5
+--error-metric rmse
+--lloyd 0
+--interior-plgs-file /opt/deploy/vagrant/include/package_testfour_testone_567/outputs_252_172_567//opt/deploy/vagrant/include/package_testfour_testone_567/outputs_252_172_567/ele_290_utm_ATestFourDem/interior_PLGS.geojson
+"""
