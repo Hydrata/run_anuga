@@ -91,6 +91,7 @@ def update_web_interface(run_args, data, files=None):
 
 
 def create_mesh(input_data):
+    logger.info(f"create_mesh running")
     raster = gdal.Open(input_data['elevation_filename'])
     gt = raster.GetGeoTransform()
     grid_resolution = gt[1]
@@ -103,6 +104,7 @@ def create_mesh(input_data):
     interior_holes, hole_tags = make_interior_holes_and_tags(input_data)
     bounding_polygon = input_data['boundary_polygon']
     boundary_tags = input_data['boundary_tags']
+    logger.info(f"creating anuga_mesh")
     anuga_mesh = anuga.pmesh.mesh_interface.create_mesh_from_regions(
         bounding_polygon=bounding_polygon,
         boundary_tags=boundary_tags,
@@ -115,8 +117,9 @@ def create_mesh(input_data):
         verbose=True,
         fail_if_polygons_outside=False
     )
-    logger.debug(f"{anuga_mesh.tri_mesh.triangles.size=}")
+    logger.info(f"{anuga_mesh.tri_mesh.triangles.size=}")
     mesher_config_filepath = f"{input_data['output_directory']}/mesher_config.py"
+    logger.info(f"{mesher_config_filepath=}")
     max_rmse_tolerance = input_data['scenario_config'].get('max_rmse_tolerance', 1)
     mesher_bin = '/opt/venv/hydrata/bin/mesher'
     make_mesher_config_file(
@@ -128,13 +131,17 @@ def create_mesh(input_data):
         minimum_triangle_area,
         maximum_triangle_area
     )
-    logger.debug(f"{mesher_config_filepath=}")
-    logger.debug(f"python {mesher_bin}.py {mesher_config_filepath}")
+    logger.info(f"{mesher_config_filepath=}")
+    logger.info("*" * 70)
+    with open(mesher_config_filepath, "r") as config_file:
+        logger.info(config_file.read())
+    logger.info("*" * 70)
+    logger.info(f"python {mesher_bin}.py {mesher_config_filepath}")
     mesher_out = subprocess.run(['python', f'{mesher_bin}.py', mesher_config_filepath])
     mesher_mesh_filepath = os.path.join(input_data['output_directory'], f"{input_data['elevation_filename'].split('/')[-1][:-4]}.mesh")
-    logger.debug(f"{mesher_out=}")
-    logger.debug(f"{mesher_mesh_filepath=}")
-    logger.debug(f"{os.path.isfile(mesher_mesh_filepath)}")
+    logger.info(f"{mesher_out=}")
+    logger.info(f"{mesher_mesh_filepath=}")
+    logger.info(f"{os.path.isfile(mesher_mesh_filepath)}")
 
     return anuga_mesh, mesher_mesh_filepath
 
