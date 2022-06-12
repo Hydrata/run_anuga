@@ -139,9 +139,10 @@ def create_mesh(input_data):
         logger.info(config_file.read())
     logger.info("*" * 70)
     logger.info(f"python {mesher_bin}.py {mesher_config_filepath}")
-    mesher_out = subprocess.run(['python', f'{mesher_bin}.py', mesher_config_filepath])
-    mesher_mesh_filepath = os.path.join(input_data['output_directory'], f"{input_data['elevation_filename'].split('/')[-1][:-4]}.mesh")
+    mesher_out = subprocess.run(['python', f'{mesher_bin}.py', mesher_config_filepath], capture_output=True)
+    logger.info("-" * 70)
     logger.info(f"{mesher_out=}")
+    mesher_mesh_filepath = os.path.join(input_data['output_directory'], f"{input_data['elevation_filename'].split('/')[-1][:-4]}.mesh")
     logger.info(f"{mesher_mesh_filepath=}")
     logger.info(f"{os.path.isfile(mesher_mesh_filepath)}")
 
