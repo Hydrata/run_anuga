@@ -91,6 +91,7 @@ def update_web_interface(run_args, data, files=None):
 
 
 def create_mesh(input_data):
+    logger = setup_logger(input_data)
     logger.info(f"create_mesh running")
     raster = gdal.Open(input_data['elevation_filename'])
     gt = raster.GetGeoTransform()
@@ -449,3 +450,36 @@ a="""
 --lloyd 0
 --interior-plgs-file /opt/deploy/vagrant/include/package_testfour_testone_567/outputs_252_172_567//opt/deploy/vagrant/include/package_testfour_testone_567/outputs_252_172_567/ele_290_utm_ATestFourDem/interior_PLGS.geojson
 """
+
+
+def setup_logger(input_data, username=None, password=None):
+    if not username and password:
+        username = os.environ.get('COMPUTE_USERNAME')
+        password = os.environ.get('COMPUTE_PASSWORD')
+    # Create handlers
+    console_handler = logging.StreamHandler()
+    file_handler = logging.FileHandler(os.path.join(input_data['output_directory'], 'run_anuga.log'))
+    console_handler.setLevel(logging.DEBUG)
+    file_handler.setLevel(logging.DEBUG)
+
+    # # Create formatters and add it to handlers
+    # console_format = logging.Formatter('%(levelname)s:%(name)s:%(message)s')
+    # file_format = logging.Formatter('%(levelname)s:%(name)s:%(message)s')
+    # console_handler.setFormatter(console_format)
+    # file_handler.setFormatter(file_format)
+
+    # Add handlers to the logger
+    logger.addHandler(console_handler)
+    logger.addHandler(file_handler)
+
+    if username and password:
+        web_handler = logging.handlers.HTTPHandler(
+            host='hydrata.com',
+            url=f"/anuga/api/{input_data['scenario_config'].get('project')}/{input_data['scenario_config'].get('id')}/run/{input_data['scenario_config'].get('run_id')}/log/",
+            method='POST',
+            secure=True,
+            credentials=(username, password,)
+        )
+        web_handler.setLevel(logging.DEBUG)
+        logger.addHandler(web_handler)
+    return logger

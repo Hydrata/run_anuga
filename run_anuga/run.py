@@ -17,43 +17,17 @@ from anuga import distribute, finalize, barrier
 from anuga.utilities import quantity_setting_functions as qs
 from anuga.operators.rate_operators import Polygonal_rate_operator
 from run_utils import is_dir_check, setup_input_data, update_web_interface, create_mesh, make_interior_holes_and_tags, \
-    make_frictions, post_process_sww, zip_result_package
+    make_frictions, post_process_sww, zip_result_package, setup_logger
 
-from celery.utils.log import get_task_logger
-logger = get_task_logger(__name__)
+# from celery.utils.log import get_task_logger
+# logger = get_task_logger(__name__)
 
 
 def run_sim(package_dir, username=None, password=None):
     run_args = package_dir, username, password
     input_data = setup_input_data(package_dir)
     output_stats = dict()
-
-    # Create handlers
-    console_handler = logging.StreamHandler()
-    file_handler = logging.FileHandler(os.path.join(input_data['output_directory'], 'run_anuga.log'))
-    console_handler.setLevel(logging.DEBUG)
-    file_handler.setLevel(logging.DEBUG)
-
-    # # Create formatters and add it to handlers
-    # console_format = logging.Formatter('%(levelname)s:%(name)s:%(message)s')
-    # file_format = logging.Formatter('%(levelname)s:%(name)s:%(message)s')
-    # console_handler.setFormatter(console_format)
-    # file_handler.setFormatter(file_format)
-
-    # Add handlers to the logger
-    logger.addHandler(console_handler)
-    logger.addHandler(file_handler)
-
-    if username and password:
-        web_handler = logging.handlers.HTTPHandler(
-            host='hydrata.com',
-            url=f"/anuga/api/{input_data['scenario_config'].get('project')}/{input_data['scenario_config'].get('id')}/run/{input_data['scenario_config'].get('run_id')}/log/",
-            method='POST',
-            secure=True,
-            credentials=(username, password,)
-        )
-        web_handler.setLevel(logging.DEBUG)
-        logger.addHandler(web_handler)
+    logger = setup_logger(input_data, username, password)
 
     try:
         logger.info(f"{anuga.myid=}")
