@@ -35,8 +35,8 @@ def run_sim(package_dir, username=None, password=None):
             logger.info(f"update_web_interface - building mesh")
             update_web_interface(run_args, data={'status': 'building mesh'})
             anuga_mesh, mesher_mesh_filepath = create_mesh(input_data)
-            logger.info(f"create_mesh")
-            logger.info(f"{anuga_mesh}")
+            logger.info(f"create_mesh finished")
+            # logger.info(f"{anuga_mesh}")
             logger.info(f"{mesher_mesh_filepath}")
             domain = None
             if mesher_mesh_filepath:

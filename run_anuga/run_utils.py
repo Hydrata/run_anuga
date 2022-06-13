@@ -142,8 +142,13 @@ def create_mesh(input_data):
     logger.info(f"python {mesher_bin}.py {mesher_config_filepath}")
     try:
         from mesher.mesher import main as mesher_main
+        import io
+        from contextlib import redirect_stdout
         mesher_mesh_filepath = os.path.join(input_data['output_directory'], f"{input_data['elevation_filename'].split('/')[-1][:-4]}.mesh")
-        mesher_out = mesher_main(mesher_config_filepath)
+        temp_stdout_obj = io.StringIO()
+        with redirect_stdout(temp_stdout_obj):
+            mesher_main(mesher_config_filepath)
+        mesher_out = temp_stdout_obj.getvalue()
         # mesher_out = subprocess.run(['python', f'{mesher_bin}.py', mesher_config_filepath], capture_output=True)
         logger.info("-" * 70)
         logger.info(f"{mesher_out=}")
