@@ -1,4 +1,5 @@
 import shutil
+import traceback
 
 import anuga
 import argparse
@@ -145,11 +146,15 @@ def create_mesh(input_data):
         import io
         from contextlib import redirect_stdout
         mesher_mesh_filepath = os.path.join(input_data['output_directory'], f"{input_data['elevation_filename'].split('/')[-1][:-4]}.mesh")
-        temp_stdout_obj = io.StringIO()
-        with redirect_stdout(temp_stdout_obj):
+        # temp_stdout_obj = io.StringIO()
+        # with redirect_stdout(temp_stdout_obj):
+        #     mesher_main(mesher_config_filepath)
+        # mesher_out = temp_stdout_obj.getvalue()
+        try:
             mesher_main(mesher_config_filepath)
-        mesher_out = temp_stdout_obj.getvalue()
-        # mesher_out = subprocess.run(['python', f'{mesher_bin}.py', mesher_config_filepath], capture_output=True)
+        except Exception as e:
+            logger.info(traceback.format_exc())
+        mesher_out = subprocess.run(['python', f'{mesher_bin}.py', mesher_config_filepath], capture_output=True)
         logger.info("-" * 70)
         logger.info(f"{mesher_out=}")
     except ImportError:
