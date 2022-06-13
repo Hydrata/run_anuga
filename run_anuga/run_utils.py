@@ -148,6 +148,9 @@ def create_mesh(input_data):
             from mesher.mesher import main as mesher_main
             import io
             from contextlib import redirect_stdout
+            logger.info(f"{input_data['output_directory']=}")
+            logger.info(f"{input_data['elevation_filename']=}")
+            logger.info(f"{input_data['elevation_filename'].split('/')[-1][:-4]=}")
             mesher_mesh_filepath = os.path.join(input_data['output_directory'], f"{input_data['elevation_filename'].split('/')[-1][:-4]}.mesh")
             logger.info(f"{mesher_mesh_filepath=}")
             # temp_stdout_obj = io.StringIO()
@@ -166,7 +169,6 @@ def create_mesh(input_data):
         except ImportError:
             mesher_mesh_filepath = None
     logger.info(f"{mesher_mesh_filepath=}")
-    logger.info(f"{os.path.isfile(mesher_mesh_filepath)}")
     return anuga_mesh, mesher_mesh_filepath
 
 
