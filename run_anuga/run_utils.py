@@ -462,17 +462,6 @@ simplify_tol = 10
         mesher_config.write(text_blob)
     return True
 
-a="""
---poly-file /opt/deploy/vagrant/include/package_testfour_testone_567/outputs_252_172_567//opt/deploy/vagrant/include/package_testfour_testone_567/outputs_252_172_567/ele_290_utm_ATestFourDem/PLGSele_290_utm_ATestFourDem.poly
---tolerance 1
---raster /opt/deploy/vagrant/include/package_testfour_testone_567/outputs_252_172_567//opt/deploy/vagrant/include/package_testfour_testone_567/outputs_252_172_567/ele_290_utm_ATestFourDem/ele_290_utm_ATestFourDem_projected.tif
---area 1000000
---min-area 5
---error-metric rmse
---lloyd 0
---interior-plgs-file /opt/deploy/vagrant/include/package_testfour_testone_567/outputs_252_172_567//opt/deploy/vagrant/include/package_testfour_testone_567/outputs_252_172_567/ele_290_utm_ATestFourDem/interior_PLGS.geojson
-"""
-
 
 def setup_logger(input_data, username=None, password=None):
     if not username and password:
