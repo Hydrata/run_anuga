@@ -122,46 +122,49 @@ def create_mesh(input_data):
     )
     anuga_mesh_size = anuga_mesh.tri_mesh.triangles.size
     logger.info(f"{anuga_mesh_size=}")
-    mesher_config_filepath = f"{input_data['output_directory']}/mesher_config.py"
-    logger.info(f"{mesher_config_filepath=}")
-    max_rmse_tolerance = input_data['scenario_config'].get('max_rmse_tolerance', 1)
-    mesher_bin = '/opt/venv/hydrata/bin/mesher'
-    make_mesher_config_file(
-        mesher_config_filepath,
-        f"{input_data['output_directory']}/",
-        input_data['elevation_filename'],
-        mesher_bin,
-        max_rmse_tolerance,
-        minimum_triangle_area,
-        maximum_triangle_area
-    )
-    logger.info(f"{mesher_config_filepath=}")
-    logger.info("*" * 70)
-    with open(mesher_config_filepath, "r") as config_file:
-        logger.info(config_file.read())
-    logger.info("*" * 70)
-    logger.info(f"python {mesher_bin}.py {mesher_config_filepath}")
-    try:
-        from mesher.mesher import main as mesher_main
-        import io
-        from contextlib import redirect_stdout
-        mesher_mesh_filepath = os.path.join(input_data['output_directory'], f"{input_data['elevation_filename'].split('/')[-1][:-4]}.mesh")
-        # temp_stdout_obj = io.StringIO()
-        # with redirect_stdout(temp_stdout_obj):
-        #     mesher_main(mesher_config_filepath)
-        # mesher_out = temp_stdout_obj.getvalue()
+    mesher_mesh_filepath = None
+    mesher_bin = os.environ.get('MESHER_EXE')
+    if mesher_bin:
+        mesher_config_filepath = f"{input_data['output_directory']}/mesher_config.py"
+        logger.info(f"{mesher_config_filepath=}")
+        max_rmse_tolerance = input_data['scenario_config'].get('max_rmse_tolerance', 1)
+        make_mesher_config_file(
+            mesher_config_filepath,
+            f"{input_data['output_directory']}/",
+            input_data['elevation_filename'],
+            mesher_bin,
+            max_rmse_tolerance,
+            minimum_triangle_area,
+            maximum_triangle_area
+        )
+        logger.info(f"{mesher_config_filepath=}")
+        logger.info("*" * 70)
+        with open(mesher_config_filepath, "r") as config_file:
+            logger.info(config_file.read())
+        logger.info("*" * 70)
+        logger.info(f"python {mesher_bin}.py {mesher_config_filepath}")
         try:
-            mesher_main(mesher_config_filepath)
-        except Exception as e:
-            logger.info(traceback.format_exc())
-        mesher_out = subprocess.run(['python', f'{mesher_bin}.py', mesher_config_filepath], capture_output=True)
-        logger.info("-" * 70)
-        logger.info(f"{mesher_out=}")
-    except ImportError:
-        mesher_mesh_filepath = None
+            logger.info("from mesher.mesher import main as mesher_main")
+            from mesher.mesher import main as mesher_main
+            import io
+            from contextlib import redirect_stdout
+            mesher_mesh_filepath = os.path.join(input_data['output_directory'], f"{input_data['elevation_filename'].split('/')[-1][:-4]}.mesh")
+            logger.info(f"{mesher_mesh_filepath=}")
+            # temp_stdout_obj = io.StringIO()
+            # with redirect_stdout(temp_stdout_obj):
+            #     mesher_main(mesher_config_filepath)
+            # mesher_out = temp_stdout_obj.getvalue()
+            try:
+                mesher_main(mesher_config_filepath)
+            except Exception as e:
+                logger.info(traceback.format_exc())
+            mesher_out = subprocess.run(['python', f'{mesher_bin}.py', mesher_config_filepath], capture_output=True)
+            logger.info("-" * 70)
+            logger.info(f"{mesher_out=}")
+        except ImportError:
+            mesher_mesh_filepath = None
     logger.info(f"{mesher_mesh_filepath=}")
     logger.info(f"{os.path.isfile(mesher_mesh_filepath)}")
-
     return anuga_mesh, mesher_mesh_filepath
 
 
