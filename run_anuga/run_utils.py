@@ -119,7 +119,8 @@ def create_mesh(input_data):
         verbose=True,
         fail_if_polygons_outside=False
     )
-    logger.info(f"{anuga_mesh.tri_mesh.triangles.size=}")
+    anuga_mesh_size = anuga_mesh.tri_mesh.triangles.size
+    logger.info(f"{anuga_mesh_size=}")
     mesher_config_filepath = f"{input_data['output_directory']}/mesher_config.py"
     logger.info(f"{mesher_config_filepath=}")
     max_rmse_tolerance = input_data['scenario_config'].get('max_rmse_tolerance', 1)
@@ -139,10 +140,15 @@ def create_mesh(input_data):
         logger.info(config_file.read())
     logger.info("*" * 70)
     logger.info(f"python {mesher_bin}.py {mesher_config_filepath}")
-    mesher_out = subprocess.run(['python', f'{mesher_bin}.py', mesher_config_filepath], capture_output=True)
-    logger.info("-" * 70)
-    logger.info(f"{mesher_out=}")
-    mesher_mesh_filepath = os.path.join(input_data['output_directory'], f"{input_data['elevation_filename'].split('/')[-1][:-4]}.mesh")
+    try:
+        from mesher.mesher import main as mesher_main
+        mesher_mesh_filepath = os.path.join(input_data['output_directory'], f"{input_data['elevation_filename'].split('/')[-1][:-4]}.mesh")
+        mesher_out = mesher_main(mesher_config_filepath)
+        # mesher_out = subprocess.run(['python', f'{mesher_bin}.py', mesher_config_filepath], capture_output=True)
+        logger.info("-" * 70)
+        logger.info(f"{mesher_out=}")
+    except ImportError:
+        mesher_mesh_filepath = None
     logger.info(f"{mesher_mesh_filepath=}")
     logger.info(f"{os.path.isfile(mesher_mesh_filepath)}")
 
@@ -425,12 +431,12 @@ def make_mesher_config_file(
     maximum_triangle_area
 ):
     text_blob = f"""mesher_path = '{mesher_bin}'
-dem_filename = '{dem_filepath.split("/")[-1]}'
+dem_filename = '../inputs/{dem_filepath.split("/")[-1]}'
 errormetric = 'rmse'
 max_tolerance = {max_rmse_tolerance}  # 1m max RMSE between triangle and underlying elevation
 max_area = {maximum_triangle_area}  # Effectively unlimited upper area -- allow tolerance check to refine it further
 min_area = {min_triangle_area}  # triangle area below which we will no longer refine, regardless of max_tolerance
-user_output_dir = './'
+user_output_dir = ''
 nworkers = 2
 nworkers_gdal = 2
 write_vtu = False

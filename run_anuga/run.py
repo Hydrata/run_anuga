@@ -38,30 +38,40 @@ def run_sim(package_dir, username=None, password=None):
             logger.info(f"create_mesh")
             logger.info(f"{anuga_mesh}")
             logger.info(f"{mesher_mesh_filepath}")
-            domain = anuga.shallow_water.shallow_water_domain.Domain(
-                mesh_filename=input_data['mesh_filepath'],
-                use_cache=False,
-                verbose=True,
-            )
-            with open(mesher_mesh_filepath, 'r') as mesh_file:
-                mesh_dict = json.load(mesh_file)
-            mesh = mesh_dict['mesh']
-            vertex = mesh_dict['vertex']
-            vertices = numpy.array(vertex)
-            elem = mesh['elem']
-            points = vertices[:, :2]
-            elev = vertices[:, 2]
-            domain = anuga.Domain(
-                points,
-                elem,
-                mesh_filename=input_data['mesh_filepath'],
-                use_cache=False,
-                verbose=True
-            )
+            domain = None
+            if mesher_mesh_filepath:
+                with open(mesher_mesh_filepath, 'r') as mesh_file:
+                    mesh_dict = json.load(mesh_file)
+                mesh = mesh_dict['mesh']
+                vertex = mesh_dict['vertex']
+                vertices = numpy.array(vertex)
+                elem = mesh['elem']
+                points = vertices[:, :2]
+                elev = vertices[:, 2]
+                domain = anuga.Domain(
+                    points,
+                    elem,
+                    mesh_filename=input_data['mesh_filepath'],
+                    use_cache=False,
+                    verbose=True
+                )
+                domain.set_quantity('elevation', elev, locations=vertices)
+            else:
+                domain = anuga.Domain(
+                    mesh_filename=input_data['mesh_filepath'],
+                    use_cache=False,
+                    verbose=True,
+                )
+                poly_fun_pairs = [['Extent', input_data['elevation_filename']]]
+                elevation_function = qs.composite_quantity_setting_function(
+                    poly_fun_pairs,
+                    domain,
+                    nan_treatment='exception',
+                )
+                domain.set_quantity('elevation', elevation_function, verbose=True, alpha=0.99, location='centroids')
             domain.set_name(input_data['run_label'])
             domain.set_datadir(input_data['output_directory'])
             domain.set_minimum_storable_height(0.005)
-            domain.set_quantity('elevation', elev, locations=vertices)
             frictions = make_frictions(input_data)
             friction_function = qs.composite_quantity_setting_function(
                 frictions,
