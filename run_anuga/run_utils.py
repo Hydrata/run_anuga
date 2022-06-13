@@ -154,13 +154,14 @@ def create_mesh(input_data):
             # with redirect_stdout(temp_stdout_obj):
             #     mesher_main(mesher_config_filepath)
             # mesher_out = temp_stdout_obj.getvalue()
-            try:
-                logger.info("mesher_main(mesher_config_filepath)")
-                mesher_main(mesher_config_filepath)
-                logger.info("success - mesher_main(mesher_config_filepath)")
-            except Exception as e:
-                logger.info(traceback.format_exc())
-            # mesher_out = subprocess.run(['python', f'{mesher_bin}.py', mesher_config_filepath], capture_output=True)
+            # try:
+            #     logger.info("mesher_main(mesher_config_filepath)")
+            #     mesher_main(mesher_config_filepath)
+            #     logger.info("success - mesher_main(mesher_config_filepath)")
+            # except Exception as e:
+            #     logger.info(traceback.format_exc())
+            mesher_out = subprocess.run(['python', f'{mesher_bin}', mesher_config_filepath], capture_output=True)
+            logger.info(f"{mesher_out=}")
             logger.info("-" * 70)
         except ImportError:
             mesher_mesh_filepath = None
