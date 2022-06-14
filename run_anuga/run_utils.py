@@ -102,7 +102,7 @@ def create_mesh(input_data):
     minimum_triangle_area = 5 if (grid_resolution ** 2) < 5 else (grid_resolution ** 2)
     mesh_filepath = input_data['mesh_filepath']
     # maximum_triangle_area = input_data.get('maximum_triangle_area') or 1000000
-    maximum_triangle_area = 1000000
+    maximum_triangle_area = 50
     interior_regions = make_interior_regions(input_data)
     interior_holes, hole_tags = make_interior_holes_and_tags(input_data)
     bounding_polygon = input_data['boundary_polygon']
@@ -128,7 +128,7 @@ def create_mesh(input_data):
     if not os.path.isfile(mesher_mesh_filepath):
         mesher_config_filepath = f"{input_data['output_directory']}/mesher_config.py"
         logger.info(f"{mesher_config_filepath=}")
-        max_rmse_tolerance = input_data['scenario_config'].get('max_rmse_tolerance', 1)
+        max_rmse_tolerance = input_data['scenario_config'].get('max_rmse_tolerance', .05)
         make_mesher_config_file(
             mesher_config_filepath,
             f"{input_data['output_directory']}/",
