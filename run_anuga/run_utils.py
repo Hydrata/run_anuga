@@ -123,8 +123,9 @@ def create_mesh(input_data):
     anuga_mesh_size = anuga_mesh.tri_mesh.triangles.size
     logger.info(f"{anuga_mesh_size=}")
     mesher_mesh_filepath = None
-    mesher_bin = os.environ.get('MESHER_EXE')
-    if mesher_bin:
+    mesher_bin = os.environ.get('MESHER_EXE', '/opt/venv/hydrata/bin/mesher')
+    mesher_mesh_filepath = os.path.join(input_data['output_directory'], f"{input_data['elevation_filename'].split('/')[-1][:-4]}.mesh") or ""
+    if not os.path.isfile(mesher_mesh_filepath):
         mesher_config_filepath = f"{input_data['output_directory']}/mesher_config.py"
         logger.info(f"{mesher_config_filepath=}")
         max_rmse_tolerance = input_data['scenario_config'].get('max_rmse_tolerance', 1)
@@ -151,7 +152,6 @@ def create_mesh(input_data):
             logger.info(f"{input_data['output_directory']=}")
             logger.info(f"{input_data['elevation_filename']=}")
             logger.info(f"{input_data['elevation_filename'].split('/')[-1][:-4]=}")
-            mesher_mesh_filepath = os.path.join(input_data['output_directory'], f"{input_data['elevation_filename'].split('/')[-1][:-4]}.mesh")
             logger.info(f"{mesher_mesh_filepath=}")
             # temp_stdout_obj = io.StringIO()
             # with redirect_stdout(temp_stdout_obj):

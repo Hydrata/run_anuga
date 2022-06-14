@@ -42,20 +42,18 @@ def run_sim(package_dir, username=None, password=None):
             if mesher_mesh_filepath:
                 with open(mesher_mesh_filepath, 'r') as mesh_file:
                     mesh_dict = json.load(mesh_file)
-                mesh = mesh_dict['mesh']
-                vertex = mesh['vertex']
-                vertices = numpy.array(vertex)
-                elem = mesh['elem']
-                points = vertices[:, :2]
-                elev = vertices[:, 2]
+                vertex = mesh_dict['mesh']['vertex']
+                vertex = numpy.array(vertex)
+                elem = mesh_dict['mesh']['elem']
+                points = vertex[:, :2]
+                elev = vertex[:, 2]
                 domain = anuga.Domain(
                     points,
                     elem,
-                    mesh_filename=input_data['mesh_filepath'],
                     use_cache=False,
                     verbose=True
                 )
-                domain.set_quantity('elevation', elev, locations=vertices)
+                domain.set_quantity('elevation', elev, location='vertices')
             else:
                 domain = anuga.Domain(
                     mesh_filename=input_data['mesh_filepath'],
