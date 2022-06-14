@@ -89,7 +89,7 @@ def update_web_interface(run_args, data, files=None):
             files=files
         )
         status_code = response.status_code
-        logger.info(f"hydrata.com response: {status_code}")
+        # logger.info(f"hydrata.com response: {status_code}")
 
 
 def create_mesh(input_data):
@@ -359,7 +359,12 @@ def post_process_sww(package_dir, run_args=None, output_raster_resolution=None):
     if len(resolutions) == 0:
         resolutions = [input_data.get('maximum_triangle_area') or 1000]
     finest_grid_resolution = math.floor(math.sqrt(2 * min(resolutions)))
+
+    # We need to figure out the best way to set the output resolution using mesher.
+    # For now, let's use 1m for testing the other processes:
+    finest_grid_resolution = 1
     logger.info(f'raster resolution: {finest_grid_resolution}m')
+
     epsg_integer = int(input_data['scenario_config'].get("epsg").split(":")[1]
                        if ":" in input_data['scenario_config'].get("epsg")
                        else input_data['scenario_config'].get("epsg"))
