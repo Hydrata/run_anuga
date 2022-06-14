@@ -145,9 +145,9 @@ def create_mesh(input_data):
         logger.info(f"python {mesher_bin}.py {mesher_config_filepath}")
         try:
             logger.info("from mesher.mesher import main as mesher_main")
-            from mesher.mesher import main as mesher_main
-            import io
-            from contextlib import redirect_stdout
+            # from mesher.mesher import main as mesher_main
+            # import io
+            # from contextlib import redirect_stdout
             logger.info(f"{input_data['output_directory']=}")
             logger.info(f"{input_data['elevation_filename']=}")
             logger.info(f"{input_data['elevation_filename'].split('/')[-1][:-4]=}")
@@ -163,8 +163,9 @@ def create_mesh(input_data):
             #     logger.info("success - mesher_main(mesher_config_filepath)")
             # except Exception as e:
             #     logger.info(traceback.format_exc())
-            mesher_out = subprocess.run(['python', f'{mesher_bin}', mesher_config_filepath], capture_output=True)
-            logger.info(f"{mesher_out=}")
+            mesher_out = subprocess.run(['/opt/venv/hydrata/bin/python', f'{mesher_bin}.py', mesher_config_filepath], capture_output=True, universal_newlines=True)
+            logger.info(f"***mesher_out***")
+            logger.info(mesher_out)
             logger.info("-" * 70)
         except ImportError:
             mesher_mesh_filepath = None
