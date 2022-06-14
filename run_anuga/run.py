@@ -43,7 +43,7 @@ def run_sim(package_dir, username=None, password=None):
                 with open(mesher_mesh_filepath, 'r') as mesh_file:
                     mesh_dict = json.load(mesh_file)
                 mesh = mesh_dict['mesh']
-                vertex = mesh_dict['vertex']
+                vertex = mesh['vertex']
                 vertices = numpy.array(vertex)
                 elem = mesh['elem']
                 points = vertices[:, :2]
