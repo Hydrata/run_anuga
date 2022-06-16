@@ -1,5 +1,4 @@
 import shutil
-import traceback
 
 import anuga
 import argparse
@@ -9,8 +8,8 @@ import math
 import subprocess
 import os
 import requests
-import numpy as np
 
+from copy import deepcopy
 from pathlib import Path
 from osgeo import ogr, gdal
 from anuga.utilities import plot_utils as util
@@ -64,6 +63,8 @@ def setup_input_data(package_dir):
 
     if input_data['scenario_config'].get('maximum_triangle_area'):
         input_data['maximum_triangle_area'] = input_data['scenario_config'].get('maximum_triangle_area')
+    logger.info(f"***")
+    logger.info(input_data['boundary'])
 
     boundary_polygon, boundary_tags = create_boundary_polygon_from_boundaries(
         input_data['boundary']
@@ -239,13 +240,13 @@ def create_boundary_polygon_from_boundaries(boundaries_geojson):
     geometry_collection = ogr.Geometry(ogr.wkbGeometryCollection)
     epsg_code = boundaries_geojson.get('crs').get('properties').get('name').split(':')[-1]
     # Create a dict of the available boundary tags
-    boundary_tags = dict()
+    boundary_tag_labels = dict()
     all_x_coordinates = list()
     all_y_coordinates = list()
     for index, feature in enumerate(boundaries_geojson.get('features')):
         if feature.get('properties').get('location') != "External":
             continue
-        boundary_tags[feature.get('properties').get('boundary')] = []
+        boundary_tag_labels[feature.get('properties').get('boundary')] = []
         geometry = ogr.CreateGeometryFromJson(json.dumps(feature.get('geometry')))
         geometry_collection.AddGeometry(geometry)
         # Collect a list of the coordinates associated with each boundary tag:
@@ -290,12 +291,32 @@ def create_boundary_polygon_from_boundaries(boundaries_geojson):
     boundary_polygon = list()
     boundary_tags_list = list()
     counter = 0
+    boundary_tags = deepcopy(boundary_tag_labels)
     for line in line_list:
         for coordinate in line.get("coordinates"):
             boundary_polygon.append(coordinate)
             boundary_tags[line.get("boundary")].append(counter)
             boundary_tags_list.append(lookup_boundary_tag(counter, boundary_tags))
             counter += 1
+
+    # now sort the boundary_polygon points in clockwise order, in case those original lines were drawn with different
+    # directions
+    boundary_polygon_with_angle_data = list()
+    sorted_boundary_polygon = list()
+    sorted_boundary_tags = deepcopy(boundary_tag_labels)
+    for index, point in enumerate(boundary_polygon):
+        base = point[0] - mid_x
+        height = point[1] - mid_y
+        angle = math.atan(height/base) + correction_for_polar_quadrants(base, height)
+        boundary_polygon_with_angle_data.append({
+            "point": point,
+            "boundary": lookup_boundary_tag(index, boundary_tags),
+            "angle": angle
+        })
+    boundary_polygon_with_angle_data.sort(key=lambda point_blob: point_blob.get('angle'), reverse=True)
+    for index, point_blob in enumerate(boundary_polygon_with_angle_data):
+        sorted_boundary_polygon.append(point_blob.get('point'))
+        sorted_boundary_tags[point_blob.get('boundary')].append(index)
 
     # # Make a dump of the centroids geometry (for debugging only - not returned anywhere).
     # output_driver_centroids = ogr.GetDriverByName('GeoJSON')
@@ -341,7 +362,7 @@ def create_boundary_polygon_from_boundaries(boundaries_geojson):
     #     output_feature.SetField('boundary', boundary_tags_list[index])
     #     output_layer.CreateFeature(output_feature)
 
-    return boundary_polygon, boundary_tags
+    return sorted_boundary_polygon, sorted_boundary_tags
 
 
 def post_process_sww(package_dir, run_args=None, output_raster_resolution=None):
