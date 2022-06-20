@@ -13,7 +13,7 @@ import traceback
 from logging import handlers
 from osgeo import gdal
 
-from anuga import distribute, finalize, barrier
+from anuga import distribute, finalize, barrier, Inlet_operator
 from anuga.utilities import quantity_setting_functions as qs
 from anuga.operators.rate_operators import Polygonal_rate_operator
 from run_utils import is_dir_check, setup_input_data, update_web_interface, create_mesh, make_interior_holes_and_tags, \
@@ -102,18 +102,34 @@ def run_sim(package_dir, username=None, password=None):
         domain.set_boundary(boundaries)
 
         # setup rainfall
-        def rain(time_in_seconds):
-            t_sec = int(math.floor(time_in_seconds))
-            return rain_df['rate_m_s'][t_sec]
+        def create_inflow_function(dataframe, name):
+            def rain(time_in_seconds):
+                t_sec = int(math.floor(time_in_seconds))
+                return dataframe[name][t_sec]
+            rain.__name__ = name
+            return rain
+
 
         duration = input_data['scenario_config'].get('duration')
         # for testing, don't allow model runs longer than one hour
         duration = 60 * 60 if duration > 60 * 60 else duration
-        constant_rainfall = input_data['scenario_config'].get('constant_rainfall') or 100
-        date_rng = pd.date_range(start='1/1/2022', periods=duration + 1, freq='s')
-        rain_df = pd.DataFrame(date_rng, columns=['datetime'])
-        rain_df['rate_m_s'] = constant_rainfall / 1000
-        Polygonal_rate_operator(domain, rate=rain, factor=1.0e-3, polygon=input_data['boundary_polygon'], default_rate=0.00)
+        # constant_rainfall = input_data['scenario_config'].get('constant_rainfall') or 100
+        date_rng = pd.date_range(start='1/1/1970', periods=duration + 1, freq='s')
+        inflow_dataframe = pd.DataFrame(date_rng, columns=['datetime'])
+        rainfall_inflow_polygons = [feature for feature in input_data.get('inflow').get('features') if feature.get('properties').get('type') == 'Rainfall']
+        surface_inflow_lines = [feature for feature in input_data.get('inflow').get('features') if feature.get('properties').get('type') == 'Surface']
+        for inflow_polygon in rainfall_inflow_polygons:
+            polygon_name = inflow_polygon.get('id')
+            inflow_dataframe[polygon_name] = float(inflow_polygon.get('properties').get('data'))
+            inflow_function = create_inflow_function(inflow_dataframe, polygon_name)
+            geometry = inflow_polygon.get('geometry').get('coordinates')
+            Polygonal_rate_operator(domain, rate=inflow_function, factor=1.0e-6, polygon=geometry, default_rate=0.00)
+        for inflow_line in surface_inflow_lines:
+            polyline_name = inflow_line.get('id')
+            inflow_dataframe[polyline_name] = float(inflow_line.get('properties').get('data'))
+            inflow_function = create_inflow_function(inflow_dataframe, polyline_name)
+            geometry = inflow_line.get('geometry').get('coordinates')
+            Inlet_operator(domain, geometry, Q=inflow_function)
 
         # Don't yield more than 1000 timesteps into the SWW file, and smallest resolution is 60 seconds:
         yieldstep = 60 if math.floor(duration/1000) < 60 else math.floor(duration/1000)
