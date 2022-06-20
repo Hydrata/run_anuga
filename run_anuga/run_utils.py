@@ -61,8 +61,8 @@ def setup_input_data(package_dir):
     if input_data['scenario_config'].get('elevation'):
         input_data['elevation_filename'] = os.path.join(package_dir, f"inputs/{input_data['scenario_config'].get('elevation')}")
 
-    if input_data['scenario_config'].get('maximum_triangle_area'):
-        input_data['maximum_triangle_area'] = input_data['scenario_config'].get('maximum_triangle_area')
+    if input_data['scenario_config'].get('resolution'):
+        input_data['resolution'] = input_data['scenario_config'].get('resolution')
     logger.info(f"***")
     logger.info(input_data['boundary'])
 
@@ -102,8 +102,8 @@ def create_mesh(input_data):
     # the lowest triangle area we can have is 5m2 or the grid resolution squared
     minimum_triangle_area = 5 if (grid_resolution ** 2) < 5 else (grid_resolution ** 2)
     mesh_filepath = input_data['mesh_filepath']
-    # maximum_triangle_area = input_data.get('maximum_triangle_area') or 1000000
-    maximum_triangle_area = 50
+    resolution = input_data.get('resolution') or 1000000
+    # resolution = 50
     interior_regions = make_interior_regions(input_data)
     interior_holes, hole_tags = make_interior_holes_and_tags(input_data)
     bounding_polygon = input_data['boundary_polygon']
@@ -112,7 +112,7 @@ def create_mesh(input_data):
     anuga_mesh = anuga.pmesh.mesh_interface.create_mesh_from_regions(
         bounding_polygon=bounding_polygon,
         boundary_tags=boundary_tags,
-        maximum_triangle_area=maximum_triangle_area,
+        maximum_triangle_area=resolution,
         interior_regions=interior_regions,
         interior_holes=interior_holes,
         hole_tags=hole_tags,
@@ -123,10 +123,9 @@ def create_mesh(input_data):
     )
     anuga_mesh_size = anuga_mesh.tri_mesh.triangles.size
     logger.info(f"{anuga_mesh_size=}")
-    mesher_mesh_filepath = None
     mesher_bin = os.environ.get('MESHER_EXE', '/opt/venv/hydrata/bin/mesher')
     mesher_mesh_filepath = os.path.join(input_data['output_directory'], f"{input_data['elevation_filename'].split('/')[-1][:-4]}.mesh") or ""
-    if not os.path.isfile(mesher_mesh_filepath):
+    if input_data['scenario_config'].get('simplify_mesh') and not os.path.isfile(mesher_mesh_filepath):
         mesher_config_filepath = f"{input_data['output_directory']}/mesher_config.py"
         logger.info(f"{mesher_config_filepath=}")
         max_rmse_tolerance = input_data['scenario_config'].get('max_rmse_tolerance', .05)
@@ -137,7 +136,7 @@ def create_mesh(input_data):
             mesher_bin,
             max_rmse_tolerance,
             minimum_triangle_area,
-            maximum_triangle_area
+            resolution
         )
         logger.info(f"{mesher_config_filepath=}")
         logger.info("*" * 70)
@@ -378,7 +377,7 @@ def post_process_sww(package_dir, run_args=None, output_raster_resolution=None):
             resolutions.append(feature.get('properties').get('resolution'))
     logger.info(f'{resolutions=}')
     if len(resolutions) == 0:
-        resolutions = [input_data.get('maximum_triangle_area') or 1000]
+        resolutions = [input_data.get('resolution') or 1000]
     finest_grid_resolution = math.floor(math.sqrt(2 * min(resolutions)))
 
     # We need to figure out the best way to set the output resolution using mesher.
@@ -472,13 +471,13 @@ def make_mesher_config_file(
     mesher_bin,
     max_rmse_tolerance,
     min_triangle_area,
-    maximum_triangle_area
+    resolution
 ):
     text_blob = f"""mesher_path = '{mesher_bin}'
 dem_filename = '../inputs/{dem_filepath.split("/")[-1]}'
 errormetric = 'rmse'
 max_tolerance = {max_rmse_tolerance}  # 1m max RMSE between triangle and underlying elevation
-max_area = {maximum_triangle_area}  # Effectively unlimited upper area -- allow tolerance check to refine it further
+max_area = {resolution}  # Effectively unlimited upper area -- allow tolerance check to refine it further
 min_area = {min_triangle_area}  # triangle area below which we will no longer refine, regardless of max_tolerance
 user_output_dir = ''
 nworkers = 2
