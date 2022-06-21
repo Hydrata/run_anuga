@@ -102,10 +102,45 @@ def create_mesh(input_data):
     # logger = setup_logger(input_data)
     logger.info(f"create_mesh running")
     elevation_raster = gdal.Open(input_data['elevation_filename'])
-    gt = elevation_raster.GetGeoTransform()
-    elevation_raster_resolution = gt[1]
+    ulx, xres, xskew, uly, yskew, yres = elevation_raster.GetGeoTransform()
+    elevation_raster_resolution = xres
+    xmin = ulx
+    xmax = ulx + (elevation_raster.RasterXSize * xres)
+    ymin = uly + (elevation_raster.RasterYSize * yres)  # note yres is negative
+    ymax = uly
     user_resolution = float(input_data.get('resolution'))
-    burn_structures_into_raster(input_data['structure_filename'], input_data['elevation_filename'], backup=False)
+    building_height = 5
+    burn_structures_into_raster = subprocess.run([
+        "gdal_rasterize",
+        "-burn", str(building_height), "-add",
+        input_data['structure_filename'],
+        input_data['elevation_filename']
+    ],
+        capture_output=True,
+        universal_newlines=True
+    )
+    logger.info(burn_structures_into_raster.stdout)
+    if burn_structures_into_raster.returncode != 0:
+        logger.info(burn_structures_into_raster.stderr)
+        raise UserWarning(burn_structures_into_raster.stderr)
+
+    mesh_regions_tif_mask_filename = f"{input_data['mesh_region_filename'][:-5]}.tif"
+    mesh_regions_tif_mask = subprocess.run([
+        "gdal_rasterize",
+        "-a", "resolution",
+        "-te", str(xmin), str(ymin), str(xmax), str(ymax),
+        "-tr", str(xres), str(yres),
+        input_data['mesh_region_filename'],
+        mesh_regions_tif_mask_filename
+    ],
+        capture_output=True,
+        universal_newlines=True
+    )
+    logger.info(mesh_regions_tif_mask)
+    logger.info(mesh_regions_tif_mask.stdout)
+    if mesh_regions_tif_mask.returncode != 0:
+        logger.info(mesh_regions_tif_mask.stderr)
+        raise UserWarning(mesh_regions_tif_mask.stderr)
     # the lowest triangle area we can have is 5m2 or the grid resolution squared
     minimum_triangle_area = max((user_resolution ** 2) / 2, (elevation_raster_resolution ** 2) / 2)
     # mesh_filepath = input_data['mesh_filepath']
@@ -138,6 +173,8 @@ def create_mesh(input_data):
     mesher_config_filepath = f"{input_data['output_directory']}/mesher_config.py"
     logger.info(f"{mesher_config_filepath=}")
     max_rmse_tolerance = input_data['scenario_config'].get('max_rmse_tolerance', 1)
+    breaklines_shapefile_path = None
+
     text_blob = f"""mesher_path = '{mesher_bin}'
 dem_filename = '../inputs/{input_data["elevation_filename"].split("/")[-1]}'
 errormetric = 'rmse'
@@ -152,14 +189,18 @@ simplify = True
 simplify_tol = 10
 parameter_files = {{
    'mesh_regions': {{
-       'file': '{input_data["mesh_region_filename"]}',
+       'file': '{mesh_regions_tif_mask_filename}',
        'method': 'mean',
        'tolerance': 0.1
        }},
 }}
+"""
+
+    if breaklines_shapefile_path:
+        text_blob += """
 constraints = {{
-   'structures': {{
-       'file': '{input_data["structure_filename"]}',
+   'breaklines': {{
+       'file': '{breaklines_shapefile_path}',
        'method': 'mean',
        'simplify': {user_resolution}
        }},
@@ -169,16 +210,16 @@ constraints = {{
     with open(mesher_config_filepath, "w+") as mesher_config:
         mesher_config.write(text_blob)
     logger.info(f"{mesher_config_filepath=}")
-    logger.info("*" * 70)
     with open(mesher_config_filepath, "r") as config_file:
         logger.info(config_file.read())
-    logger.info("*" * 70)
     logger.info(f"python {mesher_bin}.py {mesher_config_filepath}")
     try:
         mesher_out = subprocess.run(['/opt/venv/hydrata/bin/python', f'{mesher_bin}.py', mesher_config_filepath], capture_output=True, universal_newlines=True)
         logger.info(f"***mesher_out***")
-        logger.info(mesher_out)
-        logger.info("-" * 70)
+        logger.info(mesher_out.stdout)
+        logger.info(mesher_out.stderr)
+        if mesher_out.returncode != 0:
+            raise UserWarning(mesher_out.stderr)
     except ImportError:
         mesher_mesh_filepath = None
     logger.info(f"{mesher_mesh_filepath=}")
