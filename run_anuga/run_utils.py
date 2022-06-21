@@ -39,24 +39,29 @@ def setup_input_data(package_dir):
     input_data['mesh_filepath'] = f"{input_data['output_directory']}/run_{scenario_id}_{run_id}.msh"
     Path(input_data['output_directory']).mkdir(parents=True, exist_ok=True)
 
+    input_data['boundary_filename'] = os.path.join(package_dir, f"inputs/{input_data['scenario_config'].get('boundary')}")
     input_data['boundary'] = json.load(
-        open(os.path.join(package_dir, f"inputs/{input_data['scenario_config'].get('boundary')}"))
+        open(input_data['boundary_filename'])
     )
     if input_data['scenario_config'].get('friction'):
+        input_data['friction_filename'] = os.path.join(package_dir, f"inputs/{input_data['scenario_config'].get('friction')}")
         input_data['friction'] = json.load(
-            open(os.path.join(package_dir, f"inputs/{input_data['scenario_config'].get('friction')}"))
+            open(input_data['friction_filename'])
         )
     if input_data['scenario_config'].get('inflow'):
+        input_data['inflow_filename'] = os.path.join(package_dir, f"inputs/{input_data['scenario_config'].get('inflow')}")
         input_data['inflow'] = json.load(
-            open(os.path.join(package_dir, f"inputs/{input_data['scenario_config'].get('inflow')}"))
+            open(input_data['inflow_filename'])
         )
     if input_data['scenario_config'].get('structure'):
+        input_data['structure_filename'] = os.path.join(package_dir, f"inputs/{input_data['scenario_config'].get('structure')}")
         input_data['structure'] = json.load(
-            open(os.path.join(package_dir, f"inputs/{input_data['scenario_config'].get('structure')}"))
+            open(input_data['structure_filename'])
         )
     if input_data['scenario_config'].get('mesh_region'):
+        input_data['mesh_region_filename'] = os.path.join(package_dir, f"inputs/{input_data['scenario_config'].get('mesh_region')}")
         input_data['mesh_region'] = json.load(
-            open(os.path.join(package_dir, f"inputs/{input_data['scenario_config'].get('mesh_region')}"))
+            open(input_data['mesh_region_filename'])
         )
     if input_data['scenario_config'].get('elevation'):
         input_data['elevation_filename'] = os.path.join(package_dir, f"inputs/{input_data['scenario_config'].get('elevation')}")
@@ -96,81 +101,89 @@ def update_web_interface(run_args, data, files=None):
 def create_mesh(input_data):
     # logger = setup_logger(input_data)
     logger.info(f"create_mesh running")
-    raster = gdal.Open(input_data['elevation_filename'])
-    gt = raster.GetGeoTransform()
-    grid_resolution = gt[1]
+    elevation_raster = gdal.Open(input_data['elevation_filename'])
+    gt = elevation_raster.GetGeoTransform()
+    elevation_raster_resolution = gt[1]
+    user_resolution = float(input_data.get('resolution'))
+    burn_structures_into_raster(input_data['structure_filename'], input_data['elevation_filename'], backup=False)
     # the lowest triangle area we can have is 5m2 or the grid resolution squared
-    minimum_triangle_area = 5 if (grid_resolution ** 2) < 5 else (grid_resolution ** 2)
-    mesh_filepath = input_data['mesh_filepath']
-    resolution = input_data.get('resolution') or 1000000
-    # resolution = 50
-    interior_regions = make_interior_regions(input_data)
-    interior_holes, hole_tags = make_interior_holes_and_tags(input_data)
-    bounding_polygon = input_data['boundary_polygon']
-    boundary_tags = input_data['boundary_tags']
-    logger.info(f"creating anuga_mesh")
-    anuga_mesh = anuga.pmesh.mesh_interface.create_mesh_from_regions(
-        bounding_polygon=bounding_polygon,
-        boundary_tags=boundary_tags,
-        maximum_triangle_area=resolution,
-        interior_regions=interior_regions,
-        interior_holes=interior_holes,
-        hole_tags=hole_tags,
-        filename=mesh_filepath,
-        use_cache=False,
-        verbose=True,
-        fail_if_polygons_outside=False
-    )
-    anuga_mesh_size = anuga_mesh.tri_mesh.triangles.size
-    logger.info(f"{anuga_mesh_size=}")
+    minimum_triangle_area = max((user_resolution ** 2) / 2, (elevation_raster_resolution ** 2) / 2)
+    # mesh_filepath = input_data['mesh_filepath']
+    # # resolution = 50
+    # interior_regions = make_interior_regions(input_data)
+    # interior_holes, hole_tags = make_interior_holes_and_tags(input_data)
+    # bounding_polygon = input_data['boundary_polygon']
+    # boundary_tags = input_data['boundary_tags']
+    # logger.info(f"creating anuga_mesh")
+    # anuga_mesh = anuga.pmesh.mesh_interface.create_mesh_from_regions(
+    #     bounding_polygon=bounding_polygon,
+    #     boundary_tags=boundary_tags,
+    #     maximum_triangle_area=user_resolution,
+    #     interior_regions=interior_regions,
+    #     interior_holes=interior_holes,
+    #     hole_tags=hole_tags,
+    #     filename=mesh_filepath,
+    #     use_cache=False,
+    #     verbose=True,
+    #     fail_if_polygons_outside=False
+    # )
+    # anuga_mesh_size = anuga_mesh.tri_mesh.triangles.size
+    # logger.info(f"{anuga_mesh_size=}")
     mesher_bin = os.environ.get('MESHER_EXE', '/opt/venv/hydrata/bin/mesher')
     mesher_mesh_filepath = os.path.join(input_data['output_directory'], f"{input_data['elevation_filename'].split('/')[-1][:-4]}.mesh") or ""
-    if input_data['scenario_config'].get('simplify_mesh') and not os.path.isfile(mesher_mesh_filepath):
-        mesher_config_filepath = f"{input_data['output_directory']}/mesher_config.py"
-        logger.info(f"{mesher_config_filepath=}")
-        max_rmse_tolerance = input_data['scenario_config'].get('max_rmse_tolerance', .05)
-        make_mesher_config_file(
-            mesher_config_filepath,
-            f"{input_data['output_directory']}/",
-            input_data['elevation_filename'],
-            mesher_bin,
-            max_rmse_tolerance,
-            minimum_triangle_area,
-            resolution
-        )
-        logger.info(f"{mesher_config_filepath=}")
-        logger.info("*" * 70)
-        with open(mesher_config_filepath, "r") as config_file:
-            logger.info(config_file.read())
-        logger.info("*" * 70)
-        logger.info(f"python {mesher_bin}.py {mesher_config_filepath}")
-        try:
-            logger.info("from mesher.mesher import main as mesher_main")
-            # from mesher.mesher import main as mesher_main
-            # import io
-            # from contextlib import redirect_stdout
-            logger.info(f"{input_data['output_directory']=}")
-            logger.info(f"{input_data['elevation_filename']=}")
-            logger.info(f"{input_data['elevation_filename'].split('/')[-1][:-4]=}")
-            logger.info(f"{mesher_mesh_filepath=}")
-            # temp_stdout_obj = io.StringIO()
-            # with redirect_stdout(temp_stdout_obj):
-            #     mesher_main(mesher_config_filepath)
-            # mesher_out = temp_stdout_obj.getvalue()
-            # try:
-            #     logger.info("mesher_main(mesher_config_filepath)")
-            #     mesher_main(mesher_config_filepath)
-            #     logger.info("success - mesher_main(mesher_config_filepath)")
-            # except Exception as e:
-            #     logger.info(traceback.format_exc())
-            mesher_out = subprocess.run(['/opt/venv/hydrata/bin/python', f'{mesher_bin}.py', mesher_config_filepath], capture_output=True, universal_newlines=True)
-            logger.info(f"***mesher_out***")
-            logger.info(mesher_out)
-            logger.info("-" * 70)
-        except ImportError:
-            mesher_mesh_filepath = None
+    if input_data['scenario_config'].get('simplify_mesh'):
+        max_area = 10000000
+    else:
+        max_area = (user_resolution ** 2) / 2
+    mesher_config_filepath = f"{input_data['output_directory']}/mesher_config.py"
+    logger.info(f"{mesher_config_filepath=}")
+    max_rmse_tolerance = input_data['scenario_config'].get('max_rmse_tolerance', 1)
+    text_blob = f"""mesher_path = '{mesher_bin}'
+dem_filename = '../inputs/{input_data["elevation_filename"].split("/")[-1]}'
+errormetric = 'rmse'
+max_tolerance = {max_rmse_tolerance}
+max_area = {max_area}
+min_area = {minimum_triangle_area}
+user_output_dir = ''
+nworkers = 2
+nworkers_gdal = 2
+write_vtu = False
+simplify = True
+simplify_tol = 10
+parameter_files = {{
+   'mesh_regions' : {{'file':{input_data["mesh_region_filename"]},
+       'method': 'mean',
+       'tolerance': 0.1
+       }},
+}}
+constraints = {{
+   'structures' : {{'file':{input_data["structure_filename"]},
+       'method': 'mean',
+       'simplify': {user_resolution}
+       }},
+}}
+
+"""
+    with open(mesher_config_filepath, "w+") as mesher_config:
+        mesher_config.write(text_blob)
+    logger.info(f"{mesher_config_filepath=}")
+    logger.info("*" * 70)
+    with open(mesher_config_filepath, "r") as config_file:
+        logger.info(config_file.read())
+    logger.info("*" * 70)
+    logger.info(f"python {mesher_bin}.py {mesher_config_filepath}")
+    try:
+        mesher_out = subprocess.run(['/opt/venv/hydrata/bin/python', f'{mesher_bin}.py', mesher_config_filepath], capture_output=True, universal_newlines=True)
+        logger.info(f"***mesher_out***")
+        logger.info(mesher_out)
+        logger.info("-" * 70)
+    except ImportError:
+        mesher_mesh_filepath = None
     logger.info(f"{mesher_mesh_filepath=}")
-    return anuga_mesh, mesher_mesh_filepath
+    with open(mesher_mesh_filepath, 'r') as mesh_file:
+        mesh_dict = json.load(mesh_file)
+    mesh_size = len(mesh_dict['mesh']['elem'])
+    return mesher_mesh_filepath, mesh_size
 
 
 def make_interior_regions(input_data):
@@ -378,11 +391,10 @@ def post_process_sww(package_dir, run_args=None, output_raster_resolution=None):
     logger.info(f'{resolutions=}')
     if len(resolutions) == 0:
         resolutions = [input_data.get('resolution') or 1000]
-    finest_grid_resolution = math.floor(math.sqrt(2 * min(resolutions)))
+    finest_grid_resolution = min(resolutions)
 
     # We need to figure out the best way to set the output resolution using mesher.
     # For now, let's use 1m for testing the other processes:
-    finest_grid_resolution = 1
     logger.info(f'raster resolution: {finest_grid_resolution}m')
 
     epsg_integer = int(input_data['scenario_config'].get("epsg").split(":")[1]
@@ -402,7 +414,7 @@ def post_process_sww(package_dir, run_args=None, output_raster_resolution=None):
         min_allowed_height=1.0e-05,
         output_dir=input_data['output_directory'],
         bounding_polygon=input_data['boundary_polygon'],
-        internal_holes=interior_holes,
+        # internal_holes=interior_holes,
         verbose=False,
         k_nearest_neighbours=3,
         creation_options=[]
@@ -464,33 +476,6 @@ def zip_result_package(package_dir, username=None, password=None, remove=False):
         shutil.rmtree(package_dir)
 
 
-def make_mesher_config_file(
-    mesher_config_filepath,
-    user_output_dir,
-    dem_filepath,
-    mesher_bin,
-    max_rmse_tolerance,
-    min_triangle_area,
-    resolution
-):
-    text_blob = f"""mesher_path = '{mesher_bin}'
-dem_filename = '../inputs/{dem_filepath.split("/")[-1]}'
-errormetric = 'rmse'
-max_tolerance = {max_rmse_tolerance}  # 1m max RMSE between triangle and underlying elevation
-max_area = {resolution}  # Effectively unlimited upper area -- allow tolerance check to refine it further
-min_area = {min_triangle_area}  # triangle area below which we will no longer refine, regardless of max_tolerance
-user_output_dir = ''
-nworkers = 2
-nworkers_gdal = 2
-write_vtu = False
-simplify = True
-simplify_tol = 10
-"""
-    with open(mesher_config_filepath, "w+") as mesher_config:
-        mesher_config.write(text_blob)
-    return True
-
-
 def setup_logger(input_data, username=None, password=None):
     if not username and password:
         username = os.environ.get('COMPUTE_USERNAME')
@@ -522,3 +507,14 @@ def setup_logger(input_data, username=None, password=None):
         web_handler.setLevel(logging.DEBUG)
         logger.addHandler(web_handler)
     return logger
+
+
+def burn_structures_into_raster(structures_filename, raster_filename, backup=True):
+    if backup:
+        shutil.copyfile(raster_filename, f"{raster_filename[:-4]}_original.tif")
+    building_height = 5
+    output = subprocess.run(["gdal_rasterize", "-burn", str(building_height), "-add", structures_filename, raster_filename], capture_output=True, universal_newlines=True)
+    print(output)
+    if output.returncode != 0:
+        raise output.stderr
+    return True
