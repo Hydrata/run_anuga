@@ -151,13 +151,15 @@ write_vtu = False
 simplify = True
 simplify_tol = 10
 parameter_files = {{
-   'mesh_regions' : {{'file':{input_data["mesh_region_filename"]},
+   'mesh_regions': {{
+       'file': '{input_data["mesh_region_filename"]}',
        'method': 'mean',
        'tolerance': 0.1
        }},
 }}
 constraints = {{
-   'structures' : {{'file':{input_data["structure_filename"]},
+   'structures': {{
+       'file': '{input_data["structure_filename"]}',
        'method': 'mean',
        'simplify': {user_resolution}
        }},
