@@ -109,38 +109,40 @@ def create_mesh(input_data):
     ymin = uly + (elevation_raster.RasterYSize * yres)  # note yres is negative
     ymax = uly
     user_resolution = float(input_data.get('resolution'))
-    building_height = 5
-    burn_structures_into_raster = subprocess.run([
-        "gdal_rasterize",
-        "-burn", str(building_height), "-add",
-        input_data['structure_filename'],
-        input_data['elevation_filename']
-    ],
-        capture_output=True,
-        universal_newlines=True
-    )
-    logger.info(burn_structures_into_raster.stdout)
-    if burn_structures_into_raster.returncode != 0:
-        logger.info(burn_structures_into_raster.stderr)
-        raise UserWarning(burn_structures_into_raster.stderr)
-
-    mesh_regions_tif_mask_filename = f"{input_data['mesh_region_filename'][:-5]}.tif"
-    mesh_regions_tif_mask = subprocess.run([
-        "gdal_rasterize",
-        "-a", "resolution",
-        "-te", str(xmin), str(ymin), str(xmax), str(ymax),
-        "-tr", str(xres), str(yres),
-        input_data['mesh_region_filename'],
-        mesh_regions_tif_mask_filename
-    ],
-        capture_output=True,
-        universal_newlines=True
-    )
-    logger.info(mesh_regions_tif_mask)
-    logger.info(mesh_regions_tif_mask.stdout)
-    if mesh_regions_tif_mask.returncode != 0:
-        logger.info(mesh_regions_tif_mask.stderr)
-        raise UserWarning(mesh_regions_tif_mask.stderr)
+    if input_data.get('structure_filename'):
+        building_height = 5
+        burn_structures_into_raster = subprocess.run([
+            "gdal_rasterize",
+            "-burn", str(building_height), "-add",
+            input_data['structure_filename'],
+            input_data['elevation_filename']
+        ],
+            capture_output=True,
+            universal_newlines=True
+        )
+        logger.info(burn_structures_into_raster.stdout)
+        if burn_structures_into_raster.returncode != 0:
+            logger.info(burn_structures_into_raster.stderr)
+            raise UserWarning(burn_structures_into_raster.stderr)
+    mesh_regions_tif_mask_filename = None
+    if input_data.get('mesh_region_filename'):
+        mesh_regions_tif_mask_filename = f"{input_data['mesh_region_filename'][:-5]}.tif"
+        mesh_regions_tif_mask = subprocess.run([
+            "gdal_rasterize",
+            "-a", "resolution",
+            "-te", str(xmin), str(ymin), str(xmax), str(ymax),
+            "-tr", str(xres), str(yres),
+            input_data['mesh_region_filename'],
+            mesh_regions_tif_mask_filename
+        ],
+            capture_output=True,
+            universal_newlines=True
+        )
+        logger.info(mesh_regions_tif_mask)
+        logger.info(mesh_regions_tif_mask.stdout)
+        if mesh_regions_tif_mask.returncode != 0:
+            logger.info(mesh_regions_tif_mask.stderr)
+            raise UserWarning(mesh_regions_tif_mask.stderr)
     # the lowest triangle area we can have is 5m2 or the grid resolution squared
     minimum_triangle_area = max((user_resolution ** 2) / 2, (elevation_raster_resolution ** 2) / 2)
     # mesh_filepath = input_data['mesh_filepath']
@@ -187,17 +189,22 @@ nworkers_gdal = 2
 write_vtu = False
 simplify = True
 simplify_tol = 10
+"""
+
+    if mesh_regions_tif_mask_filename:
+        text_blob += f"""
 parameter_files = {{
    'mesh_regions': {{
        'file': '{mesh_regions_tif_mask_filename}',
        'method': 'mean',
-       'tolerance': 0.1
+       'tolerance': -1,
+       'max_area': 20
        }},
 }}
 """
 
     if breaklines_shapefile_path:
-        text_blob += """
+        text_blob += f"""
 constraints = {{
    'breaklines': {{
        'file': '{breaklines_shapefile_path}',
