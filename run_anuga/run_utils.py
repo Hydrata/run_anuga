@@ -188,7 +188,7 @@ nworkers = 2
 nworkers_gdal = 2
 write_vtu = False
 simplify = True
-no_simplify_buffer = True
+simplify_buffer = -1
 simplify_tol = 10
 """
 
