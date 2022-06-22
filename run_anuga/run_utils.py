@@ -188,6 +188,7 @@ nworkers = 2
 nworkers_gdal = 2
 write_vtu = False
 simplify = True
+no_simplify_buffer = True
 simplify_tol = 10
 """
 
@@ -198,7 +199,7 @@ parameter_files = {{
        'file': '{mesh_regions_tif_mask_filename}',
        'method': 'mean',
        'tolerance': -1,
-       'max_area': 20
+       'max_area': 200
        }},
 }}
 """
