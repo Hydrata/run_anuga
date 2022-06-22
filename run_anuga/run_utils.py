@@ -99,6 +99,12 @@ def update_web_interface(run_args, data, files=None):
 
 
 def create_mesh(input_data):
+    mesher_mesh_filepath = os.path.join(input_data['output_directory'], f"{input_data['elevation_filename'].split('/')[-1][:-4]}.mesh") or ""
+    if os.path.isfile(mesher_mesh_filepath):
+        with open(mesher_mesh_filepath, 'r') as mesh_file:
+            mesh_dict = json.load(mesh_file)
+        mesh_size = len(mesh_dict['mesh']['elem'])
+        return mesher_mesh_filepath, mesh_size
     # logger = setup_logger(input_data)
     logger.info(f"create_mesh running")
     elevation_raster = gdal.Open(input_data['elevation_filename'])
@@ -198,7 +204,6 @@ def create_mesh(input_data):
     # anuga_mesh_size = anuga_mesh.tri_mesh.triangles.size
     # logger.info(f"{anuga_mesh_size=}")
     mesher_bin = os.environ.get('MESHER_EXE', '/opt/venv/hydrata/bin/mesher')
-    mesher_mesh_filepath = os.path.join(input_data['output_directory'], f"{input_data['elevation_filename'].split('/')[-1][:-4]}.mesh") or ""
     if input_data['scenario_config'].get('simplify_mesh'):
         max_area = 10000000
     else:
