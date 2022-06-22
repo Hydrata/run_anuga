@@ -11,7 +11,7 @@ import requests
 
 from copy import deepcopy
 from pathlib import Path
-from osgeo import ogr, gdal
+from osgeo import ogr, gdal, osr
 from anuga.utilities import plot_utils as util
 
 from celery.utils.log import get_task_logger
@@ -124,26 +124,57 @@ def create_mesh(input_data):
         if burn_structures_into_raster.returncode != 0:
             logger.info(burn_structures_into_raster.stderr)
             raise UserWarning(burn_structures_into_raster.stderr)
-    mesh_regions_tif_mask_filename = None
+    mesh_region_tif_files = None
     if input_data.get('mesh_region_filename'):
-        mesh_regions_tif_mask_filename = f"{input_data['mesh_region_filename'][:-5]}.tif"
-        mesh_regions_tif_mask = subprocess.run([
-            "gdal_rasterize",
-            "-a", "resolution",
-            "-te", str(xmin), str(ymin), str(xmax), str(ymax),
-            "-tr", str(xres), str(yres),
-            input_data['mesh_region_filename'],
-            mesh_regions_tif_mask_filename
-        ],
-            capture_output=True,
-            universal_newlines=True
-        )
-        logger.info(mesh_regions_tif_mask)
-        logger.info(mesh_regions_tif_mask.stdout)
-        if mesh_regions_tif_mask.returncode != 0:
-            logger.info(mesh_regions_tif_mask.stderr)
-            raise UserWarning(mesh_regions_tif_mask.stderr)
+        mesh_region_tif_files = list()
+        for feature in input_data.get('mesh_region')['features']:
+            resolution = feature.get('properties').get('resolution')
+            mesh_region_name = feature.get('id')
+            shp_boundary_filepath = str(Path(input_data.get('mesh_region_filename')).parent.joinpath(f"{mesh_region_name}.shp"))
+            tif_mesh_region_filepath = str(Path(input_data.get('mesh_region_filename')).parent.joinpath(f"{mesh_region_name}.tif"))
+            epsg_code = int(input_data.get('mesh_region').get('crs').get('properties').get('name').split(':')[-1])
+            make_shp_from_polygon(feature.get('geometry').get('coordinates')[0], epsg_code, shp_boundary_filepath)
+            logger.info(shp_boundary_filepath)
+            mesh_region_clip = subprocess.run([
+                'gdalwarp',
+                f'-cutline', f'{shp_boundary_filepath}',
+                '-crop_to_cutline',
+                '-of', 'GTiff',
+                '-r', 'cubic',
+                '-tr', str(resolution), str(resolution),
+                f'{input_data["elevation_filename"]}',
+                f'{tif_mesh_region_filepath}'
+            ],
+                capture_output=True,
+                universal_newlines=True
+            )
+            logger.info(mesh_region_clip)
+            logger.info(mesh_region_clip.stdout)
+            if mesh_region_clip.returncode != 0:
+                logger.info(mesh_region_clip.stderr)
+                raise UserWarning(mesh_region_clip.stderr)
+            mesh_region_tif_files.append((tif_mesh_region_filepath, resolution,))
+
+
+        # mesh_regions_tif_mask_filename = f"{input_data['mesh_region_filename'][:-5]}.tif"
+        # mesh_regions_tif_mask = subprocess.run([
+        #     "gdal_rasterize",
+        #     "-a", "resolution",
+        #     "-te", str(xmin), str(ymin), str(xmax), str(ymax),
+        #     "-tr", str(xres), str(yres),
+        #     input_data['mesh_region_filename'],
+        #     mesh_regions_tif_mask_filename
+        # ],
+        #     capture_output=True,
+        #     universal_newlines=True
+        # )
+        # logger.info(mesh_regions_tif_mask)
+        # logger.info(mesh_regions_tif_mask.stdout)
+        # if mesh_regions_tif_mask.returncode != 0:
+        #     logger.info(mesh_regions_tif_mask.stderr)
+        #     raise UserWarning(mesh_regions_tif_mask.stderr)
     # the lowest triangle area we can have is 5m2 or the grid resolution squared
+
     minimum_triangle_area = max((user_resolution ** 2) / 2, (elevation_raster_resolution ** 2) / 2)
     # mesh_filepath = input_data['mesh_filepath']
     # # resolution = 50
@@ -192,14 +223,13 @@ simplify_buffer = -1
 simplify_tol = 10
 """
 
-    if mesh_regions_tif_mask_filename:
+    if mesh_region_tif_files:
         text_blob += f"""
 parameter_files = {{
    'mesh_regions': {{
-       'file': '{mesh_regions_tif_mask_filename}',
+       'file': '{mesh_region_tif_files[0][0]}',
        'method': 'mean',
-       'tolerance': -1,
-       'max_area': 200
+       'tolerance': -1
        }},
 }}
 """
@@ -569,3 +599,28 @@ def burn_structures_into_raster(structures_filename, raster_filename, backup=Tru
     if output.returncode != 0:
         raise output.stderr
     return True
+
+
+def make_shp_from_polygon(boundary_polygon, epsg_code, shapefilepath, buffer=0):
+    boundary_ring_geom = ogr.Geometry(ogr.wkbLinearRing)
+    for point in boundary_polygon:
+        boundary_ring_geom.AddPoint(point[0], point[1])
+    boundary_ring_geom.AddPoint(boundary_polygon[0][0], boundary_polygon[0][1])
+    boundary_polygon_geom = ogr.Geometry(ogr.wkbPolygon)
+    boundary_polygon_geom.AddGeometry(boundary_ring_geom)
+    logger.info(f"{boundary_polygon_geom=}")
+
+    driver = ogr.GetDriverByName("ESRI Shapefile")
+    ds = driver.CreateDataSource(shapefilepath)
+    srs = osr.SpatialReference()
+    srs.ImportFromEPSG(epsg_code)
+    layer = ds.CreateLayer("mesh_region", srs, ogr.wkbPolygon)
+    id_field = ogr.FieldDefn("id", ogr.OFTInteger)
+    layer.CreateField(id_field)
+    feature_defn = layer.GetLayerDefn()
+    feature = ogr.Feature(feature_defn)
+    feature.SetGeometry(boundary_polygon_geom)
+    feature.SetField("id", 1)
+    layer.CreateFeature(feature)
+    feature = None
+    ds = None
