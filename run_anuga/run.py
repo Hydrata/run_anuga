@@ -17,7 +17,7 @@ from osgeo import gdal
 from anuga import distribute, finalize, barrier, Inlet_operator
 from anuga.utilities import quantity_setting_functions as qs
 from anuga.operators.rate_operators import Polygonal_rate_operator
-from run_utils import is_dir_check, setup_input_data, update_web_interface, create_mesh, make_interior_holes_and_tags, \
+from run_utils import is_dir_check, setup_input_data, update_web_interface, create_mesher_mesh, create_anuga_mesh, make_interior_holes_and_tags, \
     make_frictions, post_process_sww, zip_result_package, setup_logger
 
 from celery.utils.log import get_task_logger
@@ -35,40 +35,38 @@ def run_sim(package_dir, username=None, password=None):
         if anuga.myid == 0:
             logger.info(f"update_web_interface - building mesh")
             update_web_interface(run_args, data={'status': 'building mesh'})
-            mesher_mesh_filepath, mesh_size = create_mesh(input_data)
-            logger.info(f"create_mesh finished")
-            # logger.info(f"{anuga_mesh}")
-            logger.info(f"{mesher_mesh_filepath}")
             domain = None
-            # if mesher_mesh_filepath:
-            with open(mesher_mesh_filepath, 'r') as mesh_file:
-                mesh_dict = json.load(mesh_file)
-            vertex = mesh_dict['mesh']['vertex']
-            vertex = numpy.array(vertex)
-            elem = mesh_dict['mesh']['elem']
-            points = vertex[:, :2]
-            elev = vertex[:, 2]
-            domain = anuga.Domain(
-                points,
-                elem,
-                use_cache=False,
-                verbose=True
-            )
-            domain.set_quantity('elevation', elev, location='vertices')
-            update_web_interface(run_args, data={'mesh_triangle_count': mesh_size})
-            # else:
-            #     domain = anuga.Domain(
-            #         mesh_filename=input_data['mesh_filepath'],
-            #         use_cache=False,
-            #         verbose=True,
-            #     )
-            #     poly_fun_pairs = [['Extent', input_data['elevation_filename']]]
-            #     elevation_function = qs.composite_quantity_setting_function(
-            #         poly_fun_pairs,
-            #         domain,
-            #         nan_treatment='exception',
-            #     )
-            #     domain.set_quantity('elevation', elevation_function, verbose=True, alpha=0.99, location='centroids')
+            if input_data['scenario_config'].get('simplify_mesh'):
+                mesher_mesh_filepath, mesh_size = create_mesher_mesh(input_data)
+                with open(mesher_mesh_filepath, 'r') as mesh_file:
+                    mesh_dict = json.load(mesh_file)
+                    vertex = mesh_dict['mesh']['vertex']
+                    vertex = numpy.array(vertex)
+                    elem = mesh_dict['mesh']['elem']
+                    points = vertex[:, :2]
+                    elev = vertex[:, 2]
+                    domain = anuga.Domain(
+                        points,
+                        elem,
+                        use_cache=False,
+                        verbose=True
+                    )
+                    domain.set_quantity('elevation', elev, location='vertices')
+                    update_web_interface(run_args, data={'mesh_triangle_count': mesh_size})
+            else:
+                anuga_mesh_filepath, mesh_size = create_anuga_mesh(input_data)
+                domain = anuga.Domain(
+                    mesh_filename=input_data['mesh_filepath'],
+                    use_cache=False,
+                    verbose=True,
+                )
+                poly_fun_pairs = [['Extent', input_data['elevation_filename']]]
+                elevation_function = qs.composite_quantity_setting_function(
+                    poly_fun_pairs,
+                    domain,
+                    nan_treatment='exception',
+                )
+                domain.set_quantity('elevation', elevation_function, verbose=True, alpha=0.99, location='centroids')
             domain.set_name(input_data['run_label'])
             domain.set_datadir(input_data['output_directory'])
             domain.set_minimum_storable_height(0.005)
