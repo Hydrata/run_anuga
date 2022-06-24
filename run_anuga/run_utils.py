@@ -12,6 +12,8 @@ import requests
 from copy import deepcopy
 from pathlib import Path
 from osgeo import ogr, gdal, osr
+
+from anuga import Geo_reference
 from anuga.utilities import plot_utils as util
 
 from celery.utils.log import get_task_logger
@@ -354,16 +356,19 @@ def create_anuga_mesh(input_data):
     bounding_polygon = input_data['boundary_polygon']
     boundary_tags = input_data['boundary_tags']
     logger.info(f"creating anuga_mesh")
+    mesh_geo_reference = Geo_reference(zone=int(input_data['scenario_config'].get('epsg')[-2:]))
     anuga_mesh = anuga.pmesh.mesh_interface.create_mesh_from_regions(
         bounding_polygon=bounding_polygon,
         boundary_tags=boundary_tags,
         maximum_triangle_area=resolution,
         interior_regions=interior_regions,
         interior_holes=interior_holes,
+        mesh_geo_reference=mesh_geo_reference,
         hole_tags=hole_tags,
         filename=mesh_filepath,
         use_cache=False,
         verbose=True,
+        shapefile=f"{input_data['scenario_config'].get('run_id')}_{input_data['scenario_config'].get('id')}_{input_data['scenario_config'].get('project')}_mesh",
         fail_if_polygons_outside=False
     )
     anuga_mesh_size = anuga_mesh.tri_mesh.triangles.size
