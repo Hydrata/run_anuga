@@ -350,25 +350,40 @@ constraints = {{
 
 def create_anuga_mesh(input_data):
     mesh_filepath = input_data['mesh_filepath']
-    resolution = (input_data['scenario_config'].get('resolution') ** 2) / 2
+    triangle_resolution = (input_data['scenario_config'].get('resolution') ** 2) / 2
     interior_regions = make_interior_regions(input_data)
-    interior_holes, hole_tags = make_interior_holes_and_tags(input_data)
+    # interior_holes, hole_tags = make_interior_holes_and_tags(input_data)
     bounding_polygon = input_data['boundary_polygon']
     boundary_tags = input_data['boundary_tags']
     logger.info(f"creating anuga_mesh")
+    if input_data.get('structure_filename'):
+        building_height = 5
+        burn_structures_into_raster = subprocess.run([
+            "gdal_rasterize",
+            "-burn", str(building_height), "-add",
+            input_data['structure_filename'],
+            input_data['elevation_filename']
+        ],
+            capture_output=True,
+            universal_newlines=True
+        )
+        logger.info(burn_structures_into_raster.stdout)
+        if burn_structures_into_raster.returncode != 0:
+            logger.info(burn_structures_into_raster.stderr)
+            raise UserWarning(burn_structures_into_raster.stderr)
     mesh_geo_reference = Geo_reference(zone=int(input_data['scenario_config'].get('epsg')[-2:]))
     anuga_mesh = anuga.pmesh.mesh_interface.create_mesh_from_regions(
         bounding_polygon=bounding_polygon,
         boundary_tags=boundary_tags,
-        maximum_triangle_area=resolution,
+        maximum_triangle_area=triangle_resolution,
         interior_regions=interior_regions,
-        interior_holes=interior_holes,
+        # interior_holes=interior_holes,
         mesh_geo_reference=mesh_geo_reference,
-        hole_tags=hole_tags,
+        # hole_tags=hole_tags,
         filename=mesh_filepath,
         use_cache=False,
         verbose=True,
-        shapefile=f"{input_data['scenario_config'].get('run_id')}_{input_data['scenario_config'].get('id')}_{input_data['scenario_config'].get('project')}_mesh",
+        shapefile=f"{input_data['output_directory']}/{input_data['scenario_config'].get('project')}_{input_data['scenario_config'].get('id')}_{input_data['scenario_config'].get('run_id')}_mesh",
         fail_if_polygons_outside=False
     )
     anuga_mesh_size = anuga_mesh.tri_mesh.triangles.size
@@ -605,7 +620,7 @@ def post_process_sww(package_dir, run_args=None, output_raster_resolution=None):
         min_allowed_height=1.0e-05,
         output_dir=input_data['output_directory'],
         bounding_polygon=input_data['boundary_polygon'],
-        # internal_holes=interior_holes,
+        internal_holes=interior_holes,
         verbose=False,
         k_nearest_neighbours=3,
         creation_options=[]
