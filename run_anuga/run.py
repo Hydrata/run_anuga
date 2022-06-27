@@ -113,7 +113,7 @@ def run_sim(package_dir, username=None, password=None):
 
         duration = input_data['scenario_config'].get('duration')
         # for testing, don't allow model runs longer than one hour
-        duration = 60 * 60 if duration > 60 * 60 else duration
+        # duration = 60 * 60 if duration > 60 * 60 else duration
         # constant_rainfall = input_data['scenario_config'].get('constant_rainfall') or 100
         date_rng = pd.date_range(start='1/1/1970', periods=duration + 1, freq='s')
         inflow_dataframe = pd.DataFrame(date_rng, columns=['datetime'])

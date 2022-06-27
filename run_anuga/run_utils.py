@@ -70,8 +70,8 @@ def setup_input_data(package_dir):
 
     if input_data['scenario_config'].get('resolution'):
         input_data['resolution'] = input_data['scenario_config'].get('resolution')
-    logger.info(f"***")
-    logger.info(input_data['boundary'])
+    # logger.info(f"***")
+    # logger.info(input_data['boundary'])
 
     boundary_polygon, boundary_tags = create_boundary_polygon_from_boundaries(
         input_data['boundary']
