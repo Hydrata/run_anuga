@@ -67,10 +67,10 @@ def run_sim(package_dir, username=None, password=None):
                     nan_treatment='exception',
                 )
                 domain.set_quantity('elevation', elevation_function, verbose=True, alpha=0.99, location='centroids')
-            domain.dump_shapefile(
-                f"{input_data['output_directory']}/{input_data['scenario_config'].get('run_id')}_{input_data['scenario_config'].get('id')}_{input_data['scenario_config'].get('project')}_mesh",
-                input_data['scenario_config'].get('epsg')
-            )
+            # domain.dump_shapefile(
+            #     f"{input_data['output_directory']}/{input_data['scenario_config'].get('run_id')}_{input_data['scenario_config'].get('id')}_{input_data['scenario_config'].get('project')}_mesh",
+            #     input_data['scenario_config'].get('epsg')
+            # )
             domain.set_name(input_data['run_label'])
             domain.set_datadir(input_data['output_directory'])
             domain.set_minimum_storable_height(0.005)
