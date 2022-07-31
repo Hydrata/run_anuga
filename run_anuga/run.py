@@ -135,8 +135,8 @@ def run_sim(package_dir, username=None, password=None):
             geometry = inflow_line.get('geometry').get('coordinates')
             Inlet_operator(domain, geometry, Q=inflow_function)
 
-        # Don't yield more than 1000 timesteps into the SWW file, and smallest resolution is 60 seconds:
-        yieldstep = 60 if math.floor(duration/1000) < 60 else math.floor(duration/1000)
+        # Don't yield more than 100 timesteps into the SWW file, and smallest resolution is 60 seconds:
+        yieldstep = 60 if math.floor(duration/100) < 60 else math.floor(duration/100)
         for t in domain.evolve(yieldstep=yieldstep, finaltime=duration):
             domain.write_time()
             # logger.info(f"domain.timestepping_statistics() on anuga.myid {anuga.myid}: {domain.timestepping_statistics()}")
