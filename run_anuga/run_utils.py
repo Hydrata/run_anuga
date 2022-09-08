@@ -76,6 +76,8 @@ def setup_input_data(package_dir):
     boundary_polygon, boundary_tags = create_boundary_polygon_from_boundaries(
         input_data['boundary']
     )
+    if len(boundary_polygon) == 0 or len(boundary_tags) == 0:
+        raise AttributeError('No boundary data found')
     input_data['boundary_polygon'] = boundary_polygon
     input_data['boundary_tags'] = boundary_tags
     return input_data
@@ -456,7 +458,10 @@ def lookup_boundary_tag(index, boundary_tags):
 
 def create_boundary_polygon_from_boundaries(boundaries_geojson):
     geometry_collection = ogr.Geometry(ogr.wkbGeometryCollection)
-    epsg_code = boundaries_geojson.get('crs').get('properties').get('name').split(':')[-1]
+    if boundaries_geojson.get('crs'):
+        epsg_code = boundaries_geojson.get('crs').get('properties').get('name').split(':')[-1]
+    else:
+        return list(), dict()
     # Create a dict of the available boundary tags
     boundary_tag_labels = dict()
     all_x_coordinates = list()
