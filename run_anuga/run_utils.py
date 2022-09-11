@@ -72,7 +72,8 @@ def setup_input_data(package_dir):
         input_data['resolution'] = input_data['scenario_config'].get('resolution')
     # logger.info(f"***")
     # logger.info(input_data['boundary'])
-
+    if len(input_data['boundary'].get('features')) == 0:
+        raise AttributeError('No boundary features found')
     boundary_polygon, boundary_tags = create_boundary_polygon_from_boundaries(
         input_data['boundary']
     )
