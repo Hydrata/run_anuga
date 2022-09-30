@@ -15,9 +15,13 @@ from osgeo import ogr, gdal, osr
 
 from anuga import Geo_reference
 from anuga.utilities import plot_utils as util
-
-from celery.utils.log import get_task_logger
-logger = get_task_logger('run')
+try:
+    from celery.utils.log import get_task_logger
+    logger = get_task_logger('run')
+    from django.conf import settings
+except ImportError:
+    logger = logging.getLogger(__name__)
+    settings = dict()
 
 
 def is_dir_check(path):
@@ -94,13 +98,17 @@ def update_web_interface(run_args, data, files=None):
         client = requests.Session()
         client.auth = requests.auth.HTTPBasicAuth(username, password)
         # logger.info(f"hydrata.com post:{data}")
+        if hasattr(settings, "SITEURL") and "localhost" in settings.SITEURL:
+            url = "http://localhost:8000/"
+        else:
+            url = "https://hydrata.com/"
         response = client.patch(
-            f"https://hydrata.com/anuga/api/{data['project']}/{data['scenario']}/run/{run_id}/",
+            f"{url}anuga/api/{data['project']}/{data['scenario']}/run/{run_id}/",
             data=data,
             files=files
         )
         status_code = response.status_code
-        # logger.info(f"hydrata.com response: {status_code}")
+        logger.info(f"update_web_interface response: {status_code}")
 
 
 def create_mesher_mesh(input_data):
@@ -709,11 +717,17 @@ def setup_logger(input_data, username=None, password=None):
     logger.addHandler(file_handler)
 
     if username and password:
+        if "localhost" in settings.SITEURL:
+            host = "localhost:8000"
+            secure = False
+        else:
+            host = "hydrata.com"
+            secure = True
         web_handler = logging.handlers.HTTPHandler(
-            host='hydrata.com',
+            host=host,
             url=f"/anuga/api/{input_data['scenario_config'].get('project')}/{input_data['scenario_config'].get('id')}/run/{input_data['scenario_config'].get('run_id')}/log/",
             method='POST',
-            secure=True,
+            secure=secure,
             credentials=(username, password,)
         )
         web_handler.setLevel(logging.DEBUG)
