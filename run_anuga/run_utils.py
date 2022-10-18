@@ -397,9 +397,25 @@ def create_anuga_mesh(input_data):
         shapefile=f"{input_data['output_directory']}/{input_data['scenario_config'].get('project')}_{input_data['scenario_config'].get('id')}_{input_data['scenario_config'].get('run_id')}_mesh",
         fail_if_polygons_outside=False
     )
-    anuga_mesh_size = anuga_mesh.tri_mesh.triangles.size
-    logger.info(f"{anuga_mesh_size=}")
-    return mesh_filepath, anuga_mesh_size
+    logger.info(f"{anuga_mesh.tri_mesh.triangles.size=}")
+    return mesh_filepath, anuga_mesh
+
+
+def get_sql_triangles_from_anuga_mesh(anuga_mesh):
+    vertices = anuga_mesh.tri_mesh.vertices
+    triangles = anuga_mesh.tri_mesh.triangles
+    output = "MULTIPOLYGON ("
+    for triangle in triangles:
+        # get coordinates:
+        one = str(vertices[triangle[0]])[2:-1]
+        two = str(vertices[triangle[1]])[2:-1]
+        three = str(vertices[triangle[2]])[2:-1]
+        four = str(vertices[triangle[0]])[2:-1]
+        triangle_string = f"(({one},{two},{three},{four})),"
+        output += str(triangle_string)
+    output = output[:-1] + ")"
+    logger.debug(output)
+    return output
 
 
 
