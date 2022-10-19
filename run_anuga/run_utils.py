@@ -418,7 +418,6 @@ def get_sql_triangles_from_anuga_mesh(anuga_mesh):
     return output
 
 
-
 def make_interior_regions(input_data):
     interior_regions = list()
     if input_data.get('mesh_region'):
