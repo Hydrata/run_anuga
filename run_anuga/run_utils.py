@@ -49,26 +49,21 @@ def setup_input_data(package_dir):
     input_data['boundary'] = json.load(
         open(input_data['boundary_filename'])
     )
-    if input_data['scenario_config'].get('friction'):
-        input_data['friction_filename'] = os.path.join(package_dir, f"inputs/{input_data['scenario_config'].get('friction')}")
-        input_data['friction'] = json.load(
-            open(input_data['friction_filename'])
-        )
-    if input_data['scenario_config'].get('inflow'):
-        input_data['inflow_filename'] = os.path.join(package_dir, f"inputs/{input_data['scenario_config'].get('inflow')}")
-        input_data['inflow'] = json.load(
-            open(input_data['inflow_filename'])
-        )
-    if input_data['scenario_config'].get('structure'):
-        input_data['structure_filename'] = os.path.join(package_dir, f"inputs/{input_data['scenario_config'].get('structure')}")
-        input_data['structure'] = json.load(
-            open(input_data['structure_filename'])
-        )
-    if input_data['scenario_config'].get('mesh_region'):
-        input_data['mesh_region_filename'] = os.path.join(package_dir, f"inputs/{input_data['scenario_config'].get('mesh_region')}")
-        input_data['mesh_region'] = json.load(
-            open(input_data['mesh_region_filename'])
-        )
+    data_types = [
+        'friction',
+        'inflow',
+        'structure',
+        'mesh_region',
+        'lumped_catchment',
+        'nodes',
+        'links'
+    ]
+    for data_type in data_types:
+        if input_data['scenario_config'].get(data_type):
+            input_data[f'{data_type}_filename'] = os.path.join(package_dir, f"inputs/{input_data['scenario_config'].get(data_type)}")
+            input_data[data_type] = json.load(
+                open(input_data[f'{data_type}_filename'])
+            )
     if input_data['scenario_config'].get('elevation'):
         input_data['elevation_filename'] = os.path.join(package_dir, f"inputs/{input_data['scenario_config'].get('elevation')}")
 
@@ -414,7 +409,6 @@ def get_sql_triangles_from_anuga_mesh(anuga_mesh):
         triangle_string = f"(({one},{two},{three},{four})),"
         output += str(triangle_string)
     output = output[:-1] + ")"
-    logger.debug(output)
     return output
 
 
