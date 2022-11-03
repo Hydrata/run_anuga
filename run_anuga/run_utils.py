@@ -54,7 +54,8 @@ def setup_input_data(package_dir):
         'inflow',
         'structure',
         'mesh_region',
-        'lumped_catchment',
+        'network',
+        'catchment',
         'nodes',
         'links'
     ]
