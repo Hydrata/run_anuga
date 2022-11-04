@@ -125,12 +125,24 @@ def run_sim(package_dir, username=None, password=None):
         inflow_dataframe = pd.DataFrame(date_rng, columns=['datetime'])
         rainfall_inflow_polygons = [feature for feature in input_data.get('inflow').get('features') if feature.get('properties').get('type') == 'Rainfall']
         surface_inflow_lines = [feature for feature in input_data.get('inflow').get('features') if feature.get('properties').get('type') == 'Surface']
+        catchment_polygons = [feature for feature in input_data.get('catchment').get('features')]
         for inflow_polygon in rainfall_inflow_polygons:
             polygon_name = inflow_polygon.get('id')
             inflow_dataframe[polygon_name] = float(inflow_polygon.get('properties').get('data'))
             inflow_function = create_inflow_function(inflow_dataframe, polygon_name)
             geometry = inflow_polygon.get('geometry').get('coordinates')
             Polygonal_rate_operator(domain, rate=inflow_function, factor=1.0e-6, polygon=geometry, default_rate=0.00)
+        if len(rainfall_inflow_polygons) >= 1 and len(catchment_polygons) > 0:
+            for catchment_polygon in catchment_polygons:
+                uniform_rainfall_rate = float(rainfall_inflow_polygons[0].get('properties').get('data'))
+                polygon_name = catchment_polygon.get('id')
+                inflow_dataframe[polygon_name] = uniform_rainfall_rate
+                inflow_function = create_inflow_function(inflow_dataframe, polygon_name)
+                geometry = catchment_polygon.get('geometry').get('coordinates')[0]
+                Polygonal_rate_operator(domain, rate=inflow_function, factor=-1.0e-6, polygon=geometry, default_rate=0.00)
+        if len(rainfall_inflow_polygons) > 1 and len(catchment_polygons) > 0:
+            raise NotImplementedError('Cannot handle multiple rainfall polygons together with catchment hydrology.')
+
         for inflow_line in surface_inflow_lines:
             polyline_name = inflow_line.get('id')
             inflow_dataframe[polyline_name] = float(inflow_line.get('properties').get('data'))
