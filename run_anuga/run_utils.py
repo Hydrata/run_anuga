@@ -12,6 +12,8 @@ import requests
 from copy import deepcopy
 from pathlib import Path
 from osgeo import ogr, gdal, osr
+from shapely.geometry import Point, LineString, LinearRing, Polygon
+from shapely.prepared import prep
 
 from anuga import Geo_reference
 from anuga.utilities import plot_utils as util
@@ -46,9 +48,8 @@ def setup_input_data(package_dir):
     Path(input_data['output_directory']).mkdir(parents=True, exist_ok=True)
 
     input_data['boundary_filename'] = os.path.join(package_dir, f"inputs/{input_data['scenario_config'].get('boundary')}")
-    input_data['boundary'] = json.load(
-        open(input_data['boundary_filename'])
-    )
+    input_data['boundary'] = json.load(open(input_data['boundary_filename']))
+
     data_types = [
         'friction',
         'inflow',
@@ -60,18 +61,18 @@ def setup_input_data(package_dir):
         'links'
     ]
     for data_type in data_types:
-        if input_data['scenario_config'].get(data_type):
-            input_data[f'{data_type}_filename'] = os.path.join(package_dir, f"inputs/{input_data['scenario_config'].get(data_type)}")
-            input_data[data_type] = json.load(
-                open(input_data[f'{data_type}_filename'])
-            )
-    if input_data['scenario_config'].get('elevation'):
-        input_data['elevation_filename'] = os.path.join(package_dir, f"inputs/{input_data['scenario_config'].get('elevation')}")
+        filepath = os.path.join(package_dir, f"inputs/{input_data['scenario_config'].get(data_type)}")
+        if input_data['scenario_config'].get(data_type) and os.path.isfile(filepath):
+            input_data[f'{data_type}_filename'] = filepath
+            input_data[data_type] = json.load(open(filepath))
+
+    elevation_filepath = os.path.join(package_dir, f"inputs/{input_data['scenario_config'].get('elevation')}")
+    if input_data['scenario_config'].get('elevation') and os.path.isfile(elevation_filepath):
+        input_data['elevation_filename'] = elevation_filepath
 
     if input_data['scenario_config'].get('resolution'):
         input_data['resolution'] = input_data['scenario_config'].get('resolution')
-    # logger.info(f"***")
-    # logger.info(input_data['boundary'])
+
     if len(input_data['boundary'].get('features')) == 0:
         raise AttributeError('No boundary features found')
     boundary_polygon, boundary_tags = create_boundary_polygon_from_boundaries(
@@ -779,3 +780,85 @@ def make_shp_from_polygon(boundary_polygon, epsg_code, shapefilepath, buffer=0):
     layer.CreateFeature(feature)
     feature = None
     ds = None
+
+
+def snap_links_to_nodes(package_dir):
+    print('snap_links_to_nodes')
+    return True
+
+
+def calculate_hydrology(package_dir):
+    input_data = setup_input_data(package_dir)
+
+    # prepare Nodes
+    node_points = list()
+    for node in input_data.get('nodes').get('features'):
+        node_point = Point(node.get('geometry').get('coordinates'))
+        node_points.append(node_point)
+
+    # assign catchments to nodes
+    for index, catchment in enumerate(input_data.get('catchment').get('features')):
+        catchment_polygon = prep(Polygon(catchment.get('geometry').get('coordinates')[0]))
+        node_candidate = list(filter(catchment_polygon.contains, node_points))
+        if len(node_candidate) == 0:
+            logger.info(f"Catchment {catchment.get('id')} has no internal node")
+            continue
+        if len(node_candidate) > 1:
+            raise IndexError(f"Catchment {catchment.get('id')} has more than one node")
+        print('find', node_candidate)
+        node_index = node_points.index(node_candidate[0])
+        input_data['catchment']['features'][index]['node_id'] = input_data.get('nodes').get('features')[node_index].get('id')
+
+    # assign rainfall to catchments
+    def rainfall_filter(inflow_feature):
+        return inflow_feature.get('properties').get('type')
+
+    rainfall_inflows = list(filter(rainfall_filter, input_data.get('inflow').get('features')))
+    rainfall_steady_state_intensity_mm_hr = float(rainfall_inflows[0].get('properties').get('data'))
+    rainfall_steady_state_intensity_m_s = rainfall_steady_state_intensity_mm_hr * 0.001 / 3600
+    for index, catchment in enumerate(input_data.get('catchment').get('features')):
+        area_m2 = Polygon(catchment.get('geometry').get('coordinates')[0]).area
+        input_data['catchment']['features'][index]['surface_flow_m3_s'] = 1.0 * rainfall_steady_state_intensity_m_s * area_m2
+
+    # create surface inflows at catchment nodes
+    for index, catchment in enumerate(input_data.get('catchment').get('features')):
+        if catchment.get('surface_flow_m3_s'):
+            node_id = catchment.get('node_id')
+            location = None
+            for node in input_data.get('nodes').get('features'):
+                if node.get('id') == node_id:
+                    location = node.get('geometry').get('coordinates')
+            # create an inflow object
+            start_point = [location[0] - 10, location[1]]
+            end_point = [location[0] + 10, location[1]]
+            coordinates = [start_point, end_point]
+            inflow_object = make_new_inflow(node_id, coordinates, catchment.get('surface_flow_m3_s'))
+            add_inflow_to_file(inflow_object, input_data.get('inflow_filename'))
+
+    return True
+
+
+def make_new_inflow(inflow_id, coordinates, flow):
+    return {
+        'type': 'Feature',
+        'id': f'inf_16_inflow_01.{inflow_id}',
+        'geometry': {
+            'type': 'LineString',
+            'coordinates': coordinates
+        },
+        'geometry_name': 'the_geom',
+        'properties': {
+            'fid': 1,
+            'type': 'Surface',
+            'data': str(flow),
+            'description': None
+        }
+    }
+
+
+def add_inflow_to_file(inflow_object, filepath):
+    file_contents = json.load(open(filepath))
+    file_contents['features'].append(inflow_object)
+    with open(filepath, 'w') as json_file:
+        json.dump(file_contents, json_file)
+    return True
