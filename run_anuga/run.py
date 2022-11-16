@@ -1,18 +1,12 @@
 import json
-
-import matplotlib.pyplot as plt
 import numpy
 
 import anuga
 import argparse
-import logging
 import math
 import os
 import pandas as pd
 import traceback
-
-from logging import handlers
-from osgeo import gdal
 
 from anuga import distribute, finalize, barrier, Inlet_operator
 from anuga.utilities import quantity_setting_functions as qs
@@ -96,11 +90,8 @@ def run_sim(package_dir, username=None, password=None):
             'exterior': anuga.Dirichlet_boundary([0, 0, 0]),
             'interior': anuga.Reflective_boundary(domain),
             'Dirichlet': anuga.Dirichlet_boundary([0, 0, 0]),
-            'dirichlet': anuga.Dirichlet_boundary([0, 0, 0]),
             'Reflective': anuga.Reflective_boundary(domain),
-            'reflective': anuga.Reflective_boundary(domain),
             'Transmissive': anuga.Transmissive_boundary(domain),
-            'transmissive': anuga.Transmissive_boundary(domain),
             'ghost': None
         }
         boundaries = dict()
@@ -118,9 +109,6 @@ def run_sim(package_dir, username=None, password=None):
 
 
         duration = input_data['scenario_config'].get('duration')
-        # for testing, don't allow model runs longer than one hour
-        # duration = 60 * 60 if duration > 60 * 60 else duration
-        # constant_rainfall = input_data['scenario_config'].get('constant_rainfall') or 100
         date_rng = pd.date_range(start='1/1/1970', periods=duration + 1, freq='s')
         inflow_dataframe = pd.DataFrame(date_rng, columns=['datetime'])
         rainfall_inflow_polygons = [feature for feature in input_data.get('inflow').get('features') if feature.get('properties').get('type') == 'Rainfall']
