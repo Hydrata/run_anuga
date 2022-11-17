@@ -859,3 +859,14 @@ def add_inflow_to_file(inflow_object, filepath):
     with open(filepath, 'w') as json_file:
         json.dump(file_contents, json_file)
     return True
+
+
+def check_coordinates_are_in_polygon(coordinates, polygon):
+    shapely_polgyon = Polygon(polygon)
+    if isinstance(coordinates[0], float):
+        coordinates = [coordinates]
+    for point in coordinates:
+        shapely_point = Point(point)
+        if not shapely_polgyon.contains(shapely_point):
+            return False
+    return True

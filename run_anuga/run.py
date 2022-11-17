@@ -12,7 +12,7 @@ from anuga import distribute, finalize, barrier, Inlet_operator
 from anuga.utilities import quantity_setting_functions as qs
 from anuga.operators.rate_operators import Polygonal_rate_operator
 from run_utils import is_dir_check, setup_input_data, update_web_interface, create_mesher_mesh, create_anuga_mesh, make_interior_holes_and_tags, \
-    make_frictions, post_process_sww, zip_result_package, setup_logger
+    make_frictions, post_process_sww, zip_result_package, setup_logger, check_coordinates_are_in_polygon
 
 from celery.utils.log import get_task_logger
 logger = get_task_logger(__name__)
@@ -114,6 +114,7 @@ def run_sim(package_dir, username=None, password=None):
         rainfall_inflow_polygons = [feature for feature in input_data.get('inflow').get('features') if feature.get('properties').get('type') == 'Rainfall']
         surface_inflow_lines = [feature for feature in input_data.get('inflow').get('features') if feature.get('properties').get('type') == 'Surface']
         catchment_polygons =  [feature for feature in input_data.get('catchment').get('features')] if input_data.get('catchment') else []
+        boundary_polygon = input_data.get('boundary_polygon')
         for inflow_polygon in rainfall_inflow_polygons:
             polygon_name = inflow_polygon.get('id')
             inflow_dataframe[polygon_name] = float(inflow_polygon.get('properties').get('data'))
@@ -127,7 +128,9 @@ def run_sim(package_dir, username=None, password=None):
                 inflow_dataframe[polygon_name] = uniform_rainfall_rate
                 inflow_function = create_inflow_function(inflow_dataframe, polygon_name)
                 geometry = catchment_polygon.get('geometry').get('coordinates')[0]
-                Polygonal_rate_operator(domain, rate=inflow_function, factor=-1.0e-6, polygon=geometry, default_rate=0.00)
+                # The catchment needs to be wholly in the domain:
+                if check_coordinates_are_in_polygon(geometry, boundary_polygon):
+                    Polygonal_rate_operator(domain, rate=inflow_function, factor=-1.0e-6, polygon=geometry, default_rate=0.00)
         if len(rainfall_inflow_polygons) > 1 and len(catchment_polygons) > 0:
             raise NotImplementedError('Cannot handle multiple rainfall polygons together with catchment hydrology.')
 
@@ -136,7 +139,9 @@ def run_sim(package_dir, username=None, password=None):
             inflow_dataframe[polyline_name] = float(inflow_line.get('properties').get('data'))
             inflow_function = create_inflow_function(inflow_dataframe, polyline_name)
             geometry = inflow_line.get('geometry').get('coordinates')
-            Inlet_operator(domain, geometry, Q=inflow_function)
+            # check that inflow line is actually in the domain:
+            if check_coordinates_are_in_polygon(geometry, boundary_polygon):
+                Inlet_operator(domain, geometry, Q=inflow_function)
 
         # Don't yield more than 100 timesteps into the SWW file, and smallest resolution is 60 seconds:
         yieldstep = 60 if math.floor(duration/100) < 60 else math.floor(duration/100)
