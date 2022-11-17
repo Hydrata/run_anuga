@@ -61,6 +61,7 @@ def run_sim(package_dir, username=None, password=None):
                     nan_treatment='exception',
                 )
                 domain.set_quantity('elevation', elevation_function, verbose=True, alpha=0.99, location='centroids')
+            if input_data['scenario_config'].get('store_mesh'):
                 if getattr(domain, "dump_shapefile", None):
                     shapefile_name = f"{input_data['output_directory']}/{input_data['scenario_config'].get('run_id')}_{input_data['scenario_config'].get('id')}_{input_data['scenario_config'].get('project')}_mesh"
                     logger.info(f"mesh shapefile: {shapefile_name}")
