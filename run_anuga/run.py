@@ -113,7 +113,7 @@ def run_sim(package_dir, username=None, password=None):
         inflow_dataframe = pd.DataFrame(date_rng, columns=['datetime'])
         rainfall_inflow_polygons = [feature for feature in input_data.get('inflow').get('features') if feature.get('properties').get('type') == 'Rainfall']
         surface_inflow_lines = [feature for feature in input_data.get('inflow').get('features') if feature.get('properties').get('type') == 'Surface']
-        catchment_polygons =  [feature for feature in input_data.get('catchment').get('features')] if input_data.get('catchement') else []
+        catchment_polygons =  [feature for feature in input_data.get('catchment').get('features')] if input_data.get('catchment') else []
         for inflow_polygon in rainfall_inflow_polygons:
             polygon_name = inflow_polygon.get('id')
             inflow_dataframe[polygon_name] = float(inflow_polygon.get('properties').get('data'))
