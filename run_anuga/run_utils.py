@@ -622,7 +622,7 @@ def post_process_sww(package_dir, run_args=None, output_raster_resolution=None):
     logger.info(f'{resolutions=}')
     if len(resolutions) == 0:
         resolutions = [input_data.get('resolution') or 1000]
-    finest_grid_resolution = min(resolutions) / 2
+    finest_grid_resolution = min(resolutions)
     logger.info(f'raster output resolution: {finest_grid_resolution}m')
 
     epsg_integer = int(input_data['scenario_config'].get("epsg").split(":")[1]
