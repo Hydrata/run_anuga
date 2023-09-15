@@ -1,0 +1,68 @@
+{
+    "type": "FeatureCollection",
+    "features": [
+        {
+            "type": "Feature",
+            "id": "bdy_344_boundary_01.1",
+            "geometry": {
+                "type": "LineString",
+                "coordinates": [
+                    [
+                        259771.16826382,
+                        6265381.87808
+                    ],
+                    [
+                        259737.66209356,
+                        6265237.10184645
+                    ],
+                    [
+                        259780.95705957,
+                        6264939.76572511
+                    ],
+                    [
+                        259948.86708657,
+                        6264698.38711322
+                    ],
+                    [
+                        260701.55132962,
+                        6264783.29071785
+                    ],
+                    [
+                        260673.78755321,
+                        6264938.40472526
+                    ],
+                    [
+                        260377.49421016,
+                        6265274.29666501
+                    ],
+                    [
+                        260319.06504146,
+                        6265435.25166328
+                    ],
+                    [
+                        259776.8352291,
+                        6265420.31523946
+                    ]
+                ]
+            },
+            "geometry_name": "the_geom",
+            "properties": {
+                "fid": 1,
+                "description": null,
+                "boundary": "Dirichlet",
+                "location": "External",
+                "data": null
+            }
+        }
+    ],
+    "totalFeatures": 1,
+    "numberMatched": 1,
+    "numberReturned": 1,
+    "timeStamp": "2023-03-26T12:55:08.141Z",
+    "crs": {
+        "type": "name",
+        "properties": {
+            "name": "urn:ogc:def:crs:EPSG::32756"
+        }
+    }
+}

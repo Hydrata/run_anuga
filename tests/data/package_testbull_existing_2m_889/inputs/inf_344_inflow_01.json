@@ -1,0 +1,51 @@
+{
+    "type": "FeatureCollection",
+    "features": [
+        {
+            "type": "Feature",
+            "id": "inf_344_inflow_01.1",
+            "geometry": {
+                "type": "LineString",
+                "coordinates": [
+                    [
+                        259629.23139614,
+                        6265579.02754003
+                    ],
+                    [
+                        259631.558994,
+                        6264590.05788184
+                    ],
+                    [
+                        260825.02872173,
+                        6264606.80912308
+                    ],
+                    [
+                        260826.50477192,
+                        6265607.74756411
+                    ],
+                    [
+                        259651.04070963,
+                        6265608.62782526
+                    ]
+                ]
+            },
+            "geometry_name": "the_geom",
+            "properties": {
+                "fid": 1,
+                "type": "Rainfall",
+                "data": "100",
+                "description": null
+            }
+        }
+    ],
+    "totalFeatures": 1,
+    "numberMatched": 1,
+    "numberReturned": 1,
+    "timeStamp": "2023-03-26T12:55:08.750Z",
+    "crs": {
+        "type": "name",
+        "properties": {
+            "name": "urn:ogc:def:crs:EPSG::32756"
+        }
+    }
+}
