@@ -391,7 +391,6 @@ def create_anuga_mesh(input_data):
         filename=mesh_filepath,
         use_cache=False,
         verbose=True,
-        shapefile=f"{input_data['output_directory']}/{input_data['scenario_config'].get('project')}_{input_data['scenario_config'].get('id')}_{input_data['scenario_config'].get('run_id')}_mesh",
         fail_if_polygons_outside=False
     )
     logger.info(f"{anuga_mesh.tri_mesh.triangles.size=}")
@@ -686,7 +685,7 @@ def zip_result_package(package_dir, username=None, password=None, remove=False):
     input_data = setup_input_data(package_dir)
     zip_filename = f"{input_data.get('scenario_config').get('run_id')}_{input_data.get('scenario_config').get('id')}_{input_data.get('scenario_config').get('project')}_results"
     zip_directory = Path(package_dir).parent.absolute()
-    zip_filepath = str(Path(zip_directory, zip_filename))
+    zip_filepath = f"{Path(zip_directory, zip_filename)}.zip"
     shutil.make_archive(zip_filepath, 'zip', package_dir)
     if username and password:
         run_args = (package_dir, username, password)
@@ -702,6 +701,7 @@ def zip_result_package(package_dir, username=None, password=None, remove=False):
         )
     if remove:
         shutil.rmtree(package_dir)
+    return zip_filepath
 
 
 def setup_logger(input_data, username=None, password=None):

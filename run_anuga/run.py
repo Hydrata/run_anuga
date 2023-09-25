@@ -160,7 +160,7 @@ def run_sim(package_dir, username=None, password=None):
         if anuga.myid == 0:
             post_process_sww(package_dir, run_args=run_args)
             if run_args:
-                zip_result_package(package_dir, username, password, remove=False)
+                result_zip_path = zip_result_package(package_dir, username, password, remove=False)
     except Exception as e:
         update_web_interface(run_args, data={'status': 'error'})
         logger.error(f"{traceback.format_exc()}")
@@ -168,7 +168,7 @@ def run_sim(package_dir, username=None, password=None):
     finally:
         finalize()
     logger.info(f"finished run: {input_data['run_label']}")
-    return f"finished run: {input_data['run_label']}"
+    return result_zip_path
 
 
 if __name__ == '__main__':

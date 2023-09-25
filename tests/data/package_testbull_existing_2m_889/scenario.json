@@ -17,7 +17,7 @@
     "nodes": null,
     "links": null,
     "simplify_mesh": false,
-    "resolution": 2.0,
+    "resolution": 10,
     "max_rmse_tolerance": 1.0,
     "duration": 120
 }
