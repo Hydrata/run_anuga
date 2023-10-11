@@ -43,7 +43,7 @@ def run_sim(package_dir, username=None, password=None):
                         points,
                         elem,
                         use_cache=False,
-                        verbose=True
+                        verbose=False
                     )
                     domain.set_quantity('elevation', elev, location='vertices')
                     update_web_interface(run_args, data={'mesh_triangle_count': mesh_size})
@@ -52,7 +52,7 @@ def run_sim(package_dir, username=None, password=None):
                 domain = anuga.Domain(
                     mesh_filename=input_data['mesh_filepath'],
                     use_cache=False,
-                    verbose=True,
+                    verbose=False,
                 )
                 poly_fun_pairs = [['Extent', input_data['elevation_filename']]]
                 elevation_function = qs.composite_quantity_setting_function(
@@ -60,7 +60,7 @@ def run_sim(package_dir, username=None, password=None):
                     domain,
                     nan_treatment='exception',
                 )
-                domain.set_quantity('elevation', elevation_function, verbose=True, alpha=0.99, location='centroids')
+                domain.set_quantity('elevation', elevation_function, verbose=False, alpha=0.99, location='centroids')
             if input_data['scenario_config'].get('store_mesh'):
                 if getattr(domain, "dump_shapefile", None):
                     shapefile_name = f"{input_data['output_directory']}/{input_data['scenario_config'].get('run_id')}_{input_data['scenario_config'].get('id')}_{input_data['scenario_config'].get('project')}_mesh"
@@ -77,15 +77,15 @@ def run_sim(package_dir, username=None, password=None):
                 frictions,
                 domain
             )
-            domain.set_quantity('friction', friction_function, verbose=True)
-            domain.set_quantity('stage', 0.0, verbose=True)
+            domain.set_quantity('friction', friction_function, verbose=False)
+            domain.set_quantity('stage', 0.0, verbose=False)
 
             update_web_interface(run_args, data={'status': 'created mesh'})
         else:
             domain = None
         # logger.info(f"domain on anuga.myid {anuga.myid}: {domain}")
         barrier()
-        domain = distribute(domain, verbose=True)
+        domain = distribute(domain, verbose=False)
         # logger.info(f"domain on anuga.myid {anuga.myid} after distribute(): {domain}")
         default_boundary_maps = {
             'exterior': anuga.Dirichlet_boundary([0, 0, 0]),
@@ -154,7 +154,7 @@ def run_sim(package_dir, username=None, password=None):
                 # logger.info(f"{domain.timestepping_statistics()}")
                 update_web_interface(run_args, data={"status": f"{round(t/duration * 100, 0)}%"})
         barrier()
-        domain.sww_merge(verbose=True, delete_old=True)
+        domain.sww_merge(verbose=False, delete_old=True)
         barrier()
 
         if anuga.myid == 0:
