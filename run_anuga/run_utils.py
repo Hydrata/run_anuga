@@ -38,6 +38,7 @@ def setup_input_data(package_dir):
         raise FileNotFoundError(f'Could not find "scenario.json" in {package_dir}')
 
     input_data = dict()
+    input_data['control_server'] = os.getenv("SITEURL", "http://localhost")
     input_data['scenario_config'] = json.load(open(os.path.join(package_dir, 'scenario.json')))
     project_id = input_data['scenario_config'].get('project')
     scenario_id = input_data['scenario_config'].get('id')
@@ -98,7 +99,7 @@ def update_web_interface(run_args, data, files=None):
         if hasattr(settings, "SITEURL") and "localhost" in settings.SITEURL:
             url = "http://localhost:8000/"
         else:
-            url = "https://hydrata.com/"
+            url = input_data['control_server'] or "https://hydrata.com/"
         response = client.patch(
             f"{url}anuga/api/{data['project']}/{data['scenario']}/run/{run_id}/",
             data=data,
@@ -725,12 +726,14 @@ def setup_logger(input_data, username=None, password=None):
     logger.addHandler(file_handler)
 
     if username and password:
+        host = None
         if "localhost" in settings.SITEURL:
             host = "localhost:8000"
             secure = False
         else:
-            host = "hydrata.com"
+            host = input_data['control_server'] or "https://hydrata.com/"
             secure = True
+        host = host.split("://")[-1].rstrip('\/')
         web_handler = logging.handlers.HTTPHandler(
             host=host,
             url=f"/anuga/api/{input_data['scenario_config'].get('project')}/{input_data['scenario_config'].get('id')}/run/{input_data['scenario_config'].get('run_id')}/log/",
