@@ -687,7 +687,7 @@ def zip_result_package(package_dir, username=None, password=None, remove=False):
     zip_filename = f"{input_data.get('scenario_config').get('run_id')}_{input_data.get('scenario_config').get('id')}_{input_data.get('scenario_config').get('project')}_results"
     zip_directory = Path(package_dir).parent.absolute()
     zip_filepath = f"{Path(zip_directory, zip_filename)}.zip"
-    shutil.make_archive(zip_filepath, 'zip', package_dir)
+    shutil.make_archive(zip_filepath.split('.')[1], 'zip', package_dir)
     if username and password:
         run_args = (package_dir, username, password)
         update_web_interface(
