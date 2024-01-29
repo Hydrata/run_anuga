@@ -106,7 +106,8 @@ def update_web_interface(run_args, data, files=None):
             files=files
         )
         status_code = response.status_code
-        logger.info(f"update_web_interface response: {status_code}")
+        if status_code >= 400:
+            logger.error(f"Error updating web interface. HTTP code: {status_code} - {response.text}")
 
 
 def create_mesher_mesh(input_data):

@@ -1,4 +1,6 @@
 import json
+import time
+
 import numpy
 
 import anuga
@@ -23,7 +25,7 @@ def run_sim(package_dir, username=None, password=None):
     input_data = setup_input_data(package_dir)
     output_stats = dict()
     logger = setup_logger(input_data, username, password)
-
+    result_zip_path = None
     try:
         logger.info(f"{anuga.myid=}")
         if anuga.myid == 0:
@@ -147,12 +149,16 @@ def run_sim(package_dir, username=None, password=None):
         # Don't yield more than 100 timesteps into the SWW file, and smallest resolution is 60 seconds:
         yieldstep = 60 if math.floor(duration/100) < 60 else math.floor(duration/100)
         for t in domain.evolve(yieldstep=yieldstep, finaltime=duration):
+            start = time.time()
             domain.write_time()
             # logger.info(f"domain.timestepping_statistics() on anuga.myid {anuga.myid}: {domain.timestepping_statistics()}")
             if anuga.myid == 0:
-                logger.info(f'domain.evolve {t} on processor {anuga.myid}')
+                percentage_done = str(round(t * 100 / duration, 0)).zfill(3)
                 # logger.info(f"{domain.timestepping_statistics()}")
-                update_web_interface(run_args, data={"status": f"{round(t/duration * 100, 0)}%"})
+                update_web_interface(run_args, data={"status": f"{percentage_done}%"})
+                stop = time.time()
+                duration_minutes = round((stop - start) / 60, 2)
+                logger.info(f'{percentage_done}% complete. Latest update took {duration_minutes} minutes.')
         barrier()
         domain.sww_merge(verbose=False, delete_old=True)
         barrier()
