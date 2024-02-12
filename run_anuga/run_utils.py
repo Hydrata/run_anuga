@@ -38,7 +38,6 @@ def setup_input_data(package_dir):
         raise FileNotFoundError(f'Could not find "scenario.json" in {package_dir}')
 
     input_data = dict()
-    input_data['control_server'] = os.getenv("SITEURL", "http://localhost")
     input_data['scenario_config'] = json.load(open(os.path.join(package_dir, 'scenario.json')))
     project_id = input_data['scenario_config'].get('project')
     scenario_id = input_data['scenario_config'].get('id')
@@ -93,15 +92,12 @@ def update_web_interface(run_args, data, files=None):
         data['project'] = input_data['scenario_config'].get('project')
         data['scenario'] = input_data['scenario_config'].get('id')
         run_id = input_data['scenario_config'].get('run_id')
+        control_server = input_data['scenario_config'].get('control_server')
         client = requests.Session()
         client.auth = requests.auth.HTTPBasicAuth(username, password)
         # logger.info(f"hydrata.com post:{data}")
-        if hasattr(settings, "SITEURL") and "localhost" in settings.SITEURL:
-            url = "http://localhost:8000/"
-        else:
-            url = input_data['control_server'] or "https://hydrata.com/"
         response = client.patch(
-            f"{url}anuga/api/{data['project']}/{data['scenario']}/run/{run_id}/",
+            f"{control_server}anuga/api/{data['project']}/{data['scenario']}/run/{run_id}/",
             data=data,
             files=files
         )
@@ -392,7 +388,7 @@ def create_anuga_mesh(input_data):
         # hole_tags=hole_tags,
         filename=mesh_filepath,
         use_cache=False,
-        verbose=True,
+        verbose=False,
         fail_if_polygons_outside=False
     )
     logger.info(f"{anuga_mesh.tri_mesh.triangles.size=}")
@@ -727,23 +723,21 @@ def setup_logger(input_data, username=None, password=None):
     logger.addHandler(file_handler)
 
     if username and password:
-        host = None
-        if "localhost" in settings.SITEURL:
-            host = "localhost:8000"
-            secure = False
+        control_server = input_data['scenario_config'].get('control_server')
+        if "localhost" in control_server:
+            secure = False  # means we're running locally, no need for web logging
         else:
-            host = input_data['control_server'] or "https://hydrata.com/"
             secure = True
-        host = host.split("://")[-1].rstrip('\/')
-        web_handler = logging.handlers.HTTPHandler(
-            host=host,
-            url=f"/anuga/api/{input_data['scenario_config'].get('project')}/{input_data['scenario_config'].get('id')}/run/{input_data['scenario_config'].get('run_id')}/log/",
-            method='POST',
-            secure=secure,
-            credentials=(username, password,)
-        )
-        web_handler.setLevel(logging.DEBUG)
-        logger.addHandler(web_handler)
+            host = control_server.split("://")[-1].rstrip('\/')
+            web_handler = logging.handlers.HTTPHandler(
+                host=host,
+                url=f"/anuga/api/{input_data['scenario_config'].get('project')}/{input_data['scenario_config'].get('id')}/run/{input_data['scenario_config'].get('run_id')}/log/",
+                method='POST',
+                secure=secure,
+                credentials=(username, password,)
+            )
+            web_handler.setLevel(logging.DEBUG)
+            logger.addHandler(web_handler)
     return logger
 
 
