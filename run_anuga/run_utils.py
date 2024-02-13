@@ -683,8 +683,8 @@ def zip_result_package(package_dir, username=None, password=None, remove=False):
     input_data = setup_input_data(package_dir)
     zip_filename = f"{input_data.get('scenario_config').get('run_id')}_{input_data.get('scenario_config').get('id')}_{input_data.get('scenario_config').get('project')}_results"
     zip_directory = Path(package_dir).parent.absolute()
-    zip_filepath = f"{Path(zip_directory, zip_filename)}.zip"
-    shutil.make_archive(zip_filepath.split('.')[1], 'zip', package_dir)
+    zip_target = f"{Path(zip_directory, zip_filename)}"
+    shutil.make_archive(zip_target, 'zip', package_dir)
     if username and password:
         run_args = (package_dir, username, password)
         update_web_interface(
@@ -692,14 +692,14 @@ def zip_result_package(package_dir, username=None, password=None, remove=False):
             data={"status": "archiving results"},
             files={
                 "result_package": open(
-                    f"{zip_filepath}.zip",
+                    f"{zip_target}.zip",
                     'rb'
                 )
             }
         )
     if remove:
         shutil.rmtree(package_dir)
-    return zip_filepath
+    return f"{zip_target}.zip"
 
 
 def setup_logger(input_data, username=None, password=None):
