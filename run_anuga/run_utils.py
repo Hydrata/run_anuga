@@ -681,7 +681,7 @@ def post_process_sww(package_dir, run_args=None, output_raster_resolution=None):
 
 def zip_result_package(package_dir, username=None, password=None, remove=False):
     input_data = setup_input_data(package_dir)
-    zip_filename = f"{input_data.get('scenario_config').get('run_id')}_{input_data.get('scenario_config').get('id')}_{input_data.get('scenario_config').get('project')}_results"
+    zip_filename = f"{input_data.get('scenario_config').get('project')}_{input_data.get('scenario_config').get('id')}_{input_data.get('scenario_config').get('run_id')}_results"
     zip_directory = Path(package_dir).parent.absolute()
     zip_target = f"{Path(zip_directory, zip_filename)}"
     shutil.make_archive(zip_target, 'zip', package_dir)
