@@ -3,7 +3,7 @@ import shutil
 import pytest
 import os
 
-from run_anuga.run_anuga.run import run_sim
+from run_anuga.run import run_sim
 from shutil import unpack_archive
 from pathlib import Path
 
