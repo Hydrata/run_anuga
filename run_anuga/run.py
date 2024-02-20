@@ -15,10 +15,7 @@ from anuga import distribute, finalize, barrier, Inlet_operator
 from anuga.utilities import quantity_setting_functions as qs
 from anuga.operators.rate_operators import Polygonal_rate_operator
 
-# Add the parent directory to PYTHONPATH so we can use relative imports and be flexible about where we run this file from
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from run_anuga.run_utils import is_dir_check, setup_input_data, update_web_interface, create_mesher_mesh, create_anuga_mesh, make_interior_holes_and_tags, \
+from run_anuga.run_anuga.run_utils import is_dir_check, setup_input_data, update_web_interface, create_mesher_mesh, create_anuga_mesh, make_interior_holes_and_tags, \
     make_frictions, post_process_sww, zip_result_package, setup_logger, check_coordinates_are_in_polygon
 
 from celery.utils.log import get_task_logger
