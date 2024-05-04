@@ -7,7 +7,6 @@ import anuga
 import argparse
 import math
 import os
-import sys
 import pandas as pd
 import traceback
 
@@ -16,7 +15,7 @@ from anuga.utilities import quantity_setting_functions as qs
 from anuga.operators.rate_operators import Polygonal_rate_operator
 
 from run_anuga.run_anuga.run_utils import is_dir_check, setup_input_data, update_web_interface, create_mesher_mesh, create_anuga_mesh, make_interior_holes_and_tags, \
-    make_frictions, post_process_sww, zip_result_package, setup_logger, check_coordinates_are_in_polygon
+    make_frictions, post_process_sww, setup_logger, check_coordinates_are_in_polygon
 
 from celery.utils.log import get_task_logger
 logger = get_task_logger(__name__)
@@ -25,9 +24,7 @@ logger = get_task_logger(__name__)
 def run_sim(package_dir, username=None, password=None):
     run_args = package_dir, username, password
     input_data = setup_input_data(package_dir)
-    output_stats = dict()
     logger = setup_logger(input_data, username, password)
-    result_zip_path = None
     try:
         logger.info(f"{anuga.myid=}")
         if anuga.myid == 0:
@@ -87,10 +84,8 @@ def run_sim(package_dir, username=None, password=None):
             update_web_interface(run_args, data={'status': 'created mesh'})
         else:
             domain = None
-        # logger.info(f"domain on anuga.myid {anuga.myid}: {domain}")
         barrier()
         domain = distribute(domain, verbose=False)
-        # logger.info(f"domain on anuga.myid {anuga.myid} after distribute(): {domain}")
         default_boundary_maps = {
             'exterior': anuga.Dirichlet_boundary([0, 0, 0]),
             'interior': anuga.Reflective_boundary(domain),
@@ -153,10 +148,8 @@ def run_sim(package_dir, username=None, password=None):
         for t in domain.evolve(yieldstep=yieldstep, finaltime=duration):
             start = time.time()
             domain.write_time()
-            # logger.info(f"domain.timestepping_statistics() on anuga.myid {anuga.myid}: {domain.timestepping_statistics()}")
             if anuga.myid == 0:
-                percentage_done = str(round(t * 100 / duration, 0)).zfill(3)
-                # logger.info(f"{domain.timestepping_statistics()}")
+                percentage_done = str(round(t * 100 / duration, 0))
                 update_web_interface(run_args, data={"status": f"{percentage_done}%"})
                 stop = time.time()
                 duration_minutes = round((stop - start) / 60, 2)
@@ -167,8 +160,6 @@ def run_sim(package_dir, username=None, password=None):
 
         if anuga.myid == 0:
             post_process_sww(package_dir, run_args=run_args)
-            if run_args:
-                result_zip_path = zip_result_package(package_dir, username, password, remove=False)
     except Exception as e:
         update_web_interface(run_args, data={'status': 'error'})
         logger.error(f"{traceback.format_exc()}")
@@ -176,7 +167,6 @@ def run_sim(package_dir, username=None, password=None):
     finally:
         finalize()
     logger.info(f"finished run: {input_data['run_label']}")
-    return result_zip_path
 
 
 if __name__ == '__main__':
@@ -188,10 +178,8 @@ if __name__ == '__main__':
     username = args.username
     password = args.password
     package_dir = args.package_dir
-    # logger.info(f'run.py got {package_dir}')
     if not package_dir:
         package_dir = os.path.join(os.path.dirname(__file__), '..', '..')
-    # logger.info(f'run.py using {package_dir}')
     try:
         run_sim(package_dir, username, password)
     except Exception as e:

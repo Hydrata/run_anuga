@@ -645,63 +645,6 @@ def post_process_sww(package_dir, run_args=None, output_raster_resolution=None):
         creation_options=[]
     )
     logger.info('Successfully generated depth, velocity, momentum outputs')
-    if run_args:
-        update_web_interface(
-            run_args,
-            data={"status": "uploading depth_max"},
-            files={
-                "tif_depth_max": open(
-                    f"{input_data['output_directory']}/{input_data['run_label']}_depth_max.tif",
-                    'rb'
-                )
-            }
-        )
-        update_web_interface(
-            run_args,
-            data={"status": "uploading depthIntegratedVelocity_max"},
-            files={
-                "tif_depth_integrated_velocity_max": open(
-                    f"{input_data['output_directory']}/{input_data['run_label']}_depthIntegratedVelocity_max.tif",
-                    'rb'
-                )
-            }
-        )
-        update_web_interface(
-            run_args,
-            data={"status": "uploading velocity_max"},
-            files={
-                "tif_velocity_max": open(
-                    f"{input_data['output_directory']}/{input_data['run_label']}_velocity_max.tif",
-                    'rb'
-                )
-            }
-        )
-        logger.info('Successfully uploaded outputs')
-
-
-def zip_result_package(package_dir, username=None, password=None, remove=False):
-    input_data = setup_input_data(package_dir)
-    zip_filename = f"{input_data.get('scenario_config').get('project')}_{input_data.get('scenario_config').get('id')}_{input_data.get('scenario_config').get('run_id')}_results"
-    zip_directory = Path(package_dir).parent.absolute()
-    zip_target = f"{Path(zip_directory, zip_filename)}"
-    shutil.make_archive(zip_target, 'zip', package_dir)
-    if username and password:
-        run_args = (package_dir, username, password)
-        update_web_interface(
-            run_args,
-            data={"status": "archiving results"},
-            files={
-                "result_package": open(
-                    f"{zip_target}.zip",
-                    'rb'
-                )
-            }
-        )
-    if remove:
-        shutil.rmtree(package_dir)
-    return f"{zip_target}.zip"
-
-
 def setup_logger(input_data, username=None, password=None):
     if not username and password:
         username = os.environ.get('COMPUTE_USERNAME')
@@ -711,12 +654,6 @@ def setup_logger(input_data, username=None, password=None):
     file_handler = logging.FileHandler(os.path.join(input_data['output_directory'], 'run_anuga.log'))
     console_handler.setLevel(logging.DEBUG)
     file_handler.setLevel(logging.DEBUG)
-
-    # # Create formatters and add it to handlers
-    # console_format = logging.Formatter('%(levelname)s:%(name)s:%(message)s')
-    # file_format = logging.Formatter('%(levelname)s:%(name)s:%(message)s')
-    # console_handler.setFormatter(console_format)
-    # file_handler.setFormatter(file_format)
 
     # Add handlers to the logger
     logger.addHandler(console_handler)
