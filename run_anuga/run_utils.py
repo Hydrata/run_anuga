@@ -645,6 +645,8 @@ def post_process_sww(package_dir, run_args=None, output_raster_resolution=None):
         creation_options=[]
     )
     logger.info('Successfully generated depth, velocity, momentum outputs')
+
+
 def setup_logger(input_data, username=None, password=None):
     if not username and password:
         username = os.environ.get('COMPUTE_USERNAME')
