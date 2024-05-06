@@ -652,13 +652,10 @@ def setup_logger(input_data, username=None, password=None):
         username = os.environ.get('COMPUTE_USERNAME')
         password = os.environ.get('COMPUTE_PASSWORD')
     # Create handlers
-    console_handler = logging.StreamHandler()
     file_handler = logging.FileHandler(os.path.join(input_data['output_directory'], 'run_anuga.log'))
-    console_handler.setLevel(logging.DEBUG)
     file_handler.setLevel(logging.DEBUG)
 
     # Add handlers to the logger
-    logger.addHandler(console_handler)
     logger.addHandler(file_handler)
 
     if username and password:
@@ -718,7 +715,7 @@ def make_shp_from_polygon(boundary_polygon, epsg_code, shapefilepath, buffer=0):
 
 def snap_links_to_nodes(package_dir):
     print('snap_links_to_nodes')
-    return True
+    raise NotImplementedError
 
 
 def calculate_hydrology(package_dir):

@@ -49,7 +49,8 @@ def run_sim(package_dir, username=None, password=None):
                     domain.set_quantity('elevation', elev, location='vertices')
                     update_web_interface(run_args, data={'mesh_triangle_count': mesh_size})
             else:
-                anuga_mesh_filepath, mesh_size = create_anuga_mesh(input_data)
+                if not os.path.isfile(input_data['mesh_filepath']):
+                    anuga_mesh_filepath, mesh_size = create_anuga_mesh(input_data)
                 domain = anuga.Domain(
                     mesh_filename=input_data['mesh_filepath'],
                     use_cache=False,
@@ -145,15 +146,17 @@ def run_sim(package_dir, username=None, password=None):
 
         # Don't yield more than 100 timesteps into the SWW file, and smallest resolution is 60 seconds:
         yieldstep = 60 if math.floor(duration/100) < 60 else math.floor(duration/100)
+        start = time.time()
         for t in domain.evolve(yieldstep=yieldstep, finaltime=duration):
-            start = time.time()
             domain.write_time()
             if anuga.myid == 0:
+                stop = time.time()
                 percentage_done = str(round(t * 100 / duration, 0))
                 update_web_interface(run_args, data={"status": f"{percentage_done}%"})
-                stop = time.time()
-                duration_minutes = round((stop - start) / 60, 2)
-                logger.info(f'{percentage_done}% complete. Latest update took {duration_minutes} minutes.')
+                duration_seconds = round(stop - start)
+                minutes, seconds = divmod(duration_seconds, 60)
+                logger.info(f'{percentage_done}% complete. Latest update took {minutes} minutes, {seconds} seconds.')
+                start = time.time()
         barrier()
         domain.sww_merge(verbose=False, delete_old=True)
         barrier()
