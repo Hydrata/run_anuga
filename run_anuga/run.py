@@ -151,7 +151,6 @@ def run_sim(package_dir, username=None, password=None):
         logger.info(f"{outputstep=}")
         start = time.time()
         for t in domain.evolve(yieldstep=yieldstep, outputstep=outputstep, finaltime=duration):
-            domain.write_time()
             if anuga.myid == 0:
                 stop = time.time()
                 percentage_done = str(round(t * 100 / duration, 0))
