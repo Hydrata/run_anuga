@@ -146,9 +146,9 @@ def run_sim(package_dir, username=None, password=None):
                 Inlet_operator(domain, geometry, Q=inflow_function)
 
         # Don't yield more than 50 timesteps into the SWW file, and smallest resolution is 60 seconds:
-        outputstep = 60 if math.floor(duration/50) < 60 else math.floor(duration/50)
+        yieldstep = 60 if math.floor(duration/50) < 60 else math.floor(duration/50)
+        outputstep = yieldstep * 10
         logger.info(f"{outputstep=}")
-        yieldstep = outputstep * 10
         start = time.time()
         for t in domain.evolve(yieldstep=yieldstep, outputstep=outputstep, finaltime=duration):
             domain.write_time()
@@ -158,7 +158,8 @@ def run_sim(package_dir, username=None, password=None):
                 update_web_interface(run_args, data={"status": f"{percentage_done}%"})
                 duration_seconds = round(stop - start)
                 minutes, seconds = divmod(duration_seconds, 60)
-                logger.info(f'{percentage_done}% | {minutes}m, {seconds}s | mem usage: {psutil.virtual_memory().percent}% | disk usage: {psutil.disk_usage("/").percent}%')
+                logger.info(f'{percentage_done}% | {minutes}m {seconds}s | mem usage: {psutil.virtual_memory().percent}% | disk usage: {psutil.disk_usage("/").percent}%')
+                domain.print_timestepping_statistics()
                 start = time.time()
         barrier()
         domain.sww_merge(verbose=False, delete_old=True)
