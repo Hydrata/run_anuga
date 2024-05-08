@@ -151,6 +151,7 @@ def run_sim(package_dir, username=None, password=None):
         logger.info(f"{outputstep=}")
         start = time.time()
         for t in domain.evolve(yieldstep=yieldstep, outputstep=outputstep, finaltime=duration):
+            domain.write_time()
             if anuga.myid == 0:
                 stop = time.time()
                 percentage_done = str(round(t * 100 / duration, 0))
@@ -158,7 +159,6 @@ def run_sim(package_dir, username=None, password=None):
                 duration_seconds = round(stop - start)
                 minutes, seconds = divmod(duration_seconds, 60)
                 logger.info(f'{percentage_done}% | {minutes}m {seconds}s | mem usage: {psutil.virtual_memory().percent}% | disk usage: {psutil.disk_usage("/").percent}%')
-                domain.print_timestepping_statistics()
                 start = time.time()
         barrier()
         domain.sww_merge(verbose=False, delete_old=True)
