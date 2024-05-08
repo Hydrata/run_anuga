@@ -2,6 +2,7 @@ import json
 import time
 
 import numpy
+import psutil
 
 import anuga
 import argparse
@@ -144,10 +145,12 @@ def run_sim(package_dir, username=None, password=None):
             if check_coordinates_are_in_polygon(geometry, boundary_polygon):
                 Inlet_operator(domain, geometry, Q=inflow_function)
 
-        # Don't yield more than 100 timesteps into the SWW file, and smallest resolution is 60 seconds:
-        yieldstep = 60 if math.floor(duration/100) < 60 else math.floor(duration/100)
+        # Don't yield more than 50 timesteps into the SWW file, and smallest resolution is 60 seconds:
+        outputstep = 60 if math.floor(duration/50) < 60 else math.floor(duration/50)
+        logger.info(f"{outputstep=}")
+        yieldstep = outputstep * 10
         start = time.time()
-        for t in domain.evolve(yieldstep=yieldstep, finaltime=duration):
+        for t in domain.evolve(yieldstep=yieldstep, outputstep=outputstep, finaltime=duration):
             domain.write_time()
             if anuga.myid == 0:
                 stop = time.time()
@@ -155,7 +158,7 @@ def run_sim(package_dir, username=None, password=None):
                 update_web_interface(run_args, data={"status": f"{percentage_done}%"})
                 duration_seconds = round(stop - start)
                 minutes, seconds = divmod(duration_seconds, 60)
-                logger.info(f'{percentage_done}% complete. Latest update took {minutes} minutes, {seconds} seconds.')
+                logger.info(f'{percentage_done}% | {minutes}m, {seconds}s | mem usage: {psutil.virtual_memory().percent}% | disk usage: {psutil.disk_usage("/").percent}%')
                 start = time.time()
         barrier()
         domain.sww_merge(verbose=False, delete_old=True)
