@@ -1,4 +1,9 @@
+import glob
 import shutil
+
+import cv2
+import rasterio
+from matplotlib import pyplot as plt
 
 import anuga
 import argparse
@@ -628,7 +633,25 @@ def post_process_sww(package_dir, run_args=None, output_raster_resolution=None):
     interior_holes, _ = make_interior_holes_and_tags(input_data)
     util.Make_Geotif(
         swwFile=f"{input_data['output_directory']}/{input_data['run_label']}.sww",
-        output_quantities=['depth', 'velocity', 'depthIntegratedVelocity'],
+        output_quantities=['depth', 'velocity', 'depthIntegratedVelocity', 'stage', 'friction'],
+        myTimeStep='all',
+        CellSize=finest_grid_resolution,
+        lower_left=None,
+        upper_right=None,
+        EPSG_CODE=epsg_integer,
+        proj4string=None,
+        velocity_extrapolation=True,
+        min_allowed_height=1.0e-05,
+        output_dir=input_data['output_directory'],
+        bounding_polygon=input_data['boundary_polygon'],
+        internal_holes=interior_holes,
+        verbose=False,
+        k_nearest_neighbours=3,
+        creation_options=[]
+    )
+    util.Make_Geotif(
+        swwFile=f"{input_data['output_directory']}/{input_data['run_label']}.sww",
+        output_quantities=['depth', 'velocity', 'depthIntegratedVelocity', 'stage', 'friction'],
         myTimeStep='max',
         CellSize=finest_grid_resolution,
         lower_left=None,
@@ -644,6 +667,44 @@ def post_process_sww(package_dir, run_args=None, output_raster_resolution=None):
         k_nearest_neighbours=3,
         creation_options=[]
     )
+    depth_files = glob.glob(f"{input_data['output_directory']}/{input_data['run_label']}_depth_*.tif")
+    depth_files = [depth_file for depth_file in depth_files if "_max" not in depth_file]
+    depth_files.sort(key=lambda f: int(os.path.splitext(f)[0][-6:]))
+
+    image_files = list()
+    for i, file in enumerate(depth_files):
+        # Read raster file
+        raster = rasterio.open(file)
+        data = raster.read(1)
+
+        # Apply some styling using Matplotlib
+        plt.figure(figsize=(10, 10))
+        plt.imshow(data, cmap='hot')  # you can use your own colormap
+        plt.axis('off')  # optional, remove axes
+
+        # Save the image
+        image_directory = f"{input_data['output_directory']}/videos"
+        if not os.path.exists(image_directory):
+            os.makedirs(image_directory)
+        img_file = f"{image_directory}/frame_{i:03d}.png"
+        plt.savefig(img_file, dpi=300)
+        image_files.append(img_file)  # add the image file name to the list
+        plt.close()
+
+    img = cv2.imread(image_files[0])
+    height, width, _ = img.shape
+
+    # Define the codec using VideoWriter_fourcc and create a VideoWriter object
+    fourcc = cv2.VideoWriter_fourcc(*'XVID')
+    out = cv2.VideoWriter(f"{input_data['output_directory']}/{input_data['run_label']}_depth.mp4", fourcc, 2.0, (width, height))
+
+    for img_file in image_files:
+        # Read each image file
+        img = cv2.imread(img_file)
+        out.write(img)  # Write the image to the video file
+
+    # Release the VideoWriter
+    out.release()
     logger.info('Successfully generated depth, velocity, momentum outputs')
 
 

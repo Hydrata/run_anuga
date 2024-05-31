@@ -110,16 +110,24 @@ def run_sim(package_dir, username=None, password=None):
             return rain
 
 
-        duration = input_data['scenario_config'].get('duration')
-        date_rng = pd.date_range(start='1/1/1970', periods=duration + 1, freq='s')
-        inflow_dataframe = pd.DataFrame(date_rng, columns=['datetime'])
         rainfall_inflow_polygons = [feature for feature in input_data.get('inflow').get('features') if feature.get('properties').get('type') == 'Rainfall']
         surface_inflow_lines = [feature for feature in input_data.get('inflow').get('features') if feature.get('properties').get('type') == 'Surface']
         catchment_polygons =  [feature for feature in input_data.get('catchment').get('features')] if input_data.get('catchment') else []
         boundary_polygon = input_data.get('boundary_polygon')
+        duration = input_data['scenario_config'].get('duration')
+        datetime_range = pd.date_range(start=input_data['scenario_config'].get('model_start'), periods=duration + 1, freq='m')
+        inflow_dataframe = pd.DataFrame(datetime_range, columns=['timestamp'])
         for inflow_polygon in rainfall_inflow_polygons:
             polygon_name = inflow_polygon.get('id')
-            inflow_dataframe[polygon_name] = float(inflow_polygon.get('properties').get('data'))
+            data = inflow_polygon.get('properties').get('data')
+            if isinstance(data, list):
+                new_dataframe = pd.DataFrame(data)
+                new_dataframe['timestamp'] = pd.to_datetime(new_dataframe['timestamp'])
+                new_dataframe[polygon_name] = pd.to_numeric(new_dataframe['value'])
+                inflow_dataframe = pd.merge(inflow_dataframe, new_dataframe, how='left', on='timestamp')
+                inflow_dataframe.fillna(method='ffill', inplace=True)
+            else:
+                inflow_dataframe[polygon_name] = float(data)
             inflow_function = create_inflow_function(inflow_dataframe, polygon_name)
             geometry = inflow_polygon.get('geometry').get('coordinates')
             Polygonal_rate_operator(domain, rate=inflow_function, factor=1.0e-6, polygon=geometry, default_rate=0.00)
@@ -145,12 +153,16 @@ def run_sim(package_dir, username=None, password=None):
             if check_coordinates_are_in_polygon(geometry, boundary_polygon):
                 Inlet_operator(domain, geometry, Q=inflow_function)
 
-        # Don't yield more than 50 timesteps into the SWW file, and smallest resolution is 60 seconds:
-        yieldstep = 60 if math.floor(duration/50) < 60 else math.floor(duration/50)
-        outputstep = yieldstep * 10
-        logger.info(f"{outputstep=}")
+        max_yieldsteps = 100
+        temporal_resolution_seconds = 60  # At most yield every minute
+        base_temporal_resolution_seconds = math.floor(duration/max_yieldsteps)
+        yieldstep = base_temporal_resolution_seconds
+        if base_temporal_resolution_seconds < temporal_resolution_seconds:
+            yieldstep = temporal_resolution_seconds
+        if yieldstep > 60 * 60:  # At least yield every hour, even if we go over max_yieldsteps
+            yieldstep = 60 * 60
         start = time.time()
-        for t in domain.evolve(yieldstep=yieldstep, outputstep=outputstep, finaltime=duration):
+        for t in domain.evolve(yieldstep=yieldstep, finaltime=duration):
             domain.write_time()
             if anuga.myid == 0:
                 stop = time.time()
