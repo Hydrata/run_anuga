@@ -115,7 +115,10 @@ def run_sim(package_dir, username=None, password=None):
         catchment_polygons =  [feature for feature in input_data.get('catchment').get('features')] if input_data.get('catchment') else []
         boundary_polygon = input_data.get('boundary_polygon')
         duration = input_data['scenario_config'].get('duration')
-        datetime_range = pd.date_range(start=input_data['scenario_config'].get('model_start'), periods=duration + 1, freq='m')
+        start = '1/1/1970'
+        if input_data['scenario_config'].get('model_start'):
+            start = input_data['scenario_config'].get('model_start')
+        datetime_range = pd.date_range(start=start, periods=duration + 1, freq='m')
         inflow_dataframe = pd.DataFrame(datetime_range, columns=['timestamp'])
         for inflow_polygon in rainfall_inflow_polygons:
             polygon_name = inflow_polygon.get('id')
