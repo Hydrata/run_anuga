@@ -1,5 +1,5 @@
 requests==2.27.1
 numpy==1.26.4
 pandas==2.2.1
-opencv-python==4.9.0
+opencv-python==4.9.0.80
 # mesher==1.5.13
