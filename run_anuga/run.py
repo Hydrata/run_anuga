@@ -118,7 +118,7 @@ def run_sim(package_dir, username=None, password=None):
         start = '1/1/1970'
         if input_data['scenario_config'].get('model_start'):
             start = input_data['scenario_config'].get('model_start')
-        datetime_range = pd.date_range(start=start, periods=duration + 1, freq='m')
+        datetime_range = pd.date_range(start=start, periods=duration + 1, freq='s')
         inflow_dataframe = pd.DataFrame(datetime_range, columns=['timestamp'])
         for inflow_polygon in rainfall_inflow_polygons:
             polygon_name = inflow_polygon.get('id')
