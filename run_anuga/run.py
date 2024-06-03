@@ -164,22 +164,27 @@ def run_sim(package_dir, username=None, password=None):
             yieldstep = temporal_resolution_seconds
         if yieldstep > 60 * 60:  # At least yield every hour, even if we go over max_yieldsteps
             yieldstep = 60 * 60
+        memory_usage_logs = list()
         start = time.time()
         for t in domain.evolve(yieldstep=yieldstep, finaltime=duration):
             domain.write_time()
             if anuga.myid == 0:
                 stop = time.time()
-                percentage_done = str(round(t * 100 / duration, 0))
+                percentage_done = str(round(t * 100 / duration, 1))
                 update_web_interface(run_args, data={"status": f"{percentage_done}%"})
                 duration_seconds = round(stop - start)
                 minutes, seconds = divmod(duration_seconds, 60)
-                logger.info(f'{percentage_done}% | {minutes}m {seconds}s | mem usage: {psutil.virtual_memory().percent}% | disk usage: {psutil.disk_usage("/").percent}%')
+                memory_usage = psutil.virtual_memory().percent
+                memory_usage_logs.append(memory_usage)
+                logger.info(f'{percentage_done}% | {minutes}m {seconds}s | mem usage: {memory_usage}% | disk usage: {psutil.disk_usage("/").percent}%')
                 start = time.time()
         barrier()
         domain.sww_merge(verbose=False, delete_old=True)
         barrier()
 
         if anuga.myid == 0:
+            peak_memory_usage = max(memory_usage_logs)
+            update_web_interface(run_args, data={"memory_used": peak_memory_usage})
             post_process_sww(package_dir, run_args=run_args)
     except Exception as e:
         update_web_interface(run_args, data={'status': 'error'})
