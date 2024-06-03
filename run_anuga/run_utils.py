@@ -667,28 +667,31 @@ def post_process_sww(package_dir, run_args=None, output_raster_resolution=None):
         k_nearest_neighbours=3,
         creation_options=[]
     )
-    depth_files = glob.glob(f"{input_data['output_directory']}/{input_data['run_label']}_depth_*.tif")
-    depth_files = [depth_file for depth_file in depth_files if "_max" not in depth_file]
-    depth_files.sort(key=lambda f: int(os.path.splitext(f)[0][-6:]))
+    for video_type in ['depth', 'velocity', 'depthIntegratedVelocity', 'friction', 'stage']:
+        make_video(input_data, video_type)
+    logger.info('Successfully generated depth, velocity, momentum outputs')
+
+
+def make_video(input_data, video_type):
+    tif_files = glob.glob(f"{input_data['output_directory']}/{input_data['run_label']}_{video_type}_*.tif")
+    tif_files = [tif_file for tif_file in tif_files if "_max" not in tif_file]
+    tif_files.sort(key=lambda f: int(os.path.splitext(f)[0][-6:]))
 
     image_files = list()
-    for i, file in enumerate(depth_files):
-        # Read raster file
+    for i, file in enumerate(tif_files):
         raster = rasterio.open(file)
         data = raster.read(1)
-
-        # Apply some styling using Matplotlib
         plt.figure(figsize=(10, 10))
-        plt.imshow(data, cmap='hot')  # you can use your own colormap
-        plt.axis('off')  # optional, remove axes
+        plt.imshow(data, cmap='hot')
+        plt.axis('off')
+        plt.text(0, 0, str(file), color='white', fontsize=16, ha='left', va='top')
 
-        # Save the image
         image_directory = f"{input_data['output_directory']}/videos"
         if not os.path.exists(image_directory):
             os.makedirs(image_directory)
-        img_file = f"{image_directory}/frame_{i:03d}.png"
+        img_file = f"{image_directory}/frame_{video_type}_{i:03d}.png"
         plt.savefig(img_file, dpi=300)
-        image_files.append(img_file)  # add the image file name to the list
+        image_files.append(img_file)
         plt.close()
 
     img = cv2.imread(image_files[0])
@@ -696,7 +699,7 @@ def post_process_sww(package_dir, run_args=None, output_raster_resolution=None):
 
     # Define the codec using VideoWriter_fourcc and create a VideoWriter object
     fourcc = cv2.VideoWriter_fourcc(*'XVID')
-    out = cv2.VideoWriter(f"{input_data['output_directory']}/{input_data['run_label']}_depth.mp4", fourcc, 2.0, (width, height))
+    out = cv2.VideoWriter(f"{input_data['output_directory']}/{input_data['run_label']}_{video_type}.mp4", fourcc, 2.0, (width, height))
 
     for img_file in image_files:
         # Read each image file
@@ -705,7 +708,6 @@ def post_process_sww(package_dir, run_args=None, output_raster_resolution=None):
 
     # Release the VideoWriter
     out.release()
-    logger.info('Successfully generated depth, velocity, momentum outputs')
 
 
 def setup_logger(input_data, username=None, password=None):
@@ -723,18 +725,19 @@ def setup_logger(input_data, username=None, password=None):
         control_server = input_data['scenario_config'].get('control_server')
         if "localhost" in control_server:
             secure = False  # means we're running locally, no need for web logging
+            host = "localhost:8081"
         else:
             secure = True
             host = control_server.split("://")[-1].rstrip('\/')
-            web_handler = logging.handlers.HTTPHandler(
-                host=host,
-                url=f"/anuga/api/{input_data['scenario_config'].get('project')}/{input_data['scenario_config'].get('id')}/run/{input_data['scenario_config'].get('run_id')}/log/",
-                method='POST',
-                secure=secure,
-                credentials=(username, password,)
-            )
-            web_handler.setLevel(logging.DEBUG)
-            logger.addHandler(web_handler)
+        web_handler = logging.handlers.HTTPHandler(
+            host=host,
+            url=f"/anuga/api/{input_data['scenario_config'].get('project')}/{input_data['scenario_config'].get('id')}/run/{input_data['scenario_config'].get('run_id')}/log/",
+            method='POST',
+            secure=secure,
+            credentials=(username, password,)
+        )
+        web_handler.setLevel(logging.DEBUG)
+        logger.addHandler(web_handler)
     return logger
 
 
