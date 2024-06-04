@@ -9,9 +9,10 @@ import argparse
 import math
 import os
 import pandas as pd
+import gc
 import traceback
 
-from anuga import distribute, finalize, barrier, Inlet_operator
+from anuga import distribute, finalize, barrier, Inlet_operator, load_checkpoint_file
 from anuga.utilities import quantity_setting_functions as qs
 from anuga.operators.rate_operators import Polygonal_rate_operator
 
@@ -28,160 +29,181 @@ def run_sim(package_dir, username=None, password=None):
     logger = setup_logger(input_data, username, password)
     try:
         logger.info(f"{anuga.myid=}")
-        if anuga.myid == 0:
-            logger.info(f"update_web_interface - building mesh")
-            update_web_interface(run_args, data={'status': 'building mesh'})
-            domain = None
-            if input_data['scenario_config'].get('simplify_mesh'):
-                mesher_mesh_filepath, mesh_size = create_mesher_mesh(input_data)
-                with open(mesher_mesh_filepath, 'r') as mesh_file:
-                    mesh_dict = json.load(mesh_file)
-                    vertex = mesh_dict['mesh']['vertex']
-                    vertex = numpy.array(vertex)
-                    elem = mesh_dict['mesh']['elem']
-                    points = vertex[:, :2]
-                    elev = vertex[:, 2]
-                    domain = anuga.Domain(
-                        points,
-                        elem,
-                        use_cache=False,
-                        verbose=False
-                    )
-                    domain.set_quantity('elevation', elev, location='vertices')
-                    update_web_interface(run_args, data={'mesh_triangle_count': mesh_size})
-            else:
-                if not os.path.isfile(input_data['mesh_filepath']):
-                    anuga_mesh_filepath, mesh_size = create_anuga_mesh(input_data)
-                domain = anuga.Domain(
-                    mesh_filename=input_data['mesh_filepath'],
-                    use_cache=False,
-                    verbose=False,
-                )
-                poly_fun_pairs = [['Extent', input_data['elevation_filename']]]
-                elevation_function = qs.composite_quantity_setting_function(
-                    poly_fun_pairs,
-                    domain,
-                    nan_treatment='exception',
-                )
-                domain.set_quantity('elevation', elevation_function, verbose=False, alpha=0.99, location='centroids')
-            if input_data['scenario_config'].get('store_mesh'):
-                if getattr(domain, "dump_shapefile", None):
-                    shapefile_name = f"{input_data['output_directory']}/{input_data['scenario_config'].get('run_id')}_{input_data['scenario_config'].get('id')}_{input_data['scenario_config'].get('project')}_mesh"
-                    logger.info(f"mesh shapefile: {shapefile_name}")
-                    domain.dump_shapefile(
-                        shapefile_name=shapefile_name,
-                        epsg_code=input_data['scenario_config'].get('epsg')
-                    )
-            domain.set_name(input_data['run_label'])
-            domain.set_datadir(input_data['output_directory'])
-            domain.set_minimum_storable_height(0.005)
-            frictions = make_frictions(input_data)
-            friction_function = qs.composite_quantity_setting_function(
-                frictions,
-                domain
-            )
-            domain.set_quantity('friction', friction_function, verbose=False)
-            domain.set_quantity('stage', 0.0, verbose=False)
-
-            update_web_interface(run_args, data={'status': 'created mesh'})
-        else:
-            domain = None
-        barrier()
-        domain = distribute(domain, verbose=False)
-        default_boundary_maps = {
-            'exterior': anuga.Dirichlet_boundary([0, 0, 0]),
-            'interior': anuga.Reflective_boundary(domain),
-            'Dirichlet': anuga.Dirichlet_boundary([0, 0, 0]),
-            'Reflective': anuga.Reflective_boundary(domain),
-            'Transmissive': anuga.Transmissive_boundary(domain),
-            'ghost': None
-        }
-        boundaries = dict()
-        for tag in domain.boundary.values():
-            boundaries[tag] = default_boundary_maps[tag]
-        domain.set_boundary(boundaries)
-
-        # setup rainfall
-        def create_inflow_function(dataframe, name):
-            def rain(time_in_seconds):
-                t_sec = int(math.floor(time_in_seconds))
-                return dataframe[name][t_sec]
-            rain.__name__ = name
-            return rain
-
-
-        rainfall_inflow_polygons = [feature for feature in input_data.get('inflow').get('features') if feature.get('properties').get('type') == 'Rainfall']
-        surface_inflow_lines = [feature for feature in input_data.get('inflow').get('features') if feature.get('properties').get('type') == 'Surface']
-        catchment_polygons =  [feature for feature in input_data.get('catchment').get('features')] if input_data.get('catchment') else []
-        boundary_polygon = input_data.get('boundary_polygon')
-        duration = input_data['scenario_config'].get('duration')
-        start = '1/1/1970'
-        if input_data['scenario_config'].get('model_start'):
-            start = input_data['scenario_config'].get('model_start')
-        datetime_range = pd.date_range(start=start, periods=duration + 1, freq='s')
-        inflow_dataframe = pd.DataFrame(datetime_range, columns=['timestamp'])
-        for inflow_polygon in rainfall_inflow_polygons:
-            polygon_name = inflow_polygon.get('id')
-            data = inflow_polygon.get('properties').get('data')
-            if isinstance(data, list):
-                new_dataframe = pd.DataFrame(data)
-                new_dataframe['timestamp'] = pd.to_datetime(new_dataframe['timestamp'])
-                new_dataframe[polygon_name] = pd.to_numeric(new_dataframe['value'])
-                inflow_dataframe = pd.merge(inflow_dataframe, new_dataframe, how='left', on='timestamp')
-                inflow_dataframe.fillna(method='ffill', inplace=True)
-            else:
-                inflow_dataframe[polygon_name] = float(data)
-            inflow_function = create_inflow_function(inflow_dataframe, polygon_name)
-            geometry = inflow_polygon.get('geometry').get('coordinates')
-            Polygonal_rate_operator(domain, rate=inflow_function, factor=1.0e-6, polygon=geometry, default_rate=0.00)
-        if len(rainfall_inflow_polygons) >= 1 and len(catchment_polygons) > 0:
-            for catchment_polygon in catchment_polygons:
-                uniform_rainfall_rate = float(rainfall_inflow_polygons[0].get('properties').get('data'))
-                polygon_name = catchment_polygon.get('id')
-                inflow_dataframe[polygon_name] = uniform_rainfall_rate
-                inflow_function = create_inflow_function(inflow_dataframe, polygon_name)
-                geometry = catchment_polygon.get('geometry').get('coordinates')[0]
-                # The catchment needs to be wholly in the domain:
-                if check_coordinates_are_in_polygon(geometry, boundary_polygon):
-                    Polygonal_rate_operator(domain, rate=inflow_function, factor=-1.0e-6, polygon=geometry, default_rate=0.00)
-        if len(rainfall_inflow_polygons) > 1 and len(catchment_polygons) > 0:
-            raise NotImplementedError('Cannot handle multiple rainfall polygons together with catchment hydrology.')
-
-        for inflow_line in surface_inflow_lines:
-            polyline_name = inflow_line.get('id')
-            inflow_dataframe[polyline_name] = float(inflow_line.get('properties').get('data'))
-            inflow_function = create_inflow_function(inflow_dataframe, polyline_name)
-            geometry = inflow_line.get('geometry').get('coordinates')
-            # check that inflow line is actually in the domain:
-            if check_coordinates_are_in_polygon(geometry, boundary_polygon):
-                Inlet_operator(domain, geometry, Q=inflow_function)
-
-        max_yieldsteps = 100
-        temporal_resolution_seconds = 60  # At most yield every minute
-        base_temporal_resolution_seconds = math.floor(duration/max_yieldsteps)
-        yieldstep = base_temporal_resolution_seconds
-        if base_temporal_resolution_seconds < temporal_resolution_seconds:
-            yieldstep = temporal_resolution_seconds
-        if yieldstep > 60 * 60:  # At least yield every hour, even if we go over max_yieldsteps
-            yieldstep = 60 * 60
+        max_run_batches_allowed = 10
+        domain_name = None
+        checkpoint_dir = None
+        domain = None
         memory_usage_logs = list()
-        start = time.time()
-        for t in domain.evolve(yieldstep=yieldstep, finaltime=duration):
-            domain.write_time()
+        logger.info(f"Building mesh...")
+        for index, run_batch in enumerate(list(range(max_run_batches_allowed))):
             if anuga.myid == 0:
-                stop = time.time()
-                percentage_done = str(round(t * 100 / duration, 1))
-                update_web_interface(run_args, data={"status": f"{percentage_done}%"})
-                duration_seconds = round(stop - start)
-                minutes, seconds = divmod(duration_seconds, 60)
-                memory_percent = psutil.virtual_memory().percent
-                memory_usage = psutil.virtual_memory().used
-                memory_usage_logs.append(memory_usage)
-                logger.info(f'{percentage_done}% | {minutes}m {seconds}s | mem usage: {memory_percent}% | disk usage: {psutil.disk_usage("/").percent}%')
-                start = time.time()
+                try:
+                    domain = load_checkpoint_file(domain_name=domain_name, checkpoint_dir=checkpoint_dir)
+                    logger.info('load_checkpoint_file succeeded. Domain set.')
+                except Exception as e:
+                    domain = None
+                    logger.info('No checkpoint file found.', exc_info=True)
+                update_web_interface(run_args, data={'status': 'building mesh'})
+                if input_data['scenario_config'].get('simplify_mesh'):
+                    mesher_mesh_filepath, mesh_size = create_mesher_mesh(input_data)
+                    with open(mesher_mesh_filepath, 'r') as mesh_file:
+                        mesh_dict = json.load(mesh_file)
+                        vertex = mesh_dict['mesh']['vertex']
+                        vertex = numpy.array(vertex)
+                        elem = mesh_dict['mesh']['elem']
+                        points = vertex[:, :2]
+                        elev = vertex[:, 2]
+                        domain = anuga.Domain(
+                            points,
+                            elem,
+                            use_cache=False,
+                            verbose=False
+                        )
+                        domain.set_quantity('elevation', elev, location='vertices')
+                        update_web_interface(run_args, data={'mesh_triangle_count': mesh_size})
+                else:
+                    if not os.path.isfile(input_data['mesh_filepath']):
+                        anuga_mesh_filepath, mesh_size = create_anuga_mesh(input_data)
+                    domain = anuga.Domain(
+                        mesh_filename=input_data['mesh_filepath'],
+                        use_cache=False,
+                        verbose=False,
+                    )
+                    poly_fun_pairs = [['Extent', input_data['elevation_filename']]]
+                    elevation_function = qs.composite_quantity_setting_function(
+                        poly_fun_pairs,
+                        domain,
+                        nan_treatment='exception',
+                    )
+                    domain.set_quantity('elevation', elevation_function, verbose=False, alpha=0.99, location='centroids')
+
+                if input_data['scenario_config'].get('store_mesh'):
+                    if getattr(domain, "dump_shapefile", None):
+                        shapefile_name = f"{input_data['output_directory']}/{input_data['scenario_config'].get('run_id')}_{input_data['scenario_config'].get('id')}_{input_data['scenario_config'].get('project')}_mesh"
+                        logger.info(f"mesh shapefile: {shapefile_name}")
+                        domain.dump_shapefile(
+                            shapefile_name=shapefile_name,
+                            epsg_code=input_data['scenario_config'].get('epsg')
+                        )
+                domain.set_name(input_data['run_label'])
+                domain.set_datadir(input_data['output_directory'])
+                domain.set_minimum_storable_height(0.005)
+                frictions = make_frictions(input_data)
+                friction_function = qs.composite_quantity_setting_function(
+                    frictions,
+                    domain
+                )
+                domain.set_quantity('friction', friction_function, verbose=False)
+                domain.set_quantity('stage', 0.0, verbose=False)
+
+                update_web_interface(run_args, data={'status': 'created mesh'})
+            else:
+                domain = None
+            barrier()
+            domain = distribute(domain, verbose=False)
+            default_boundary_maps = {
+                'exterior': anuga.Dirichlet_boundary([0, 0, 0]),
+                'interior': anuga.Reflective_boundary(domain),
+                'Dirichlet': anuga.Dirichlet_boundary([0, 0, 0]),
+                'Reflective': anuga.Reflective_boundary(domain),
+                'Transmissive': anuga.Transmissive_boundary(domain),
+                'ghost': None
+            }
+            boundaries = dict()
+            for tag in domain.boundary.values():
+                boundaries[tag] = default_boundary_maps[tag]
+            domain.set_boundary(boundaries)
+
+            # setup rainfall
+            def create_inflow_function(dataframe, name):
+                def rain(time_in_seconds):
+                    t_sec = int(math.floor(time_in_seconds))
+                    return dataframe[name][t_sec]
+                rain.__name__ = name
+                return rain
+
+            rainfall_inflow_polygons = [feature for feature in input_data.get('inflow').get('features') if feature.get('properties').get('type') == 'Rainfall']
+            surface_inflow_lines = [feature for feature in input_data.get('inflow').get('features') if feature.get('properties').get('type') == 'Surface']
+            catchment_polygons =  [feature for feature in input_data.get('catchment').get('features')] if input_data.get('catchment') else []
+            boundary_polygon = input_data.get('boundary_polygon')
+            duration = input_data['scenario_config'].get('duration')
+            start = '1/1/1970'
+            if input_data['scenario_config'].get('model_start'):
+                start = input_data['scenario_config'].get('model_start')
+            datetime_range = pd.date_range(start=start, periods=duration + 1, freq='s')
+            inflow_dataframe = pd.DataFrame(datetime_range, columns=['timestamp'])
+            for inflow_polygon in rainfall_inflow_polygons:
+                polygon_name = inflow_polygon.get('id')
+                data = inflow_polygon.get('properties').get('data')
+                if isinstance(data, list):
+                    new_dataframe = pd.DataFrame(data)
+                    new_dataframe['timestamp'] = pd.to_datetime(new_dataframe['timestamp'])
+                    new_dataframe[polygon_name] = pd.to_numeric(new_dataframe['value'])
+                    inflow_dataframe = pd.merge(inflow_dataframe, new_dataframe, how='left', on='timestamp')
+                    inflow_dataframe.fillna(method='ffill', inplace=True)
+                else:
+                    inflow_dataframe[polygon_name] = float(data)
+                inflow_function = create_inflow_function(inflow_dataframe, polygon_name)
+                geometry = inflow_polygon.get('geometry').get('coordinates')
+                Polygonal_rate_operator(domain, rate=inflow_function, factor=1.0e-6, polygon=geometry, default_rate=0.00)
+            if len(rainfall_inflow_polygons) >= 1 and len(catchment_polygons) > 0:
+                for catchment_polygon in catchment_polygons:
+                    uniform_rainfall_rate = float(rainfall_inflow_polygons[0].get('properties').get('data'))
+                    polygon_name = catchment_polygon.get('id')
+                    inflow_dataframe[polygon_name] = uniform_rainfall_rate
+                    inflow_function = create_inflow_function(inflow_dataframe, polygon_name)
+                    geometry = catchment_polygon.get('geometry').get('coordinates')[0]
+                    # The catchment needs to be wholly in the domain:
+                    if check_coordinates_are_in_polygon(geometry, boundary_polygon):
+                        Polygonal_rate_operator(domain, rate=inflow_function, factor=-1.0e-6, polygon=geometry, default_rate=0.00)
+            if len(rainfall_inflow_polygons) > 1 and len(catchment_polygons) > 0:
+                raise NotImplementedError('Cannot handle multiple rainfall polygons together with catchment hydrology.')
+
+            for inflow_line in surface_inflow_lines:
+                polyline_name = inflow_line.get('id')
+                inflow_dataframe[polyline_name] = float(inflow_line.get('properties').get('data'))
+                inflow_function = create_inflow_function(inflow_dataframe, polyline_name)
+                geometry = inflow_line.get('geometry').get('coordinates')
+                # check that inflow line is actually in the domain:
+                if check_coordinates_are_in_polygon(geometry, boundary_polygon):
+                    Inlet_operator(domain, geometry, Q=inflow_function)
+
+            max_yieldsteps = 100
+            temporal_resolution_seconds = 60  # At most yield every minute
+            base_temporal_resolution_seconds = math.floor(duration/max_yieldsteps)
+            yieldstep = base_temporal_resolution_seconds
+            if base_temporal_resolution_seconds < temporal_resolution_seconds:
+                yieldstep = temporal_resolution_seconds
+            if yieldstep > 60 * 60:  # At least yield every hour, even if we go over max_yieldsteps
+                yieldstep = 60 * 60
+            checkpoint_dir = input_data['checkpoint_dir']
+            domain.set_checkpointing(
+                checkpoint=True,
+                checkpoint_dir=checkpoint_dir,
+                checkpoint_step=2
+            )
+            start = time.time()
+            for t in domain.evolve(yieldstep=yieldstep, finaltime=duration):
+                domain.write_time()
+                if anuga.myid == 0:
+                    stop = time.time()
+                    percentage_done = round(t * 100 / duration, 1)
+                    update_web_interface(run_args, data={"status": f"{percentage_done}%"})
+                    duration_seconds = round(stop - start)
+                    minutes, seconds = divmod(duration_seconds, 60)
+                    memory_percent = psutil.virtual_memory().percent
+                    memory_usage = psutil.virtual_memory().used
+                    memory_usage_logs.append(memory_usage)
+                    logger.info(f'{percentage_done}% | {minutes}m {seconds}s | mem usage: {memory_percent}%    | disk usage: {psutil.disk_usage("/").percent}%')
+                    gc.collect()
+                    logger.info(f'{percentage_done}% | {minutes}m {seconds}s | mem usage: {memory_percent}% gc | disk usage: {psutil.disk_usage("/").percent}%')
+                    if memory_percent > 90:
+                        domain_name = input_data['run_label']
+                        logger.info(f'trying checkpoint with {domain_name=}')
+                        break
+                    start = time.time()
         barrier()
         domain.sww_merge(verbose=False, delete_old=True)
-        barrier()
 
         if anuga.myid == 0:
             max_memory_usage = int(round(max(memory_usage_logs)))

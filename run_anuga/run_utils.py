@@ -49,8 +49,10 @@ def setup_input_data(package_dir):
     run_id = input_data['scenario_config'].get('run_id')
     input_data['run_label'] = f"run_{project_id}_{scenario_id}_{run_id}"
     input_data['output_directory'] = os.path.join(package_dir, f'outputs_{project_id}_{scenario_id}_{run_id}')
-    input_data['mesh_filepath'] = f"{input_data['output_directory']}/run_{scenario_id}_{run_id}.msh"
+    input_data['mesh_filepath'] = f"{input_data['output_directory']}/run_{project_id}_{scenario_id}_{run_id}.msh"
     Path(input_data['output_directory']).mkdir(parents=True, exist_ok=True)
+    input_data['checkpoint_dir'] = f"{input_data['output_directory']}/checkpoints/"
+    Path(input_data['checkpoint_dir']).mkdir(parents=True, exist_ok=True)
 
     input_data['boundary_filename'] = os.path.join(package_dir, f"inputs/{input_data['scenario_config'].get('boundary')}")
     input_data['boundary'] = json.load(open(input_data['boundary_filename']))
