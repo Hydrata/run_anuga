@@ -677,14 +677,18 @@ def make_video(input_data, video_type):
     tif_files = [tif_file for tif_file in tif_files if "_max" not in tif_file]
     tif_files.sort(key=lambda f: int(os.path.splitext(f)[0][-6:]))
 
+    max_file = f"{input_data['output_directory']}/{input_data['run_label']}_{video_type}_max.tif"
+    global_min = 0
+    global_max = rasterio.open(max_file).read(1).max()
+
     image_files = list()
     for i, file in enumerate(tif_files):
         raster = rasterio.open(file)
         data = raster.read(1)
         plt.figure(figsize=(10, 10))
-        plt.imshow(data, cmap='hot')
+        plt.imshow(data, cmap='hot', vmin=global_min, vmax=global_max)
         plt.axis('off')
-        plt.text(0, 0, str(file), color='white', fontsize=16, ha='left', va='top')
+        plt.text(0, 0, str(file), color='white', fontsize=6, ha='left', va='top')
 
         image_directory = f"{input_data['output_directory']}/videos"
         if not os.path.exists(image_directory):
