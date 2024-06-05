@@ -9,7 +9,6 @@ import argparse
 import math
 import os
 import pandas as pd
-import gc
 import traceback
 
 from anuga import distribute, finalize, barrier, Inlet_operator, load_checkpoint_file
@@ -180,7 +179,7 @@ def run_sim(package_dir, username=None, password=None):
             domain.set_checkpointing(
                 checkpoint=True,
                 checkpoint_dir=checkpoint_dir,
-                checkpoint_step=2
+                checkpoint_step=1
             )
             start = time.time()
             for t in domain.evolve(yieldstep=yieldstep, finaltime=duration):
@@ -194,13 +193,7 @@ def run_sim(package_dir, username=None, password=None):
                     memory_percent = psutil.virtual_memory().percent
                     memory_usage = psutil.virtual_memory().used
                     memory_usage_logs.append(memory_usage)
-                    logger.info(f'{percentage_done}% | {minutes}m {seconds}s | mem usage: {memory_percent}%    | disk usage: {psutil.disk_usage("/").percent}%')
-                    gc.collect()
-                    logger.info(f'{percentage_done}% | {minutes}m {seconds}s | mem usage: {memory_percent}% gc | disk usage: {psutil.disk_usage("/").percent}%')
-                    if memory_percent > 90:
-                        domain_name = input_data['run_label']
-                        logger.info(f'trying checkpoint with {domain_name=}')
-                        break
+                    logger.info(f'cps: {len(os.listdir(checkpoint_dir))} | {percentage_done}% | {minutes}m {seconds}s | mem usage: {memory_percent}% | disk usage: {psutil.disk_usage("/").percent}%')
                     start = time.time()
         barrier()
         domain.sww_merge(verbose=False, delete_old=True)
