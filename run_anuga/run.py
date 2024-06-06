@@ -33,8 +33,11 @@ def run_sim(package_dir, username=None, password=None):
         memory_usage_logs = list()
         logger.info(f"Building domain...")
         try:
-            domain = load_checkpoint_file(domain_name=domain_name, checkpoint_dir=checkpoint_dir)
-            logger.info('load_checkpoint_file succeeded. Checkpoint domain set.')
+            if anuga.myid == 0:
+                domain = load_checkpoint_file(domain_name=domain_name, checkpoint_dir=checkpoint_dir)
+                logger.info('load_checkpoint_file succeeded. Checkpoint domain set.')
+            else:
+                domain = None
         except Exception as e:
             if anuga.myid == 0:
                 logger.info('No checkpoint file found. Starting new Simulation')
