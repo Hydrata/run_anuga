@@ -172,8 +172,8 @@ def run_sim(package_dir, username=None, password=None):
         yieldstep = base_temporal_resolution_seconds
         if base_temporal_resolution_seconds < temporal_resolution_seconds:
             yieldstep = temporal_resolution_seconds
-        if yieldstep > 60 * 60:  # At least yield every hour, even if we go over max_yieldsteps
-            yieldstep = 60 * 60
+        if yieldstep > 60 * 30:  # At least yield every half hour, even if we go over max_yieldsteps
+            yieldstep = 60 * 30
         checkpoint_dir = input_data['checkpoint_dir']
         domain.set_checkpointing(
             checkpoint=True,
