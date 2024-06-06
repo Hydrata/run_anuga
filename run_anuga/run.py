@@ -31,12 +31,12 @@ def run_sim(package_dir, username=None, password=None):
         domain_name = input_data['run_label']
         checkpoint_dir = input_data['checkpoint_dir']
         memory_usage_logs = list()
-        logger.info(f"Building mesh...")
-        if anuga.myid == 0:
-            try:
-                domain = load_checkpoint_file(domain_name=domain_name, checkpoint_dir=checkpoint_dir)
-                logger.info('load_checkpoint_file succeeded. Checkpoint domain set.')
-            except Exception as e:
+        logger.info(f"Building domain...")
+        try:
+            domain = load_checkpoint_file(domain_name=domain_name, checkpoint_dir=checkpoint_dir)
+            logger.info('load_checkpoint_file succeeded. Checkpoint domain set.')
+        except Exception as e:
+            if anuga.myid == 0:
                 logger.info('No checkpoint file found. Starting new Simulation')
                 update_web_interface(run_args, data={'status': 'building mesh'})
                 if input_data['scenario_config'].get('simplify_mesh'):
