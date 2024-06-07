@@ -8,6 +8,7 @@ from matplotlib import pyplot as plt
 
 import anuga
 import argparse
+import boto3
 import datetime
 import json
 import logging
@@ -889,8 +890,16 @@ def check_coordinates_are_in_polygon(coordinates, polygon):
 
 
 def generate_stac(output_directory, run_label, result_type, initial_time_iso_string):
+    if not settings.AWS_ACCESS_KEY_ID or not settings.AWS_SECRET_ACCESS_KEY:
+        return
     stac_output_directory = Path(output_directory) / "stac" / result_type
     stac_output_directory.mkdir(parents=True, exist_ok=True)
+    s3_bucket_name = "hydrata-stac"
+    s3 = boto3.client(
+        's3',
+        aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
+        aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY
+    )
     initial_time = datetime.datetime.fromisoformat(initial_time_iso_string)
     tif_files = glob.glob(f"{output_directory}/{run_label}_{result_type}_*.tif")
     tif_files = [tif_file for tif_file in tif_files if "_max" not in tif_file]
@@ -899,8 +908,9 @@ def generate_stac(output_directory, run_label, result_type, initial_time_iso_str
     min_left, min_bottom, max_right, max_top = None, None, None, None
     min_datetime, max_datetime = None, None
     for tif_file in tif_files:
-        shutil.copy(tif_file, stac_output_directory)
-        tif_file = os.path.join(stac_output_directory, os.path.basename(tif_file))
+        with open(tif_file, 'rb') as data:
+            s3.upload_fileobj(data, s3_bucket_name, f"{result_type}/{os.path.basename(tif_file)}")
+        s3_tif_url = f"https://{s3_bucket_name}.s3.us-west-2.amazonaws.com/{run_label}/{result_type}/{os.path.basename(tif_file)}"
         model_time_sec = int(tif_file[-10:-4])
         time_elapsed = initial_time + datetime.timedelta(seconds=model_time_sec)
         with rasterio.open(tif_file) as dataset:
@@ -912,7 +922,10 @@ def generate_stac(output_directory, run_label, result_type, initial_time_iso_str
             datetime=time_elapsed,
             properties={}
         )
-        asset = Asset(href=os.path.relpath(tif_file, stac_output_directory), media_type=MediaType.GEOTIFF)
+        asset = Asset(
+            href=s3_tif_url,
+            media_type=MediaType.GEOTIFF
+        )
         item.add_asset(key='data', asset=asset)
         items.append(item)
 
@@ -945,4 +958,3 @@ def generate_stac(output_directory, run_label, result_type, initial_time_iso_str
         collection.add_item(item)
     collection.normalize_hrefs(str(stac_output_directory))
     collection.save_object()
-
