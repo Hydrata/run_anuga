@@ -2,11 +2,13 @@ import glob
 import shutil
 
 import cv2
+import numpy as np
 import rasterio
 from matplotlib import pyplot as plt
 
 import anuga
 import argparse
+import datetime
 import json
 import logging
 import math
@@ -19,6 +21,7 @@ from pathlib import Path
 from osgeo import ogr, gdal, osr
 from shapely.geometry import Point, LineString, LinearRing, Polygon
 from shapely.prepared import prep
+from pystac import Item, Asset, Collection, MediaType, Extent, SpatialExtent, TemporalExtent, CatalogType
 
 from anuga import Geo_reference
 from anuga.utilities import plot_utils as util
@@ -635,7 +638,7 @@ def post_process_sww(package_dir, run_args=None, output_raster_resolution=None):
     interior_holes, _ = make_interior_holes_and_tags(input_data)
     util.Make_Geotif(
         swwFile=f"{input_data['output_directory']}/{input_data['run_label']}.sww",
-        output_quantities=['depth', 'velocity', 'depthIntegratedVelocity', 'stage', 'friction'],
+        output_quantities=['depth', 'velocity', 'depthIntegratedVelocity', 'stage'],
         myTimeStep='all',
         CellSize=finest_grid_resolution,
         lower_left=None,
@@ -653,7 +656,7 @@ def post_process_sww(package_dir, run_args=None, output_raster_resolution=None):
     )
     util.Make_Geotif(
         swwFile=f"{input_data['output_directory']}/{input_data['run_label']}.sww",
-        output_quantities=['depth', 'velocity', 'depthIntegratedVelocity', 'stage', 'friction'],
+        output_quantities=['depth', 'velocity', 'depthIntegratedVelocity', 'stage'],
         myTimeStep='max',
         CellSize=finest_grid_resolution,
         lower_left=None,
@@ -669,19 +672,28 @@ def post_process_sww(package_dir, run_args=None, output_raster_resolution=None):
         k_nearest_neighbours=3,
         creation_options=[]
     )
-    for video_type in ['depth', 'velocity', 'depthIntegratedVelocity', 'friction', 'stage']:
-        make_video(input_data, video_type)
+    for result_type in ['depth', 'velocity', 'depthIntegratedVelocity', 'stage']:
+        output_directory = input_data['output_directory']
+        run_label = input_data['run_label']
+        initial_time_iso_string = input_data['scenario_config'].get('model_start', "1970-01-01T00:00:00+00:00")
+        make_video(output_directory, run_label, result_type)
+        generate_stac(output_directory, run_label, result_type, initial_time_iso_string)
+
+    shutil.rmtree(f"{input_data['output_directory']}/checkpoints/")
+    shutil.rmtree(f"{input_data['output_directory']}/videos/")
     logger.info('Successfully generated depth, velocity, momentum outputs')
 
 
-def make_video(input_data, video_type):
-    tif_files = glob.glob(f"{input_data['output_directory']}/{input_data['run_label']}_{video_type}_*.tif")
+def make_video(output_directory, run_label, result_type):
+    tif_files = glob.glob(f"{output_directory}/{run_label}_{result_type}_*.tif")
     tif_files = [tif_file for tif_file in tif_files if "_max" not in tif_file]
     tif_files.sort(key=lambda f: int(os.path.splitext(f)[0][-6:]))
 
-    max_file = f"{input_data['output_directory']}/{input_data['run_label']}_{video_type}_max.tif"
+    max_file = f"{output_directory}/{run_label}_{result_type}_max.tif"
     global_min = 0
-    global_max = rasterio.open(max_file).read(1).max()
+    raster_data = rasterio.open(max_file).read(1)
+    masked_data_raster_data = np.ma.masked_invalid(raster_data)
+    global_max = masked_data_raster_data.max()
 
     image_files = list()
     for i, file in enumerate(tif_files):
@@ -692,10 +704,10 @@ def make_video(input_data, video_type):
         plt.axis('off')
         plt.text(0, 0, str(file), color='white', fontsize=6, ha='left', va='top')
 
-        image_directory = f"{input_data['output_directory']}/videos"
+        image_directory = f"{output_directory}/videos"
         if not os.path.exists(image_directory):
             os.makedirs(image_directory)
-        img_file = f"{image_directory}/frame_{video_type}_{i:03d}.png"
+        img_file = f"{image_directory}/frame_{result_type}_{i:03d}.png"
         plt.savefig(img_file, dpi=300)
         image_files.append(img_file)
         plt.close()
@@ -705,7 +717,7 @@ def make_video(input_data, video_type):
 
     # Define the codec using VideoWriter_fourcc and create a VideoWriter object
     fourcc = cv2.VideoWriter_fourcc(*'XVID')
-    out = cv2.VideoWriter(f"{input_data['output_directory']}/{input_data['run_label']}_{video_type}.mp4", fourcc, 2.0, (width, height))
+    out = cv2.VideoWriter(f"{output_directory}/{run_label}_{result_type}.mp4", fourcc, 2.0, (width, height))
 
     for img_file in image_files:
         # Read each image file
@@ -874,3 +886,63 @@ def check_coordinates_are_in_polygon(coordinates, polygon):
         if not shapely_polgyon.contains(shapely_point):
             return False
     return True
+
+
+def generate_stac(output_directory, run_label, result_type, initial_time_iso_string):
+    stac_output_directory = Path(output_directory) / "stac" / result_type
+    stac_output_directory.mkdir(parents=True, exist_ok=True)
+    initial_time = datetime.datetime.fromisoformat(initial_time_iso_string)
+    tif_files = glob.glob(f"{output_directory}/{run_label}_{result_type}_*.tif")
+    tif_files = [tif_file for tif_file in tif_files if "_max" not in tif_file]
+    tif_files.sort(key=lambda f: int(os.path.splitext(f)[0][-6:]))
+    items = []
+    min_left, min_bottom, max_right, max_top = None, None, None, None
+    min_datetime, max_datetime = None, None
+    for tif_file in tif_files:
+        shutil.copy(tif_file, stac_output_directory)
+        tif_file = os.path.join(stac_output_directory, os.path.basename(tif_file))
+        model_time_sec = int(tif_file[-10:-4])
+        time_elapsed = initial_time + datetime.timedelta(seconds=model_time_sec)
+        with rasterio.open(tif_file) as dataset:
+            bbox = dataset.bounds
+        item = Item(
+            id=f'item_{model_time_sec}',
+            geometry={},
+            bbox=[bbox.left, bbox.bottom, bbox.right, bbox.top],
+            datetime=time_elapsed,
+            properties={}
+        )
+        asset = Asset(href=os.path.relpath(tif_file, stac_output_directory), media_type=MediaType.GEOTIFF)
+        item.add_asset(key='data', asset=asset)
+        items.append(item)
+
+        if min_left is None or bbox.left < min_left:
+            min_left = bbox.left
+        if min_bottom is None or bbox.bottom < min_bottom:
+            min_bottom = bbox.bottom
+        if max_right is None or bbox.right > max_right:
+            max_right = bbox.right
+        if max_top is None or bbox.top > max_top:
+            max_top = bbox.top
+        if min_datetime is None or time_elapsed < min_datetime:
+            min_datetime = time_elapsed
+        if max_datetime is None or time_elapsed > max_datetime:
+            max_datetime = time_elapsed
+
+    extent = Extent(
+        spatial=SpatialExtent([min_left, min_bottom, max_right, max_top]),
+        temporal=TemporalExtent([[min_datetime, max_datetime]])
+    )
+
+    collection = Collection(
+        id=f'{run_label}_{result_type}',
+        description=f'description',
+        extent=extent,
+        catalog_type=CatalogType.SELF_CONTAINED
+    )
+
+    for item in items:
+        collection.add_item(item)
+    collection.normalize_hrefs(str(stac_output_directory))
+    collection.save_object()
+

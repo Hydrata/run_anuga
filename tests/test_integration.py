@@ -1,10 +1,12 @@
 import fnmatch
+import glob
 import shutil
 
 import pytest
 import os
 
 from run_anuga.run_anuga.run import run_sim
+from run_anuga.run_anuga.run_utils import make_video
 from shutil import unpack_archive
 from pathlib import Path
 
@@ -38,3 +40,13 @@ def test_end_to_end_run(tmp_path, zip_filename, package_dir_length, output_dir_n
         shutil.rmtree(source_zip_target)
     except FileNotFoundError:
         pass
+
+@pytest.mark.skip
+@pytest.mark.parametrize("still_images_directory, run_label, video_type", [
+    ('../run_anuga/tests/data/video/depthIntegratedVelocity', "run_402_324_1062", "depthIntegratedVelocity")
+])
+def test_make_video(still_images_directory, run_label, video_type):
+    full_directory = os.path.join(os.getcwd(), still_images_directory)
+    make_video(str(full_directory), run_label, video_type)
+
+    assert len(glob.glob(f"{still_images_directory}/{run_label}_{video_type}.mp4")) == 1
