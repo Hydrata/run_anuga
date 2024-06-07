@@ -1,6 +1,7 @@
 import glob
 import shutil
 
+import botocore.exceptions
 import cv2
 import numpy as np
 import rasterio
@@ -909,7 +910,7 @@ def generate_stac(output_directory, run_label, result_type, initial_time_iso_str
     min_datetime, max_datetime = None, None
     for tif_file in tif_files:
         with open(tif_file, 'rb') as data:
-            s3.upload_fileobj(data, s3_bucket_name, f"{result_type}/{os.path.basename(tif_file)}")
+            s3.upload_fileobj(data, s3_bucket_name, f"{run_label}/{result_type}/{os.path.basename(tif_file)}")
         s3_tif_url = f"https://{s3_bucket_name}.s3.us-west-2.amazonaws.com/{run_label}/{result_type}/{os.path.basename(tif_file)}"
         model_time_sec = int(tif_file[-10:-4])
         time_elapsed = initial_time + datetime.timedelta(seconds=model_time_sec)
@@ -958,3 +959,6 @@ def generate_stac(output_directory, run_label, result_type, initial_time_iso_str
         collection.add_item(item)
     collection.normalize_hrefs(str(stac_output_directory))
     collection.save_object()
+    collection_json_file = os.path.join(stac_output_directory, "collection.json")
+    with open(collection_json_file, 'rb') as data:
+        s3.upload_fileobj(data, s3_bucket_name, f"{run_label}/{result_type}/collection.json")
