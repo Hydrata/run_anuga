@@ -216,8 +216,8 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument("username", nargs='?', help="your username(email) at hydrata.com", type=str)
     parser.add_argument("password", nargs='?', help="your password at hydrata.com", type=str)
-    parser.add_argument("--package_dir", "-wd", help="the base directory for your simulation, it contains the scenario.json file", type=is_dir_check)
-    parser.add_argument("--batch_number", "-wd", help="when using checkpointing, the batch_number, is the number of times the run has been restarted.", type=str)
+    parser.add_argument("--package_dir", "-pd", help="the base directory for your simulation, it contains the scenario.json file", type=is_dir_check)
+    parser.add_argument("--batch_number", "-bn", help="when using checkpointing, the batch_number, is the number of times the run has been restarted.", type=str)
     args = parser.parse_args()
     username = args.username
     password = args.password
