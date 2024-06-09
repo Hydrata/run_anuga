@@ -22,10 +22,11 @@ from celery.utils.log import get_task_logger
 logger = get_task_logger(__name__)
 
 
-def run_sim(package_dir, username=None, password=None):
+def run_sim(package_dir, username=None, password=None, batch_number=1):
     run_args = package_dir, username, password
     input_data = setup_input_data(package_dir)
-    logger = setup_logger(input_data, username, password)
+    logger = setup_logger(input_data, username, password, batch_number)
+    logger.info(f"run_sim started with {batch_number=}")
     try:
         logger.info(f"{anuga.myid=}")
         domain_name = input_data['run_label']
@@ -222,10 +223,12 @@ if __name__ == '__main__':
     username = args.username
     password = args.password
     package_dir = args.package_dir
+    batch_number = args.batch_number
     if not package_dir:
         package_dir = os.path.join(os.path.dirname(__file__), '..', '..')
     try:
-        run_sim(package_dir, username, password)
+        logger.info(f"run.py __main__ running {batch_number=}")
+        run_sim(package_dir, username, password, batch_number)
     except Exception as e:
         run_args = (package_dir, username, password)
         logger.exception(e, exc_info=True)

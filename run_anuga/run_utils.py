@@ -729,12 +729,12 @@ def make_video(output_directory, run_label, result_type):
     out.release()
 
 
-def setup_logger(input_data, username=None, password=None):
+def setup_logger(input_data, username=None, password=None, batch_number=1):
     if not username and password:
         username = os.environ.get('COMPUTE_USERNAME')
         password = os.environ.get('COMPUTE_PASSWORD')
     # Create handlers
-    file_handler = logging.FileHandler(os.path.join(input_data['output_directory'], 'run_anuga.log'))
+    file_handler = logging.FileHandler(os.path.join(input_data['output_directory'], f'run_anuga_{batch_number}.log'))
     file_handler.setLevel(logging.DEBUG)
 
     # Add handlers to the logger
