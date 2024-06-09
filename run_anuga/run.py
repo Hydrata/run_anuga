@@ -180,6 +180,7 @@ def run_sim(package_dir, username=None, password=None):
             checkpoint_dir=checkpoint_dir,
             checkpoint_step=5
         )
+        barrier()
         start = time.time()
         for t in domain.evolve(yieldstep=yieldstep, finaltime=duration):
             domain.write_time()
@@ -200,6 +201,7 @@ def run_sim(package_dir, username=None, password=None):
         if anuga.myid == 0:
             max_memory_usage = int(round(max(memory_usage_logs)))
             update_web_interface(run_args, data={"memory_used": max_memory_usage})
+            logger.info("Processing results...")
             post_process_sww(package_dir, run_args=run_args)
     except Exception as e:
         update_web_interface(run_args, data={'status': 'error'})
@@ -215,6 +217,7 @@ if __name__ == '__main__':
     parser.add_argument("username", nargs='?', help="your username(email) at hydrata.com", type=str)
     parser.add_argument("password", nargs='?', help="your password at hydrata.com", type=str)
     parser.add_argument("--package_dir", "-wd", help="the base directory for your simulation, it contains the scenario.json file", type=is_dir_check)
+    parser.add_argument("--batch_number", "-wd", help="when using checkpointing, the batch_number, is the number of times the run has been restarted.", type=str)
     args = parser.parse_args()
     username = args.username
     password = args.password

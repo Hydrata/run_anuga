@@ -1,7 +1,6 @@
 import glob
 import shutil
 
-import botocore.exceptions
 import cv2
 import numpy as np
 import rasterio
@@ -911,6 +910,7 @@ def generate_stac(output_directory, run_label, result_type, initial_time_iso_str
     for tif_file in tif_files:
         with open(tif_file, 'rb') as data:
             s3.upload_fileobj(data, s3_bucket_name, f"{run_label}/{result_type}/{os.path.basename(tif_file)}")
+
         s3_tif_url = f"https://{s3_bucket_name}.s3.us-west-2.amazonaws.com/{run_label}/{result_type}/{os.path.basename(tif_file)}"
         model_time_sec = int(tif_file[-10:-4])
         time_elapsed = initial_time + datetime.timedelta(seconds=model_time_sec)
@@ -962,3 +962,11 @@ def generate_stac(output_directory, run_label, result_type, initial_time_iso_str
     collection_json_file = os.path.join(stac_output_directory, "collection.json")
     with open(collection_json_file, 'rb') as data:
         s3.upload_fileobj(data, s3_bucket_name, f"{run_label}/{result_type}/collection.json")
+
+    for root, dirs, files in os.walk(stac_output_directory):
+        for file in files:
+            local_file = os.path.join(root, file)
+            s3_file = f"{run_label}/{result_type}/{os.path.relpath(local_file, stac_output_directory)}"
+            print(f'{local_file} uploaded to {s3_file} in S3 bucket {s3_bucket_name}')
+            with open(local_file, 'rb') as data:
+                s3.upload_fileobj(data, s3_bucket_name, s3_file)
