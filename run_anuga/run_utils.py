@@ -889,11 +889,11 @@ def check_coordinates_are_in_polygon(coordinates, polygon):
 
 
 def generate_stac(output_directory, run_label, result_type, initial_time_iso_string):
-    if not settings.AWS_ACCESS_KEY_ID or not settings.AWS_SECRET_ACCESS_KEY:
+    if not settings.AWS_ACCESS_KEY_ID or not settings.AWS_SECRET_ACCESS_KEY or not settings.ANUGA_S3_STAC_BUCKET_NAME:
         return
     stac_output_directory = Path(output_directory) / "stac" / result_type
     stac_output_directory.mkdir(parents=True, exist_ok=True)
-    s3_bucket_name = "hydrata-stac"
+    s3_bucket_name = settings.ANUGA_S3_STAC_BUCKET_NAME
     s3 = boto3.client(
         's3',
         aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
