@@ -695,8 +695,10 @@ def make_video(output_directory, run_label, result_type):
     raster_data = rasterio.open(max_file).read(1)
     masked_data_raster_data = np.ma.masked_invalid(raster_data)
     global_max = masked_data_raster_data.max()
-
     image_files = list()
+    image_directory = f"{output_directory}/videos"
+    if not os.path.exists(image_directory):
+        os.makedirs(image_directory, exist_ok=True)
     for i, file in enumerate(tif_files):
         raster = rasterio.open(file)
         data = raster.read(1)
@@ -704,10 +706,6 @@ def make_video(output_directory, run_label, result_type):
         plt.imshow(data, cmap='hot', vmin=global_min, vmax=global_max)
         plt.axis('off')
         plt.text(0, 0, str(file), color='white', fontsize=6, ha='left', va='top')
-
-        image_directory = f"{output_directory}/videos"
-        if not os.path.exists(image_directory):
-            os.makedirs(image_directory)
         img_file = f"{image_directory}/frame_{result_type}_{i:03d}.png"
         plt.savefig(img_file, dpi=300)
         image_files.append(img_file)
