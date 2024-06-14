@@ -5,6 +5,7 @@ import cv2
 import numpy as np
 import rasterio
 from matplotlib import pyplot as plt
+from urllib.parse import urlparse
 
 import anuga
 import argparse
@@ -740,12 +741,12 @@ def setup_logger(input_data, username=None, password=None, batch_number=1):
 
     if username and password:
         control_server = input_data['scenario_config'].get('control_server')
+        parsed_control_server = urlparse(control_server)
+        host = parsed_control_server.netloc
         if "localhost" in control_server:
             secure = False  # means we're running locally, no need for web logging
-            host = "localhost:8081"
         else:
             secure = True
-            host = control_server.split("://")[-1].rstrip('\/')
         web_handler = logging.handlers.HTTPHandler(
             host=host,
             url=f"/anuga/api/{input_data['scenario_config'].get('project')}/{input_data['scenario_config'].get('id')}/run/{input_data['scenario_config'].get('run_id')}/log/",
