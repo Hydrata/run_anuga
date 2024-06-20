@@ -207,13 +207,13 @@ def run_sim(package_dir, username=None, password=None, batch_number=1):
             max_memory_usage = int(round(max(memory_usage_logs)))
             update_web_interface(run_args, data={"memory_used": max_memory_usage})
             logger.info("Processing results...")
-            post_process_sww(package_dir, run_args=run_args)
     except Exception as e:
         update_web_interface(run_args, data={'status': 'error'})
         logger.error(f"{traceback.format_exc()}")
         raise
     finally:
         finalize()
+        post_process_sww(package_dir, run_args=run_args)
     logger.info(f"finished run: {input_data['run_label']}")
 
 
