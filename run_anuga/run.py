@@ -138,6 +138,10 @@ def run_sim(package_dir, username=None, password=None, batch_number=1):
                 new_dataframe = pd.DataFrame(data)
                 new_dataframe['timestamp'] = pd.to_datetime(new_dataframe['timestamp'])
                 new_dataframe[polygon_name] = pd.to_numeric(new_dataframe['value'])
+                if inflow_dataframe['timestamp'].dt.tz is None:
+                    inflow_dataframe['timestamp'] = inflow_dataframe['timestamp'].dt.tz_localize('UTC')
+                if new_dataframe['timestamp'].dt.tz is None:
+                    new_dataframe['timestamp'] = new_dataframe['timestamp'].dt.tz_localize('UTC')
                 inflow_dataframe = pd.merge(inflow_dataframe, new_dataframe, how='left', on='timestamp')
                 inflow_dataframe.fillna(method='ffill', inplace=True)
             else:
