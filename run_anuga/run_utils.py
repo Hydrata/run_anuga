@@ -23,7 +23,8 @@ from pathlib import Path
 from osgeo import ogr, gdal, osr
 from shapely.geometry import Point, LineString, LinearRing, Polygon
 from shapely.prepared import prep
-from pystac import Item, Asset, Collection, MediaType, Extent, SpatialExtent, TemporalExtent, CatalogType
+from pystac import Item, Asset, Collection, MediaType, Extent, SpatialExtent, TemporalExtent, CatalogType, Catalog, Link
+from pystac.stac_io import DefaultStacIO, StacIO
 
 from anuga import Geo_reference
 from anuga.utilities import plot_utils as util
@@ -34,6 +35,39 @@ try:
 except ImportError:
     logger = logging.getLogger(__name__)
     settings = dict()
+
+
+class S3StacIO(DefaultStacIO):
+    def __init__(self):
+        self.s3 = boto3.resource(
+            's3',
+            aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
+            aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY
+        )
+        super().__init__()
+
+    def read_text(self, source, *args, **kwargs) -> str:
+        parsed = urlparse(source)
+        if parsed.scheme == "s3":
+            bucket = parsed.netloc
+            key = parsed.path[1:]
+
+            obj = self.s3.Object(bucket, key)
+            return obj.get()["Body"].read().decode("utf-8")
+        else:
+            return super().read_text(source, *args, **kwargs)
+
+    def write_text(self, dest, txt, *args, **kwargs) -> None:
+        parsed = urlparse(dest)
+        if parsed.scheme == "s3":
+            bucket = parsed.netloc
+            key = parsed.path[1:]
+            self.s3.Object(bucket, key).put(Body=txt, ContentEncoding="utf-8")
+        else:
+            super().write_text(dest, txt, *args, **kwargs)
+
+
+StacIO.set_default(S3StacIO)
 
 
 def is_dir_check(path):
@@ -618,6 +652,7 @@ def create_boundary_polygon_from_boundaries(boundaries_geojson):
 
 
 def post_process_sww(package_dir, run_args=None, output_raster_resolution=None):
+    output_quantities = ['depth', 'velocity', 'depthIntegratedVelocity', 'stage']
     input_data = setup_input_data(package_dir)
     logger.info(f'Generating output rasters on {anuga.myid}...')
     raster = gdal.Open(input_data['elevation_filename'])
@@ -640,7 +675,7 @@ def post_process_sww(package_dir, run_args=None, output_raster_resolution=None):
     interior_holes, _ = make_interior_holes_and_tags(input_data)
     util.Make_Geotif(
         swwFile=f"{input_data['output_directory']}/{input_data['run_label']}.sww",
-        output_quantities=['depth', 'velocity', 'depthIntegratedVelocity', 'stage'],
+        output_quantities=output_quantities,
         myTimeStep='all',
         CellSize=finest_grid_resolution,
         lower_left=None,
@@ -658,7 +693,7 @@ def post_process_sww(package_dir, run_args=None, output_raster_resolution=None):
     )
     util.Make_Geotif(
         swwFile=f"{input_data['output_directory']}/{input_data['run_label']}.sww",
-        output_quantities=['depth', 'velocity', 'depthIntegratedVelocity', 'stage'],
+        output_quantities=output_quantities,
         myTimeStep='max',
         CellSize=finest_grid_resolution,
         lower_left=None,
@@ -674,15 +709,18 @@ def post_process_sww(package_dir, run_args=None, output_raster_resolution=None):
         k_nearest_neighbours=3,
         creation_options=[]
     )
-    for result_type in ['depth', 'velocity', 'depthIntegratedVelocity', 'stage']:
-        output_directory = input_data['output_directory']
-        run_label = input_data['run_label']
-        initial_time_iso_string = input_data['scenario_config'].get('model_start', "1970-01-01T00:00:00+00:00")
-        make_video(output_directory, run_label, result_type)
-        generate_stac(output_directory, run_label, result_type, initial_time_iso_string)
+    output_directory = input_data['output_directory']
+    run_label = input_data['run_label']
+    initial_time_iso_string = input_data['scenario_config'].get('model_start', "1970-01-01T00:00:00+00:00")
+    generate_stac(output_directory, run_label, output_quantities, initial_time_iso_string)
+    # for result_type in output_quantities:
+        # make_video(output_directory, run_label, result_type)
 
-    shutil.rmtree(f"{input_data['output_directory']}/checkpoints/")
-    shutil.rmtree(f"{input_data['output_directory']}/videos/")
+    if os.path.isdir(input_data['checkpoint_dir']):
+        shutil.rmtree(input_data['checkpoint_dir'])
+    video_dir = f"{input_data['output_directory']}/videos/"
+    if os.path.isdir(video_dir):
+        shutil.rmtree(video_dir)
     logger.info('Successfully generated depth, velocity, momentum outputs')
 
 
@@ -888,84 +926,85 @@ def check_coordinates_are_in_polygon(coordinates, polygon):
     return True
 
 
-def generate_stac(output_directory, run_label, result_type, initial_time_iso_string):
+def generate_stac(output_directory, run_label, output_quantities, initial_time_iso_string):
     if not settings.AWS_ACCESS_KEY_ID or not settings.AWS_SECRET_ACCESS_KEY or not settings.ANUGA_S3_STAC_BUCKET_NAME:
         return
-    stac_output_directory = Path(output_directory) / "stac" / result_type
-    stac_output_directory.mkdir(parents=True, exist_ok=True)
     s3_bucket_name = settings.ANUGA_S3_STAC_BUCKET_NAME
-    s3 = boto3.client(
-        's3',
-        aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
-        aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY
-    )
-    initial_time = datetime.datetime.fromisoformat(initial_time_iso_string)
-    tif_files = glob.glob(f"{output_directory}/{run_label}_{result_type}_*.tif")
-    tif_files = [tif_file for tif_file in tif_files if "_max" not in tif_file]
-    tif_files.sort(key=lambda f: int(os.path.splitext(f)[0][-6:]))
-    items = []
+    s3_catalog_uri = f"s3://{s3_bucket_name}/{run_label}"
+    catalog = Catalog(id=run_label, description=f"{run_label} - {initial_time_iso_string}")
     min_left, min_bottom, max_right, max_top = None, None, None, None
     min_datetime, max_datetime = None, None
-    for tif_file in tif_files:
-        with open(tif_file, 'rb') as data:
-            s3.upload_fileobj(data, s3_bucket_name, f"{run_label}/{result_type}/{os.path.basename(tif_file)}")
+    initial_time = datetime.datetime.fromisoformat(initial_time_iso_string)
 
-        s3_tif_url = f"https://{s3_bucket_name}.s3.us-west-2.amazonaws.com/{run_label}/{result_type}/{os.path.basename(tif_file)}"
-        model_time_sec = int(tif_file[-10:-4])
-        time_elapsed = initial_time + datetime.timedelta(seconds=model_time_sec)
-        with rasterio.open(tif_file) as dataset:
-            bbox = dataset.bounds
-        item = Item(
-            id=f'item_{model_time_sec}',
-            geometry={},
-            bbox=[bbox.left, bbox.bottom, bbox.right, bbox.top],
-            datetime=time_elapsed,
-            properties={}
+    for result_type in output_quantities:
+        tif_files = glob.glob(f"{output_directory}/{run_label}_{result_type}_*.tif")
+        tif_files = [tif_file for tif_file in tif_files if "_max" not in tif_file]
+        tif_files.sort(key=lambda f: int(os.path.splitext(f)[0][-6:]))
+        items = []
+        collection = Collection(
+            id=f"{run_label}_{result_type}",
+            description="test",
+            extent=Extent(
+                spatial=SpatialExtent([[-180, -90, 180, 90]]),
+                temporal=TemporalExtent([["2028-01-01T00:00:00Z", None]]),
+            ),
         )
-        asset = Asset(
-            href=s3_tif_url,
-            media_type=MediaType.GEOTIFF
+
+        for tif_file in tif_files:
+            item_name = os.path.basename(tif_file).split('.')[0]
+            s3_resource = boto3.resource(
+                's3',
+                aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
+                aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY
+            )
+            s3_bucket = s3_resource.Bucket(s3_bucket_name)
+            key = f"{run_label}/{result_type}/{os.path.basename(tif_file)}"
+            with open(tif_file, 'rb') as data:
+                s3_bucket.upload_fileobj(data, key)
+            s3_tif_url = f"https://{s3_bucket_name}.s3.us-west-2.amazonaws.com/{key}"
+            model_time_sec = int(tif_file[-10:-4])
+            time_elapsed = initial_time + datetime.timedelta(seconds=model_time_sec)
+            with rasterio.open(tif_file) as dataset:
+                bbox = dataset.bounds
+            item = Item(
+                id=item_name,
+                geometry={},
+                bbox=[bbox.left, bbox.bottom, bbox.right, bbox.top],
+                datetime=time_elapsed,
+                properties={}
+            )
+            asset = Asset(
+                href=s3_tif_url,
+                media_type=MediaType.GEOTIFF
+            )
+            item.add_asset(key='data', asset=asset)
+            items.append(item)
+            collection.add_item(item)
+
+            if min_left is None or bbox.left < min_left:
+                min_left = bbox.left
+            if min_bottom is None or bbox.bottom < min_bottom:
+                min_bottom = bbox.bottom
+            if max_right is None or bbox.right > max_right:
+                max_right = bbox.right
+            if max_top is None or bbox.top > max_top:
+                max_top = bbox.top
+            if min_datetime is None or time_elapsed < min_datetime:
+                min_datetime = time_elapsed
+            if max_datetime is None or time_elapsed > max_datetime:
+                max_datetime = time_elapsed
+        collection.extent = Extent(
+            spatial=SpatialExtent([min_left, min_bottom, max_right, max_top]),
+            temporal=TemporalExtent([[min_datetime, max_datetime]])
         )
-        item.add_asset(key='data', asset=asset)
-        items.append(item)
+        catalog.add_child(collection)
 
-        if min_left is None or bbox.left < min_left:
-            min_left = bbox.left
-        if min_bottom is None or bbox.bottom < min_bottom:
-            min_bottom = bbox.bottom
-        if max_right is None or bbox.right > max_right:
-            max_right = bbox.right
-        if max_top is None or bbox.top > max_top:
-            max_top = bbox.top
-        if min_datetime is None or time_elapsed < min_datetime:
-            min_datetime = time_elapsed
-        if max_datetime is None or time_elapsed > max_datetime:
-            max_datetime = time_elapsed
-
-    extent = Extent(
+    catalog.extent = Extent(
         spatial=SpatialExtent([min_left, min_bottom, max_right, max_top]),
         temporal=TemporalExtent([[min_datetime, max_datetime]])
     )
 
-    collection = Collection(
-        id=f'{run_label}_{result_type}',
-        description=f'description',
-        extent=extent,
+    catalog.normalize_and_save(
+        root_href=s3_catalog_uri,
         catalog_type=CatalogType.SELF_CONTAINED
     )
-
-    for item in items:
-        collection.add_item(item)
-    collection.normalize_hrefs(str(stac_output_directory))
-    collection.save_object()
-    collection_json_file = os.path.join(stac_output_directory, "collection.json")
-    with open(collection_json_file, 'rb') as data:
-        s3.upload_fileobj(data, s3_bucket_name, f"{run_label}/{result_type}/collection.json")
-
-    for root, dirs, files in os.walk(stac_output_directory):
-        for file in files:
-            local_file = os.path.join(root, file)
-            s3_file = f"{run_label}/{result_type}/{os.path.relpath(local_file, stac_output_directory)}"
-            print(f'{local_file} uploaded to {s3_file} in S3 bucket {s3_bucket_name}')
-            with open(local_file, 'rb') as data:
-                s3.upload_fileobj(data, s3_bucket_name, s3_file)

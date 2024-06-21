@@ -18,35 +18,29 @@ from pathlib import Path
     ])
 def test_end_to_end_run(tmp_path, zip_filename, package_dir_length, output_dir_name, result_directory_length):
     source_zip_input = Path(__file__).parent / "data" / zip_filename
-    source_zip_target = Path(__file__).parent / "data" / zip_filename.split('.')[0]
-    unpack_archive(str(source_zip_input), str(source_zip_target))
-    assert len(os.listdir(str(source_zip_target))) == package_dir_length
-
-    result_directory = source_zip_target / output_dir_name
-    run_sim(str(source_zip_target))
-    result_directory.mkdir(exist_ok=True)
-    result_filenames = os.listdir(result_directory)
-    for file_name in [
-        'run_anuga.log',
-        'run_*_velocity_max.tif',
-        'run_*.msh',
-        'run_*.sww',
-        'run_*_depth_max.tif',
-        'run_*_depthIntegratedVelocity_max.tif'
-    ]:
-        assert fnmatch.filter(result_filenames, file_name)
-
+    source_zip_target_dir = Path(__file__).parent / "data" / zip_filename.split('.')[0]
+    print('start test_end_to_end_run')
     try:
-        shutil.rmtree(source_zip_target)
-    except FileNotFoundError:
-        pass
+        unpack_archive(str(source_zip_input), str(source_zip_target_dir))
+        assert len(os.listdir(str(source_zip_target_dir))) == package_dir_length
 
-@pytest.mark.skip
-@pytest.mark.parametrize("still_images_directory, run_label, video_type", [
-    ('../run_anuga/tests/data/video/depthIntegratedVelocity', "run_402_324_1062", "depthIntegratedVelocity")
-])
-def test_make_video(still_images_directory, run_label, video_type):
-    full_directory = os.path.join(os.getcwd(), still_images_directory)
-    make_video(str(full_directory), run_label, video_type)
-
-    assert len(glob.glob(f"{still_images_directory}/{run_label}_{video_type}.mp4")) == 1
+        result_directory = source_zip_target_dir / output_dir_name
+        run_sim(str(source_zip_target_dir))
+        result_directory.mkdir(exist_ok=True)
+        result_filenames = os.listdir(result_directory)
+        for file_name in [
+            'run_anuga_*.log',
+            'run_*_velocity_max.tif',
+            'run_*.msh',
+            'run_*.sww',
+            'run_*_depth_max.tif',
+            'run_*_depthIntegratedVelocity_max.tif'
+        ]:
+            assert fnmatch.filter(result_filenames, file_name)
+    finally:
+        print('finally')
+        try:
+            print(f'{source_zip_target_dir=}')
+            shutil.rmtree(str(source_zip_target_dir))
+        except FileNotFoundError:
+            pass
