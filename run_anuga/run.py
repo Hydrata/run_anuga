@@ -213,7 +213,7 @@ def run_sim(package_dir, username=None, password=None, batch_number=1):
         raise
     finally:
         finalize()
-        post_process_sww(package_dir, run_args=run_args)
+    post_process_sww(package_dir, run_args=run_args)
     logger.info(f"finished run: {input_data['run_label']}")
 
 
