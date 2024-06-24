@@ -34,7 +34,7 @@ def run_sim(package_dir, username=None, password=None, batch_number=1):
         memory_usage_logs = list()
         logger.info(f"Building domain...")
         try:
-            if anuga.myid == 0:
+            if anuga.myid == 0 and len(os.listdir(checkpoint_dir)) > 0:
                 domain = load_checkpoint_file(domain_name=domain_name, checkpoint_dir=checkpoint_dir)
                 logger.info('load_checkpoint_file succeeded. Checkpoint domain set.')
             else:
