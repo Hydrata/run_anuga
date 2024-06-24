@@ -33,71 +33,68 @@ def run_sim(package_dir, username=None, password=None, batch_number=1):
         checkpoint_dir = input_data['checkpoint_dir']
         memory_usage_logs = list()
         logger.info(f"Building domain...")
-        try:
-            if anuga.myid == 0 and len(os.listdir(checkpoint_dir)) > 0:
-                domain = load_checkpoint_file(domain_name=domain_name, checkpoint_dir=checkpoint_dir)
-                logger.info('load_checkpoint_file succeeded. Checkpoint domain set.')
-            else:
-                domain = None
-        except Exception as e:
-            if anuga.myid == 0:
-                logger.info('No checkpoint file found. Starting new Simulation')
-                update_web_interface(run_args, data={'status': 'building mesh'})
-                if input_data['scenario_config'].get('simplify_mesh'):
-                    mesher_mesh_filepath, mesh_size = create_mesher_mesh(input_data)
-                    with open(mesher_mesh_filepath, 'r') as mesh_file:
-                        mesh_dict = json.load(mesh_file)
-                        vertex = mesh_dict['mesh']['vertex']
-                        vertex = numpy.array(vertex)
-                        elem = mesh_dict['mesh']['elem']
-                        points = vertex[:, :2]
-                        elev = vertex[:, 2]
-                        domain = anuga.Domain(
-                            points,
-                            elem,
-                            use_cache=False,
-                            verbose=False
-                        )
-                        domain.set_quantity('elevation', elev, location='vertices')
-                        update_web_interface(run_args, data={'mesh_triangle_count': mesh_size})
-                else:
-                    if not os.path.isfile(input_data['mesh_filepath']):
-                        anuga_mesh_filepath, mesh_size = create_anuga_mesh(input_data)
+
+        if anuga.myid == 0 and len(os.listdir(checkpoint_dir)) > 0:
+            domain = load_checkpoint_file(domain_name=domain_name, checkpoint_dir=checkpoint_dir)
+            logger.info('load_checkpoint_file succeeded. Checkpoint domain set.')
+        elif anuga.myid == 0:
+            logger.info('No checkpoint file found. Starting new Simulation')
+            update_web_interface(run_args, data={'status': 'building mesh'})
+            if input_data['scenario_config'].get('simplify_mesh'):
+                mesher_mesh_filepath, mesh_size = create_mesher_mesh(input_data)
+                with open(mesher_mesh_filepath, 'r') as mesh_file:
+                    mesh_dict = json.load(mesh_file)
+                    vertex = mesh_dict['mesh']['vertex']
+                    vertex = numpy.array(vertex)
+                    elem = mesh_dict['mesh']['elem']
+                    points = vertex[:, :2]
+                    elev = vertex[:, 2]
                     domain = anuga.Domain(
-                        mesh_filename=input_data['mesh_filepath'],
+                        points,
+                        elem,
                         use_cache=False,
-                        verbose=False,
+                        verbose=False
                     )
-                    poly_fun_pairs = [['Extent', input_data['elevation_filename']]]
-                    elevation_function = qs.composite_quantity_setting_function(
-                        poly_fun_pairs,
-                        domain,
-                        nan_treatment='exception',
-                    )
-                    domain.set_quantity('elevation', elevation_function, verbose=False, alpha=0.99, location='centroids')
-
-                if input_data['scenario_config'].get('store_mesh'):
-                    if getattr(domain, "dump_shapefile", None):
-                        shapefile_name = f"{input_data['output_directory']}/{input_data['scenario_config'].get('run_id')}_{input_data['scenario_config'].get('id')}_{input_data['scenario_config'].get('project')}_mesh"
-                        logger.info(f"mesh shapefile: {shapefile_name}")
-                        domain.dump_shapefile(
-                            shapefile_name=shapefile_name,
-                            epsg_code=input_data['scenario_config'].get('epsg')
-                        )
-                domain.set_name(input_data['run_label'])
-                domain.set_datadir(input_data['output_directory'])
-                domain.set_minimum_storable_height(0.005)
-                frictions = make_frictions(input_data)
-                friction_function = qs.composite_quantity_setting_function(
-                    frictions,
-                    domain
-                )
-                domain.set_quantity('friction', friction_function, verbose=False)
-                domain.set_quantity('stage', 0.0, verbose=False)
-
-                update_web_interface(run_args, data={'status': 'created mesh'})
+                    domain.set_quantity('elevation', elev, location='vertices')
+                    update_web_interface(run_args, data={'mesh_triangle_count': mesh_size})
             else:
-                domain = None
+                if not os.path.isfile(input_data['mesh_filepath']):
+                    anuga_mesh_filepath, mesh_size = create_anuga_mesh(input_data)
+                domain = anuga.Domain(
+                    mesh_filename=input_data['mesh_filepath'],
+                    use_cache=False,
+                    verbose=False,
+                )
+                poly_fun_pairs = [['Extent', input_data['elevation_filename']]]
+                elevation_function = qs.composite_quantity_setting_function(
+                    poly_fun_pairs,
+                    domain,
+                    nan_treatment='exception',
+                )
+                domain.set_quantity('elevation', elevation_function, verbose=False, alpha=0.99, location='centroids')
+
+            if input_data['scenario_config'].get('store_mesh'):
+                if getattr(domain, "dump_shapefile", None):
+                    shapefile_name = f"{input_data['output_directory']}/{input_data['scenario_config'].get('run_id')}_{input_data['scenario_config'].get('id')}_{input_data['scenario_config'].get('project')}_mesh"
+                    logger.info(f"mesh shapefile: {shapefile_name}")
+                    domain.dump_shapefile(
+                        shapefile_name=shapefile_name,
+                        epsg_code=input_data['scenario_config'].get('epsg')
+                    )
+            domain.set_name(input_data['run_label'])
+            domain.set_datadir(input_data['output_directory'])
+            domain.set_minimum_storable_height(0.005)
+            frictions = make_frictions(input_data)
+            friction_function = qs.composite_quantity_setting_function(
+                frictions,
+                domain
+            )
+            domain.set_quantity('friction', friction_function, verbose=False)
+            domain.set_quantity('stage', 0.0, verbose=False)
+
+            update_web_interface(run_args, data={'status': 'created mesh'})
+        else:
+            domain = None
         barrier()
         domain = distribute(domain, verbose=False)
         default_boundary_maps = {
