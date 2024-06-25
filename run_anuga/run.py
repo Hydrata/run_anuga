@@ -29,11 +29,12 @@ def run_sim(package_dir, username=None, password=None, batch_number=1):
     logger.critical(f"run_sim started with {batch_number=}")
     domain = None
     overall = None
+    sim_success = True
+    memory_usage_logs = list()
     try:
         logger.critical(f"{anuga.myid=}")
         domain_name = input_data['run_label']
         checkpoint_dir = input_data['checkpoint_dir']
-        memory_usage_logs = list()
         logger.critical(f"Building domain...")
 
         if len(os.listdir(checkpoint_dir)) > 0:
@@ -265,18 +266,19 @@ def run_sim(package_dir, username=None, password=None, batch_number=1):
                 start = time.time()
         barrier()
         domain.sww_merge(verbose=False, delete_old=True)
-
-        if anuga.myid == 0:
-            max_memory_usage = int(round(max(memory_usage_logs)))
-            update_web_interface(run_args, data={"memory_used": max_memory_usage})
-            logger.critical("Processing results...")
-            post_process_sww(package_dir, run_args=run_args)
+        barrier()
     except Exception as e:
+        sim_success = False
         update_web_interface(run_args, data={'status': 'error'})
         logger.error(f"{traceback.format_exc()}")
         raise
     finally:
         finalize()
+        if anuga.myid == 0 and sim_success:
+            max_memory_usage = int(round(max(memory_usage_logs)))
+            update_web_interface(run_args, data={"memory_used": max_memory_usage})
+            logger.critical("Processing results...")
+            post_process_sww(package_dir, run_args=run_args)
     logger.critical(f"finished run: {input_data['run_label']}")
 
 
