@@ -39,9 +39,9 @@ def run_sim(package_dir, username=None, password=None, batch_number=1):
 
         if len(os.listdir(checkpoint_dir)) > 0:
             if anuga.numprocs > 1:
-                domain_name = domain_name + "_P{}_{}".format(anuga.numprocs, anuga.myid)
+                sub_domain_name = domain_name + "_P{}_{}".format(anuga.numprocs, anuga.myid)
             logger.critical(f"{anuga.numprocs=}")
-            logger.critical(f"2 {domain_name=}")
+            logger.critical(f"2 {sub_domain_name=}")
             checkpoint_times = set()
             for path, directory, filenames in os.walk(checkpoint_dir):
                 logger.critical(f"{filenames=}")
@@ -53,7 +53,7 @@ def run_sim(package_dir, username=None, password=None, batch_number=1):
                         filebase = os.path.splitext(filename)[0].rpartition("_")
                         checkpoint_time = filebase[-1]
                         domain_name_base = filebase[0]
-                        if domain_name_base == domain_name:
+                        if domain_name_base == sub_domain_name:
                             checkpoint_times.add(float(checkpoint_time))
             combined = checkpoint_times
             logger.critical(f"{combined=}")
@@ -72,7 +72,7 @@ def run_sim(package_dir, username=None, password=None, batch_number=1):
             if len(checkpoint_times) == 0:
                 raise Exception("Unable to open checkpoint file")
             for checkpoint_time in reversed(checkpoint_times):
-                pickle_name = (os.path.join(checkpoint_dir, domain_name) + "_" + str(checkpoint_time) + ".pickle")
+                pickle_name = (os.path.join(checkpoint_dir, sub_domain_name) + "_" + str(checkpoint_time) + ".pickle")
                 logger.critical(f"{pickle_name=}")
                 logger.critical(f"{os.path.isfile(pickle_name)}")
                 try:
@@ -265,7 +265,8 @@ def run_sim(package_dir, username=None, password=None, batch_number=1):
                 logger.critical(f'cps: {len(os.listdir(checkpoint_dir))} | {percentage_done}% | {minutes}m {seconds}s | mem usage: {memory_percent}% | disk usage: {psutil.disk_usage("/").percent}%')
                 start = time.time()
         barrier()
-        domain.sww_merge(verbose=True, delete_old=True)
+        logger.critical(f"{domain.global_name=}")
+        domain.sww_merge(verbose=True, delete_old=False)
         barrier()
     except Exception as e:
         sim_success = False
