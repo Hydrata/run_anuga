@@ -1,6 +1,6 @@
 import json
+import dill as pickle
 import time
-
 import numpy
 import psutil
 
@@ -11,7 +11,7 @@ import os
 import pandas as pd
 import traceback
 
-from anuga import distribute, finalize, barrier, Inlet_operator, load_checkpoint_file
+from anuga import distribute, finalize, barrier, Inlet_operator
 from anuga.utilities import quantity_setting_functions as qs
 from anuga.operators.rate_operators import Polygonal_rate_operator
 
@@ -27,6 +27,8 @@ def run_sim(package_dir, username=None, password=None, batch_number=1):
     input_data = setup_input_data(package_dir)
     logger = setup_logger(input_data, username, password, batch_number)
     logger.critical(f"run_sim started with {batch_number=}")
+    domain = None
+    overall = None
     try:
         logger.critical(f"{anuga.myid=}")
         domain_name = input_data['run_label']
@@ -34,8 +36,72 @@ def run_sim(package_dir, username=None, password=None, batch_number=1):
         memory_usage_logs = list()
         logger.critical(f"Building domain...")
 
-        if anuga.myid == 0 and len(os.listdir(checkpoint_dir)) > 0:
-            domain = load_checkpoint_file(domain_name=domain_name, checkpoint_dir=checkpoint_dir)
+        if len(os.listdir(checkpoint_dir)) > 0:
+            if anuga.numprocs > 1:
+                domain_name = domain_name + "_P{}_{}".format(anuga.numprocs, anuga.myid)
+            logger.critical(f"{anuga.numprocs=}")
+            logger.critical(f"2 {domain_name=}")
+            checkpoint_times = set()
+            for path, directory, filenames in os.walk(checkpoint_dir):
+                logger.critical(f"{filenames=}")
+                logger.critical(f"{directory=}")
+                if len(filenames) == 0:
+                    return None
+                else:
+                    for filename in filenames:
+                        filebase = os.path.splitext(filename)[0].rpartition("_")
+                        checkpoint_time = filebase[-1]
+                        domain_name_base = filebase[0]
+                        if domain_name_base == domain_name:
+                            checkpoint_times.add(float(checkpoint_time))
+            combined = checkpoint_times
+            logger.critical(f"{combined=}")
+            logger.critical(f"1 sending...")
+            for cpu in range(anuga.numprocs):
+                if anuga.myid != cpu:
+                    anuga.send(checkpoint_times, cpu)
+                    rec = anuga.receive(cpu)
+                    logger.critical(f"{rec=}")
+                    combined = combined & rec
+            logger.critical(f"_get_checkpoint_times returning: {combined=}")
+            logger.critical(f"{checkpoint_times=}")
+            checkpoint_times = list(checkpoint_times)
+            checkpoint_times.sort()
+            logger.critical(f"{checkpoint_times=}")
+            if len(checkpoint_times) == 0:
+                raise Exception("Unable to open checkpoint file")
+            for checkpoint_time in reversed(checkpoint_times):
+                pickle_name = (os.path.join(checkpoint_dir, domain_name) + "_" + str(checkpoint_time) + ".pickle")
+                logger.critical(f"{pickle_name=}")
+                logger.critical(f"{os.path.isfile(pickle_name)}")
+                try:
+                    domain = pickle.load(open(pickle_name, "rb"))
+                    success = True
+                except:
+                    success = False
+                logger.critical(f"{success=}")
+                logger.critical(f"sending...")
+                overall = success
+                for cpu in range(anuga.numprocs):
+                    if cpu != anuga.myid:
+                        anuga.send(success, cpu)
+                logger.critical(f"receive...")
+                for cpu in range(anuga.numprocs):
+                    if cpu != anuga.myid:
+                        overall = overall & anuga.receive(cpu)
+                logger.critical(f"overall...")
+                logger.critical(f"{overall=}")
+                logger.critical(f"barrier...")
+                barrier()
+                logger.critical(f"barrier passed")
+                if overall:
+                    break
+            if not overall:
+                raise Exception("Unable to open checkpoint file")
+            domain.last_walltime = time.time()
+            domain.communication_time = 0.0
+            domain.communication_reduce_time = 0.0
+            domain.communication_broadcast_time = 0.0
             logger.critical('load_checkpoint_file succeeded. Checkpoint domain set.')
         elif anuga.myid == 0:
             logger.critical('No checkpoint file found. Starting new Simulation')
