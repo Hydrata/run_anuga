@@ -265,7 +265,7 @@ def run_sim(package_dir, username=None, password=None, batch_number=1):
                 logger.critical(f'cps: {len(os.listdir(checkpoint_dir))} | {percentage_done}% | {minutes}m {seconds}s | mem usage: {memory_percent}% | disk usage: {psutil.disk_usage("/").percent}%')
                 start = time.time()
         barrier()
-        domain.sww_merge(verbose=False, delete_old=True)
+        domain.sww_merge(verbose=True, delete_old=True)
         barrier()
     except Exception as e:
         sim_success = False
