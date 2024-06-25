@@ -140,7 +140,7 @@ def run_sim(package_dir, username=None, password=None, batch_number=1):
                 if new_dataframe['timestamp'].dt.tz is None:
                     new_dataframe['timestamp'] = new_dataframe['timestamp'].dt.tz_localize('UTC')
                 inflow_dataframe = pd.merge(inflow_dataframe, new_dataframe, how='left', on='timestamp')
-                inflow_dataframe.fillna(method='ffill', inplace=True)
+                inflow_dataframe.ffill(inplace=True)
             else:
                 inflow_dataframe[polygon_name] = float(data)
             inflow_function = create_inflow_function(inflow_dataframe, polygon_name)

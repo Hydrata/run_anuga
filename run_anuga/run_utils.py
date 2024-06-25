@@ -927,6 +927,8 @@ def check_coordinates_are_in_polygon(coordinates, polygon):
 
 
 def generate_stac(output_directory, run_label, output_quantities, initial_time_iso_string):
+    if isinstance(settings, dict):
+        return
     if not settings.AWS_ACCESS_KEY_ID or not settings.AWS_SECRET_ACCESS_KEY or not settings.ANUGA_S3_STAC_BUCKET_NAME:
         return
     s3_bucket_name = settings.ANUGA_S3_STAC_BUCKET_NAME
