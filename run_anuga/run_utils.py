@@ -141,7 +141,7 @@ def update_web_interface(run_args, data, files=None):
         control_server = input_data['scenario_config'].get('control_server')
         client = requests.Session()
         client.auth = requests.auth.HTTPBasicAuth(username, password)
-        # logger.info(f"hydrata.com post:{data}")
+        # logger.critical(f"hydrata.com post:{data}")
         response = client.patch(
             f"{control_server}anuga/api/{data['project']}/{data['scenario']}/run/{run_id}/",
             data=data,
@@ -160,7 +160,7 @@ def create_mesher_mesh(input_data):
         mesh_size = len(mesh_dict['mesh']['elem'])
         return mesher_mesh_filepath, mesh_size
     # logger = setup_logger(input_data)
-    logger.info(f"create_mesh running")
+    logger.critical(f"create_mesh running")
     elevation_raster = gdal.Open(input_data['elevation_filename'])
     ulx, xres, xskew, uly, yskew, yres = elevation_raster.GetGeoTransform()
     elevation_raster_resolution = xres
@@ -180,9 +180,9 @@ def create_mesher_mesh(input_data):
             capture_output=True,
             universal_newlines=True
         )
-        logger.info(burn_structures_into_raster.stdout)
+        logger.critical(burn_structures_into_raster.stdout)
         if burn_structures_into_raster.returncode != 0:
-            logger.info(burn_structures_into_raster.stderr)
+            logger.critical(burn_structures_into_raster.stderr)
             raise UserWarning(burn_structures_into_raster.stderr)
     mesh_region_shp_files = None
     minimum_triangle_area = max((user_resolution ** 2) / 2, (elevation_raster_resolution ** 2) / 2)
@@ -198,7 +198,7 @@ def create_mesher_mesh(input_data):
             tif_mesh_region_filepath = os.path.join(mesh_region_directory, f"{mesh_region_name}.tif")
             epsg_code = int(input_data.get('mesh_region').get('crs').get('properties').get('name').split(':')[-1])
             make_shp_from_polygon(feature.get('geometry').get('coordinates')[0], epsg_code, shp_boundary_filepath)
-            logger.info(shp_boundary_filepath)
+            logger.critical(shp_boundary_filepath)
             mesh_region_clip = subprocess.run([
                 'gdalwarp',
                 f'-cutline', f'{shp_boundary_filepath}',
@@ -212,10 +212,10 @@ def create_mesher_mesh(input_data):
                 capture_output=True,
                 universal_newlines=True
             )
-            logger.info(mesh_region_clip)
-            logger.info(mesh_region_clip.stdout)
+            logger.critical(mesh_region_clip)
+            logger.critical(mesh_region_clip.stdout)
             if mesh_region_clip.returncode != 0:
-                logger.info(mesh_region_clip.stderr)
+                logger.critical(mesh_region_clip.stderr)
                 raise UserWarning(mesh_region_clip.stderr)
             mesh_region_shp_triangles = os.path.join(mesh_region_directory, mesh_region_name, f"{mesh_region_name}_USM.shp")
             mesh_region_shp_extent = os.path.join(mesh_region_directory, mesh_region_name, f"line_{mesh_region_name}.shp")
@@ -243,10 +243,10 @@ simplify_tol = 10
             mesher_config_filepath = f"{mesh_region_directory}/mesher_config.py"
             with open(mesher_config_filepath, "w+") as mesher_config:
                 mesher_config.write(text_blob)
-            logger.info(f"{mesher_config_filepath=}")
+            logger.critical(f"{mesher_config_filepath=}")
             with open(mesher_config_filepath, "r") as config_file:
-                logger.info(config_file.read())
-            logger.info(f"python {mesher_bin}.py {mesher_config_filepath}")
+                logger.critical(config_file.read())
+            logger.critical(f"python {mesher_bin}.py {mesher_config_filepath}")
             mesher_out = subprocess.run([
                 '/opt/venv/hydrata/bin/python',
                 f'{mesher_bin}.py',
@@ -255,9 +255,9 @@ simplify_tol = 10
                 capture_output=True,
                 universal_newlines=True
             )
-            logger.info(f"***{tif_mesh_region_filepath} mesher_out***")
-            logger.info(mesher_out.stdout)
-            logger.info(mesher_out.stderr)
+            logger.critical(f"***{tif_mesh_region_filepath} mesher_out***")
+            logger.critical(mesher_out.stdout)
+            logger.critical(mesher_out.stderr)
             if mesher_out.returncode != 0:
                 raise UserWarning(mesher_out.stderr)
 
@@ -274,16 +274,16 @@ simplify_tol = 10
         #     capture_output=True,
         #     universal_newlines=True
         # )
-        # logger.info(mesh_regions_tif_mask)
-        # logger.info(mesh_regions_tif_mask.stdout)
+        # logger.critical(mesh_regions_tif_mask)
+        # logger.critical(mesh_regions_tif_mask.stdout)
         # if mesh_regions_tif_mask.returncode != 0:
-        #     logger.info(mesh_regions_tif_mask.stderr)
+        #     logger.critical(mesh_regions_tif_mask.stderr)
         #     raise UserWarning(mesh_regions_tif_mask.stderr)
     # the lowest triangle area we can have is 5m2 or the grid resolution squared
 
     max_area = 10000000
     mesher_config_filepath = f"{input_data['output_directory']}/mesher_config.py"
-    logger.info(f"{mesher_config_filepath=}")
+    logger.critical(f"{mesher_config_filepath=}")
     max_rmse_tolerance = input_data['scenario_config'].get('max_rmse_tolerance', 1)
     breaklines_shapefile_path = None
 
@@ -373,10 +373,10 @@ constraints = {{
 """
     with open(mesher_config_filepath, "w+") as mesher_config:
         mesher_config.write(text_blob)
-    logger.info(f"{mesher_config_filepath=}")
+    logger.critical(f"{mesher_config_filepath=}")
     with open(mesher_config_filepath, "r") as config_file:
-        logger.info(config_file.read())
-    logger.info(f"python {mesher_bin}.py {mesher_config_filepath}")
+        logger.critical(config_file.read())
+    logger.critical(f"python {mesher_bin}.py {mesher_config_filepath}")
     try:
         mesher_out = subprocess.run([
             '/opt/venv/hydrata/bin/python',
@@ -386,14 +386,14 @@ constraints = {{
             capture_output=True,
             universal_newlines=True
         )
-        logger.info(f"***mesher_out***")
-        logger.info(mesher_out.stdout)
-        logger.info(mesher_out.stderr)
+        logger.critical(f"***mesher_out***")
+        logger.critical(mesher_out.stdout)
+        logger.critical(mesher_out.stderr)
         if mesher_out.returncode != 0:
             raise UserWarning(mesher_out.stderr)
     except ImportError:
         mesher_mesh_filepath = None
-    logger.info(f"{mesher_mesh_filepath=}")
+    logger.critical(f"{mesher_mesh_filepath=}")
     with open(mesher_mesh_filepath, 'r') as mesh_file:
         mesh_dict = json.load(mesh_file)
     mesh_size = len(mesh_dict['mesh']['elem'])
@@ -407,7 +407,7 @@ def create_anuga_mesh(input_data):
     # interior_holes, hole_tags = make_interior_holes_and_tags(input_data)
     bounding_polygon = input_data['boundary_polygon']
     boundary_tags = input_data['boundary_tags']
-    logger.info(f"creating anuga_mesh")
+    logger.critical(f"creating anuga_mesh")
     if input_data.get('structure_filename'):
         building_height = 5
         burn_structures_into_raster = subprocess.run([
@@ -419,9 +419,9 @@ def create_anuga_mesh(input_data):
             capture_output=True,
             universal_newlines=True
         )
-        logger.info(burn_structures_into_raster.stdout)
+        logger.critical(burn_structures_into_raster.stdout)
         if burn_structures_into_raster.returncode != 0:
-            logger.info(burn_structures_into_raster.stderr)
+            logger.critical(burn_structures_into_raster.stderr)
             raise UserWarning(burn_structures_into_raster.stderr)
     mesh_geo_reference = Geo_reference(zone=int(input_data['scenario_config'].get('epsg')[-2:]))
     anuga_mesh = anuga.pmesh.mesh_interface.create_mesh_from_regions(
@@ -437,7 +437,7 @@ def create_anuga_mesh(input_data):
         verbose=False,
         fail_if_polygons_outside=False
     )
-    logger.info(f"{anuga_mesh.tri_mesh.triangles.size=}")
+    logger.critical(f"{anuga_mesh.tri_mesh.triangles.size=}")
     return mesh_filepath, anuga_mesh
 
 
@@ -654,20 +654,20 @@ def create_boundary_polygon_from_boundaries(boundaries_geojson):
 def post_process_sww(package_dir, run_args=None, output_raster_resolution=None):
     output_quantities = ['depth', 'velocity', 'depthIntegratedVelocity', 'stage']
     input_data = setup_input_data(package_dir)
-    logger.info(f'Generating output rasters on {anuga.myid}...')
+    logger.critical(f'Generating output rasters on {anuga.myid}...')
     raster = gdal.Open(input_data['elevation_filename'])
     gt = raster.GetGeoTransform()
     # resolution = 1 if math.floor(gt[1] / 4) == 0 else math.floor(gt[1] / 4)
     resolutions = list()
     if input_data.get('mesh_region'):
         for feature in input_data.get('mesh_region').get('features') or list():
-            # logger.info(f'{feature=}')
+            # logger.critical(f'{feature=}')
             resolutions.append(feature.get('properties').get('resolution'))
-    logger.info(f'{resolutions=}')
+    logger.critical(f'{resolutions=}')
     if len(resolutions) == 0:
         resolutions = [input_data.get('resolution') or 1000]
     finest_grid_resolution = min(resolutions)
-    logger.info(f'raster output resolution: {finest_grid_resolution}m')
+    logger.critical(f'raster output resolution: {finest_grid_resolution}m')
 
     epsg_integer = int(input_data['scenario_config'].get("epsg").split(":")[1]
                        if ":" in input_data['scenario_config'].get("epsg")
@@ -721,7 +721,7 @@ def post_process_sww(package_dir, run_args=None, output_raster_resolution=None):
     video_dir = f"{input_data['output_directory']}/videos/"
     if os.path.isdir(video_dir):
         shutil.rmtree(video_dir)
-    logger.info('Successfully generated depth, velocity, momentum outputs')
+    logger.critical('Successfully generated depth, velocity, momentum outputs')
 
 
 def make_video(output_directory, run_label, result_type):
@@ -815,7 +815,7 @@ def make_shp_from_polygon(boundary_polygon, epsg_code, shapefilepath, buffer=0):
     boundary_ring_geom.AddPoint(boundary_polygon[0][0], boundary_polygon[0][1])
     boundary_polygon_geom = ogr.Geometry(ogr.wkbPolygon)
     boundary_polygon_geom.AddGeometry(boundary_ring_geom)
-    logger.info(f"{boundary_polygon_geom=}")
+    logger.critical(f"{boundary_polygon_geom=}")
 
     driver = ogr.GetDriverByName("ESRI Shapefile")
     ds = driver.CreateDataSource(shapefilepath)
@@ -852,7 +852,7 @@ def calculate_hydrology(package_dir):
         catchment_polygon = prep(Polygon(catchment.get('geometry').get('coordinates')[0]))
         node_candidate = list(filter(catchment_polygon.contains, node_points))
         if len(node_candidate) == 0:
-            logger.info(f"Catchment {catchment.get('id')} has no internal node")
+            logger.critical(f"Catchment {catchment.get('id')} has no internal node")
             continue
         if len(node_candidate) > 1:
             raise IndexError(f"Catchment {catchment.get('id')} has more than one node")

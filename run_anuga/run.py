@@ -26,19 +26,19 @@ def run_sim(package_dir, username=None, password=None, batch_number=1):
     run_args = package_dir, username, password
     input_data = setup_input_data(package_dir)
     logger = setup_logger(input_data, username, password, batch_number)
-    logger.info(f"run_sim started with {batch_number=}")
+    logger.critical(f"run_sim started with {batch_number=}")
     try:
-        logger.info(f"{anuga.myid=}")
+        logger.critical(f"{anuga.myid=}")
         domain_name = input_data['run_label']
         checkpoint_dir = input_data['checkpoint_dir']
         memory_usage_logs = list()
-        logger.info(f"Building domain...")
+        logger.critical(f"Building domain...")
 
         if anuga.myid == 0 and len(os.listdir(checkpoint_dir)) > 0:
             domain = load_checkpoint_file(domain_name=domain_name, checkpoint_dir=checkpoint_dir)
-            logger.info('load_checkpoint_file succeeded. Checkpoint domain set.')
+            logger.critical('load_checkpoint_file succeeded. Checkpoint domain set.')
         elif anuga.myid == 0:
-            logger.info('No checkpoint file found. Starting new Simulation')
+            logger.critical('No checkpoint file found. Starting new Simulation')
             update_web_interface(run_args, data={'status': 'building mesh'})
             if input_data['scenario_config'].get('simplify_mesh'):
                 mesher_mesh_filepath, mesh_size = create_mesher_mesh(input_data)
@@ -76,7 +76,7 @@ def run_sim(package_dir, username=None, password=None, batch_number=1):
             if input_data['scenario_config'].get('store_mesh'):
                 if getattr(domain, "dump_shapefile", None):
                     shapefile_name = f"{input_data['output_directory']}/{input_data['scenario_config'].get('run_id')}_{input_data['scenario_config'].get('id')}_{input_data['scenario_config'].get('project')}_mesh"
-                    logger.info(f"mesh shapefile: {shapefile_name}")
+                    logger.critical(f"mesh shapefile: {shapefile_name}")
                     domain.dump_shapefile(
                         shapefile_name=shapefile_name,
                         epsg_code=input_data['scenario_config'].get('epsg')
@@ -195,7 +195,7 @@ def run_sim(package_dir, username=None, password=None, batch_number=1):
                 memory_percent = psutil.virtual_memory().percent
                 memory_usage = psutil.virtual_memory().used
                 memory_usage_logs.append(memory_usage)
-                logger.info(f'cps: {len(os.listdir(checkpoint_dir))} | {percentage_done}% | {minutes}m {seconds}s | mem usage: {memory_percent}% | disk usage: {psutil.disk_usage("/").percent}%')
+                logger.critical(f'cps: {len(os.listdir(checkpoint_dir))} | {percentage_done}% | {minutes}m {seconds}s | mem usage: {memory_percent}% | disk usage: {psutil.disk_usage("/").percent}%')
                 start = time.time()
         barrier()
         domain.sww_merge(verbose=False, delete_old=True)
@@ -203,7 +203,7 @@ def run_sim(package_dir, username=None, password=None, batch_number=1):
         if anuga.myid == 0:
             max_memory_usage = int(round(max(memory_usage_logs)))
             update_web_interface(run_args, data={"memory_used": max_memory_usage})
-            logger.info("Processing results...")
+            logger.critical("Processing results...")
             post_process_sww(package_dir, run_args=run_args)
     except Exception as e:
         update_web_interface(run_args, data={'status': 'error'})
@@ -211,7 +211,7 @@ def run_sim(package_dir, username=None, password=None, batch_number=1):
         raise
     finally:
         finalize()
-    logger.info(f"finished run: {input_data['run_label']}")
+    logger.critical(f"finished run: {input_data['run_label']}")
 
 
 if __name__ == '__main__':
@@ -228,7 +228,7 @@ if __name__ == '__main__':
     if not package_dir:
         package_dir = os.path.join(os.path.dirname(__file__), '..', '..')
     try:
-        logger.info(f"run.py __main__ running {batch_number=}")
+        logger.critical(f"run.py __main__ running {batch_number=}")
         run_sim(package_dir, username, password, batch_number)
     except Exception as e:
         run_args = (package_dir, username, password)
