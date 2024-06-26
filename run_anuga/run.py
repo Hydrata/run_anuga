@@ -275,7 +275,10 @@ def run_sim(package_dir, username=None, password=None, batch_number=1):
         # copy the sww out of the batch directory and into outputs
         sww_files = glob.glob(f"{batch_output_directory}/*.sww")
         merged_sww_file = max([(file, os.path.getsize(file)) for file in sww_files], key=lambda x: x[1])[0]
-        shutil.move(merged_sww_file, input_data['output_directory'])
+        merged_sww_directory = os.path.dirname(merged_sww_file)
+        standardised_sww_filepath = os.path.join(merged_sww_directory, f"{input_data['run_label']}.sww")
+        os.rename(merged_sww_file, standardised_sww_filepath)
+        shutil.move(standardised_sww_filepath, input_data['output_directory'])
         barrier()
         if anuga.myid == 0:
             max_memory_usage = int(round(max(memory_usage_logs)))
