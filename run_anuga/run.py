@@ -27,6 +27,7 @@ def run_sim(package_dir, username=None, password=None, batch_number=1):
     input_data = setup_input_data(package_dir)
     logger = setup_logger(input_data, username, password, batch_number)
     logger.critical(f"run_sim started with {batch_number=}")
+    output_directory = f"{input_data['output_directory']}_{batch_number}"
     domain = None
     overall = None
     sim_success = True
@@ -100,6 +101,7 @@ def run_sim(package_dir, username=None, password=None, batch_number=1):
             if not overall:
                 raise Exception("Unable to open checkpoint file")
             domain.last_walltime = time.time()
+            domain.set_name(input_data['run_label'])
             domain.communication_time = 0.0
             domain.communication_reduce_time = 0.0
             domain.communication_broadcast_time = 0.0
@@ -149,7 +151,7 @@ def run_sim(package_dir, username=None, password=None, batch_number=1):
                         epsg_code=input_data['scenario_config'].get('epsg')
                     )
             domain.set_name(input_data['run_label'])
-            domain.set_datadir(input_data['output_directory'])
+            domain.set_datadir(output_directory)
             domain.set_minimum_storable_height(0.005)
             frictions = make_frictions(input_data)
             friction_function = qs.composite_quantity_setting_function(
@@ -251,6 +253,7 @@ def run_sim(package_dir, username=None, password=None, batch_number=1):
         )
         barrier()
         start = time.time()
+        logger.critical(f"{domain.global_name=}")
         for t in domain.evolve(yieldstep=yieldstep, finaltime=duration):
             domain.write_time()
             if anuga.myid == 0:
@@ -265,21 +268,19 @@ def run_sim(package_dir, username=None, password=None, batch_number=1):
                 logger.critical(f'cps: {len(os.listdir(checkpoint_dir))} | {percentage_done}% | {minutes}m {seconds}s | mem usage: {memory_percent}% | disk usage: {psutil.disk_usage("/").percent}%')
                 start = time.time()
         barrier()
-        logger.critical(f"{domain.global_name=}")
         domain.sww_merge(verbose=True, delete_old=False)
         barrier()
+        if anuga.myid == 0:
+            max_memory_usage = int(round(max(memory_usage_logs)))
+            update_web_interface(run_args, data={"memory_used": max_memory_usage})
+            logger.critical("Processing results...")
+            post_process_sww(package_dir, run_args=run_args)
     except Exception as e:
-        sim_success = False
         update_web_interface(run_args, data={'status': 'error'})
         logger.error(f"{traceback.format_exc()}")
         raise
     finally:
         finalize()
-        if anuga.myid == 0 and sim_success:
-            max_memory_usage = int(round(max(memory_usage_logs)))
-            update_web_interface(run_args, data={"memory_used": max_memory_usage})
-            logger.critical("Processing results...")
-            post_process_sww(package_dir, run_args=run_args)
     logger.critical(f"finished run: {input_data['run_label']}")
 
 
