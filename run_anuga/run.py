@@ -257,7 +257,6 @@ def run_sim(package_dir, username=None, password=None, batch_number=1):
         )
         barrier()
         start = time.time()
-        logger.critical(f"{domain.global_name=}")
         for t in domain.evolve(yieldstep=yieldstep, finaltime=duration):
             domain.write_time()
             if anuga.myid == 0:
@@ -275,7 +274,7 @@ def run_sim(package_dir, username=None, password=None, batch_number=1):
         domain.sww_merge(verbose=True, delete_old=False)
         # copy the sww out of the batch directory and into outputs
         sww_files = glob.glob(f"{batch_output_directory}/*.sww")
-        merged_sww_file = max([(file, os.path.getsize(file)) for file in sww_files], key=lambda x: x[1])
+        merged_sww_file = max([(file, os.path.getsize(file)) for file in sww_files], key=lambda x: x[1])[0]
         shutil.move(merged_sww_file, input_data['output_directory'])
         barrier()
         if anuga.myid == 0:
