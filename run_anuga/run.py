@@ -100,6 +100,7 @@ def run_sim(package_dir, username=None, password=None, batch_number=1):
                     break
             if not overall:
                 raise Exception("Unable to open checkpoint file")
+            domain.set_datadir(output_directory)
             domain.last_walltime = time.time()
             domain.set_name(input_data['run_label'])
             domain.communication_time = 0.0
