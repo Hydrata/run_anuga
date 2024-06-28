@@ -30,7 +30,6 @@ def run_sim(package_dir, username=None, password=None, batch_number=1):
     input_data = setup_input_data(package_dir)
     logger = setup_logger(input_data, username, password, batch_number)
     logger.critical(f"run_sim started with {batch_number=}")
-    batch_output_directory = f"{input_data['output_directory']}_{batch_number}"
     domain = None
     overall = None
     sim_success = True
@@ -103,7 +102,7 @@ def run_sim(package_dir, username=None, password=None, batch_number=1):
                     break
             if not overall:
                 raise Exception("Unable to open checkpoint file")
-            domain.set_datadir(batch_output_directory)
+            domain.set_datadir(input_data['output_directory'])
             domain.last_walltime = time.time()
             domain.set_name(input_data['run_label'])
             domain.communication_time = 0.0
@@ -155,7 +154,7 @@ def run_sim(package_dir, username=None, password=None, batch_number=1):
                         epsg_code=input_data['scenario_config'].get('epsg')
                     )
             domain.set_name(input_data['run_label'])
-            domain.set_datadir(batch_output_directory)
+            domain.set_datadir(input_data['output_directory'])
             domain.set_minimum_storable_height(0.005)
             frictions = make_frictions(input_data)
             friction_function = qs.composite_quantity_setting_function(
@@ -275,12 +274,12 @@ def run_sim(package_dir, username=None, password=None, batch_number=1):
         barrier()
         if anuga.myid == 0:
             # copy the sww out of the batch directory and into outputs
-            sww_files = glob.glob(f"{batch_output_directory}/*.sww")
-            merged_sww_file = max([(file, os.path.getsize(file)) for file in sww_files], key=lambda x: x[1])[0]
-            merged_sww_directory = os.path.dirname(merged_sww_file)
-            standardised_sww_filepath = os.path.join(merged_sww_directory, f"{input_data['run_label']}.sww")
-            os.rename(merged_sww_file, standardised_sww_filepath)
-            shutil.move(standardised_sww_filepath, input_data['output_directory'])
+            # sww_files = glob.glob(f"{input_data['output_directory']}/*.sww")
+            # merged_sww_file = max([(file, os.path.getsize(file)) for file in sww_files], key=lambda x: x[1])[0]
+            # merged_sww_directory = os.path.dirname(merged_sww_file)
+            # standardised_sww_filepath = os.path.join(merged_sww_directory, f"{input_data['run_label']}.sww")
+            # os.rename(merged_sww_file, standardised_sww_filepath)
+            # shutil.move(standardised_sww_filepath, input_data['output_directory'])
             max_memory_usage = int(round(max(memory_usage_logs)))
             update_web_interface(run_args, data={"memory_used": max_memory_usage})
             logger.critical("Processing results...")
