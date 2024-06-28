@@ -270,14 +270,16 @@ def run_sim(package_dir, username=None, password=None, batch_number=1):
                 logger.critical(f'cps: {len(os.listdir(checkpoint_dir))} | {percentage_done}% | {minutes}m {seconds}s | mem usage: {memory_percent}% | disk usage: {psutil.disk_usage("/").percent}%')
                 start = time.time()
         barrier()
+        if anuga.myid == 0:
+            sww_files = glob.glob(f"{input_data['output_directory']}/*.sww")
+            for sww_file in sww_files:
+                suffix = f"_P{sww_file.split('_P')[-1]}"
+                standardised_sww_filepath = os.path.join(input_data['output_directory'], f"{input_data['run_label']}{suffix}.sww")
+                if not sww_file == standardised_sww_filepath:
+                    os.rename(sww_file, standardised_sww_filepath)
         domain.sww_merge(verbose=True, delete_old=False)
         barrier()
         if anuga.myid == 0:
-            sww_files = glob.glob(f"{input_data['output_directory']}/*.sww")
-            merged_sww_file = max([(file, os.path.getsize(file)) for file in sww_files], key=lambda x: x[1])[0]
-            standardised_sww_filepath = os.path.join(input_data['output_directory'], f"{input_data['run_label']}.sww")
-            if not merged_sww_file == standardised_sww_filepath:
-                os.rename(merged_sww_file, standardised_sww_filepath)
             max_memory_usage = int(round(max(memory_usage_logs)))
             update_web_interface(run_args, data={"memory_used": max_memory_usage})
             logger.critical("Processing results...")
