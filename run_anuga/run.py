@@ -41,6 +41,7 @@ def run_sim(package_dir, username=None, password=None, batch_number=1):
         logger.critical(f"Building domain...")
 
         if len(os.listdir(checkpoint_dir)) > 0:
+            sub_domain_name = None
             if anuga.numprocs > 1:
                 sub_domain_name = domain_name + "_P{}_{}".format(anuga.numprocs, anuga.myid)
             logger.critical(f"{anuga.numprocs=}")
@@ -102,9 +103,7 @@ def run_sim(package_dir, username=None, password=None, batch_number=1):
                     break
             if not overall:
                 raise Exception("Unable to open checkpoint file")
-            domain.set_datadir(input_data['output_directory'])
             domain.last_walltime = time.time()
-            domain.set_name(input_data['run_label'])
             domain.communication_time = 0.0
             domain.communication_reduce_time = 0.0
             domain.communication_broadcast_time = 0.0
@@ -153,9 +152,6 @@ def run_sim(package_dir, username=None, password=None, batch_number=1):
                         shapefile_name=shapefile_name,
                         epsg_code=input_data['scenario_config'].get('epsg')
                     )
-            domain.set_name(input_data['run_label'])
-            domain.set_datadir(input_data['output_directory'])
-            domain.set_minimum_storable_height(0.005)
             frictions = make_frictions(input_data)
             friction_function = qs.composite_quantity_setting_function(
                 frictions,
@@ -167,6 +163,9 @@ def run_sim(package_dir, username=None, password=None, batch_number=1):
             update_web_interface(run_args, data={'status': 'created mesh'})
         else:
             domain = None
+        domain.set_name(input_data['run_label'])
+        domain.set_datadir(input_data['output_directory'])
+        domain.set_minimum_storable_height(0.005)
         barrier()
         domain = distribute(domain, verbose=True)
         default_boundary_maps = {
@@ -267,14 +266,14 @@ def run_sim(package_dir, username=None, password=None, batch_number=1):
                 memory_percent = psutil.virtual_memory().percent
                 memory_usage = psutil.virtual_memory().used
                 memory_usage_logs.append(memory_usage)
-                logger.critical(f'cps: {len(os.listdir(checkpoint_dir))} | {percentage_done}% | {minutes}m {seconds}s | mem usage: {memory_percent}% | disk usage: {psutil.disk_usage("/").percent}%')
+                logger.critical(f'{percentage_done}% | {minutes}m {seconds}s | mem usage: {memory_percent}% | disk usage: {psutil.disk_usage("/").percent}%')
                 start = time.time()
         barrier()
         if anuga.myid == 0:
             sww_files = glob.glob(f"{input_data['output_directory']}/*.sww")
             for sww_file in sww_files:
                 suffix = f"_P{sww_file.split('_P')[-1]}"
-                standardised_sww_filepath = os.path.join(input_data['output_directory'], f"{input_data['run_label']}{suffix}.sww")
+                standardised_sww_filepath = os.path.join(input_data['output_directory'], f"{input_data['run_label']}{suffix}")
                 if not sww_file == standardised_sww_filepath:
                     os.rename(sww_file, standardised_sww_filepath)
         domain.sww_merge(verbose=True, delete_old=False)
