@@ -159,13 +159,12 @@ def run_sim(package_dir, username=None, password=None, batch_number=1):
             )
             domain.set_quantity('friction', friction_function, verbose=False)
             domain.set_quantity('stage', 0.0, verbose=False)
-
+            domain.set_name(input_data['run_label'])
+            domain.set_datadir(input_data['output_directory'])
+            domain.set_minimum_storable_height(0.005)
             update_web_interface(run_args, data={'status': 'created mesh'})
         else:
             domain = None
-        domain.set_name(input_data['run_label'])
-        domain.set_datadir(input_data['output_directory'])
-        domain.set_minimum_storable_height(0.005)
         barrier()
         domain = distribute(domain, verbose=True)
         default_boundary_maps = {
