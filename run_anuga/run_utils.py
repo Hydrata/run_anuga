@@ -712,7 +712,7 @@ def post_process_sww(package_dir, run_args=None, output_raster_resolution=None):
     output_directory = input_data['output_directory']
     run_label = input_data['run_label']
     initial_time_iso_string = input_data['scenario_config'].get('model_start', "1970-01-01T00:00:00+00:00")
-    generate_stac(output_directory, run_label, output_quantities, initial_time_iso_string)
+    # generate_stac(output_directory, run_label, output_quantities, initial_time_iso_string)
     # for result_type in output_quantities:
         # make_video(output_directory, run_label, result_type)
 
