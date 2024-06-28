@@ -273,13 +273,11 @@ def run_sim(package_dir, username=None, password=None, batch_number=1):
         domain.sww_merge(verbose=True, delete_old=False)
         barrier()
         if anuga.myid == 0:
-            # copy the sww out of the batch directory and into outputs
-            # sww_files = glob.glob(f"{input_data['output_directory']}/*.sww")
-            # merged_sww_file = max([(file, os.path.getsize(file)) for file in sww_files], key=lambda x: x[1])[0]
-            # merged_sww_directory = os.path.dirname(merged_sww_file)
-            # standardised_sww_filepath = os.path.join(merged_sww_directory, f"{input_data['run_label']}.sww")
-            # os.rename(merged_sww_file, standardised_sww_filepath)
-            # shutil.move(standardised_sww_filepath, input_data['output_directory'])
+            sww_files = glob.glob(f"{input_data['output_directory']}/*.sww")
+            merged_sww_file = max([(file, os.path.getsize(file)) for file in sww_files], key=lambda x: x[1])[0]
+            standardised_sww_filepath = os.path.join(input_data['output_directory'], f"{input_data['run_label']}.sww")
+            if not merged_sww_file == standardised_sww_filepath:
+                os.rename(merged_sww_file, standardised_sww_filepath)
             max_memory_usage = int(round(max(memory_usage_logs)))
             update_web_interface(run_args, data={"memory_used": max_memory_usage})
             logger.critical("Processing results...")
