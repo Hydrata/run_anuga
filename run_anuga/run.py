@@ -107,13 +107,6 @@ def run_sim(package_dir, username=None, password=None, batch_number=1):
             domain.communication_time = 0.0
             domain.communication_reduce_time = 0.0
             domain.communication_broadcast_time = 0.0
-            poly_fun_pairs = [['Extent', input_data['elevation_filename']]]
-            elevation_function = qs.composite_quantity_setting_function(
-                poly_fun_pairs,
-                domain,
-                nan_treatment='exception',
-            )
-            domain.set_quantity('elevation', elevation_function, verbose=False, alpha=0.99, location='centroids')
             logger.critical('load_checkpoint_file succeeded. Checkpoint domain set.')
         elif anuga.myid == 0:
             logger.critical('No checkpoint file found. Starting new Simulation')
@@ -170,10 +163,10 @@ def run_sim(package_dir, username=None, password=None, batch_number=1):
             domain.set_datadir(input_data['output_directory'])
             domain.set_minimum_storable_height(0.005)
             update_web_interface(run_args, data={'status': 'created mesh'})
+            barrier()
+            domain = distribute(domain, verbose=True)
         else:
             domain = None
-        barrier()
-        domain = distribute(domain, verbose=True)
         default_boundary_maps = {
             'exterior': anuga.Dirichlet_boundary([0, 0, 0]),
             'interior': anuga.Reflective_boundary(domain),
