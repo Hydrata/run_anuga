@@ -107,6 +107,13 @@ def run_sim(package_dir, username=None, password=None, batch_number=1):
             domain.communication_time = 0.0
             domain.communication_reduce_time = 0.0
             domain.communication_broadcast_time = 0.0
+            poly_fun_pairs = [['Extent', input_data['elevation_filename']]]
+            elevation_function = qs.composite_quantity_setting_function(
+                poly_fun_pairs,
+                domain,
+                nan_treatment='exception',
+            )
+            domain.set_quantity('elevation', elevation_function, verbose=False, alpha=0.99, location='centroids')
             logger.critical('load_checkpoint_file succeeded. Checkpoint domain set.')
         elif anuga.myid == 0:
             logger.critical('No checkpoint file found. Starting new Simulation')
@@ -271,10 +278,11 @@ def run_sim(package_dir, username=None, password=None, batch_number=1):
         if anuga.myid == 0:
             sww_files = glob.glob(f"{input_data['output_directory']}/*.sww")
             for sww_file in sww_files:
-                suffix = f"_P{sww_file.split('_P')[-1]}"
-                standardised_sww_filepath = os.path.join(input_data['output_directory'], f"{input_data['run_label']}{suffix}")
-                if not sww_file == standardised_sww_filepath:
-                    os.rename(sww_file, standardised_sww_filepath)
+                if '_P' in sww_file:
+                    suffix = f"_P{sww_file.split('_P')[-1]}"
+                    standardised_sww_filepath = os.path.join(input_data['output_directory'], f"{input_data['run_label']}{suffix}")
+                    if not sww_file == standardised_sww_filepath:
+                        os.rename(sww_file, standardised_sww_filepath)
         domain.sww_merge(verbose=True, delete_old=False)
         barrier()
         if anuga.myid == 0:
