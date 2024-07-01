@@ -5,6 +5,7 @@ import cv2
 import numpy as np
 import rasterio
 from matplotlib import pyplot as plt
+import matplotlib.patheffects as pe
 from urllib.parse import urlparse
 
 import anuga
@@ -724,27 +725,28 @@ def post_process_sww(package_dir, run_args=None, output_raster_resolution=None):
     logger.critical('Successfully generated depth, velocity, momentum outputs')
 
 
-def make_video(output_directory, run_label, result_type):
-    tif_files = glob.glob(f"{output_directory}/{run_label}_{result_type}_*.tif")
+def make_video(input_directory_1, result_type):
+    run_label_1 = os.path.basename(input_directory_1).replace('outputs', 'run')
+    tif_files = glob.glob(f"{input_directory_1}/{run_label_1}_{result_type}_*.tif")
     tif_files = [tif_file for tif_file in tif_files if "_max" not in tif_file]
     tif_files.sort(key=lambda f: int(os.path.splitext(f)[0][-6:]))
 
-    max_file = f"{output_directory}/{run_label}_{result_type}_max.tif"
+    max_file = f"{input_directory_1}/{run_label_1}_{result_type}_max.tif"
     global_min = 0
     raster_data = rasterio.open(max_file).read(1)
     masked_data_raster_data = np.ma.masked_invalid(raster_data)
     global_max = masked_data_raster_data.max()
     image_files = list()
-    image_directory = f"{output_directory}/videos"
+    image_directory = f"{input_directory_1}/videos"
     if not os.path.exists(image_directory):
         os.makedirs(image_directory, exist_ok=True)
     for i, file in enumerate(tif_files):
         raster = rasterio.open(file)
         data = raster.read(1)
         plt.figure(figsize=(10, 10))
-        plt.imshow(data, cmap='hot', vmin=global_min, vmax=global_max)
+        plt.imshow(data, cmap='viridis', vmin=global_min, vmax=global_max)
         plt.axis('off')
-        plt.text(0, 0, str(file), color='white', fontsize=6, ha='left', va='top')
+        plt.text(0, 0, str(file), color='white', fontsize=6, ha='left', va='top', path_effects=[pe.withStroke(linewidth=3, foreground='black')])
         img_file = f"{image_directory}/frame_{result_type}_{i:03d}.png"
         plt.savefig(img_file, dpi=300)
         image_files.append(img_file)
@@ -753,16 +755,94 @@ def make_video(output_directory, run_label, result_type):
     img = cv2.imread(image_files[0])
     height, width, _ = img.shape
 
-    # Define the codec using VideoWriter_fourcc and create a VideoWriter object
     fourcc = cv2.VideoWriter_fourcc(*'XVID')
-    out = cv2.VideoWriter(f"{output_directory}/{run_label}_{result_type}.mp4", fourcc, 2.0, (width, height))
+    out = cv2.VideoWriter(f"{input_directory_1}/{run_label_1}_{result_type}.mp4", fourcc, 20.0, (width, height))
 
     for img_file in image_files:
-        # Read each image file
         img = cv2.imread(img_file)
-        out.write(img)  # Write the image to the video file
+        out.write(img)
+    out.release()
 
-    # Release the VideoWriter
+
+def make_comparison_video(input_directory_1, input_directory_2, result_type):
+    run_label_1 = os.path.basename(input_directory_1).replace('outputs', 'run')
+    run_label_2 = os.path.basename(input_directory_2).replace('outputs', 'run')
+
+    tif_files_1 = glob.glob(f"{input_directory_1}/{run_label_1}_{result_type}_*.tif")
+    tif_files_1 = sorted([tif_file for tif_file in tif_files_1 if "_max" not in tif_file],
+                         key=lambda f: int(os.path.splitext(f)[0][-6:]))
+
+    tif_files_2 = glob.glob(f"{input_directory_2}/{run_label_2}_{result_type}_*.tif")
+    tif_files_2 = sorted([tif_file for tif_file in tif_files_2 if "_max" not in tif_file],
+                         key=lambda f: int(os.path.splitext(f)[0][-6:]))
+
+    assert len(tif_files_1) == len(tif_files_2), "Number of tif files in the two directories are not the same."
+
+    max_file = f"{input_directory_1}/{run_label_1}_{result_type}_max.tif"
+    global_min = 0
+    raster_data = rasterio.open(max_file).read(1)
+    masked_data_raster_data = np.ma.masked_invalid(raster_data)
+    global_max = masked_data_raster_data.max()
+
+    image_files_1 = list()
+    image_files_2 = list()
+    image_files_diff = list()
+
+    image_directory_1 = f"{input_directory_1}/videos"
+    image_directory_2 = f"{input_directory_2}/videos"
+    image_directory_diff = f"{input_directory_1}/diff_videos"
+
+    for directory in [image_directory_1, image_directory_2, image_directory_diff]:
+        if not os.path.exists(directory):
+            os.makedirs(directory, exist_ok=True)
+
+    for i, (file_1, file_2) in enumerate(zip(tif_files_1, tif_files_2)):
+        raster_1 = rasterio.open(file_1).read(1)
+        raster_2 = rasterio.open(file_2).read(1)
+
+        diff = np.abs(raster_2 - raster_1)
+
+        for file, image_directory, image_files, data in [(file_1, image_directory_1, image_files_1, raster_1),
+                                                         (file_2, image_directory_2, image_files_2, raster_2),
+                                                         (None, image_directory_diff, image_files_diff, diff)]:
+            plt.figure(figsize=(10, 10))
+            plt.imshow(data, cmap='viridis', vmin=global_min, vmax=global_max)
+            plt.axis('off')
+            if file is not None:
+                plt.text(0, 0, str(file), color='white', fontsize=6, ha='left', va='top',
+                         path_effects=[pe.withStroke(linewidth=3, foreground='black')])
+            img_file = f"{image_directory}/frame_{result_type}_{i:03d}.png"
+            plt.savefig(img_file, dpi=100)
+            image_files.append(img_file)
+            plt.close()
+
+    img1 = cv2.imread(image_files_1[0])
+    img2 = cv2.imread(image_files_2[0])
+    img_diff = cv2.imread(image_files_diff[0])
+
+    largest_width = max([img1.shape[1], img2.shape[1], img_diff.shape[1]])
+    height, _, _ = img1.shape
+
+    fourcc = cv2.VideoWriter_fourcc(*'XVID')
+    out = cv2.VideoWriter(f"{input_directory_1}/{run_label_1}_{result_type}_difference.avi", fourcc, 20.0,
+                          (3 * largest_width, height))
+
+    for file1, file2, file_diff in zip(image_files_1, image_files_2, image_files_diff):
+        img1 = cv2.imread(file1)
+        img2 = cv2.imread(file2)
+        img_diff = cv2.imread(file_diff)
+
+        def pad_image(img):
+            padding = ((0, 0), (0, largest_width - img.shape[1]), (0, 0))
+            return np.pad(img, padding, mode='constant')
+
+        img1 = pad_image(img1)
+        img2 = pad_image(img2)
+        img_diff = pad_image(img_diff)
+
+        combined_img = np.concatenate((img1, img_diff, img2), axis=1)
+        out.write(combined_img)
+
     out.release()
 
 
