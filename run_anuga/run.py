@@ -270,18 +270,17 @@ def run_sim(package_dir, username=None, password=None, batch_number=1):
                 memory_usage_logs.append(memory_usage)
                 logger.critical(f'{percentage_done}% | {minutes}m {seconds}s | mem usage: {memory_percent}% | disk usage: {psutil.disk_usage("/").percent}%')
                 domain.print_timestepping_statistics(track_speeds=True)
-                domain.print_volumetric_balance_statistics()
-                domain.report_cells_with_small_local_timestep()
                 start = time.time()
         barrier()
-        # if anuga.myid == 0:
-            # sww_files = glob.glob(f"{input_data['output_directory']}/*.sww")
-            # for sww_file in sww_files:
-            #     if '_P' in sww_file:
-            #         suffix = f"_P{sww_file.split('_P')[-1]}"
-            #         standardised_sww_filepath = os.path.join(input_data['output_directory'], f"{input_data['run_label']}{suffix}")
-            #         if not sww_file == standardised_sww_filepath:
-            #             os.rename(sww_file, standardised_sww_filepath)
+        if anuga.myid == 0:
+            sww_files = glob.glob(f"{input_data['output_directory']}/*.sww")
+            for sww_file in sww_files:
+                if '_P' in sww_file:
+                    suffix = f"_P{sww_file.split('_P')[-1]}"
+                    standardised_sww_filepath = os.path.join(input_data['output_directory'], f"{input_data['run_label']}{suffix}")
+                    if not sww_file == standardised_sww_filepath:
+                        logger.critical(f"renaming: {sww_file} to {standardised_sww_filepath}")
+                        os.rename(sww_file, standardised_sww_filepath)
         domain.sww_merge(verbose=True, delete_old=False)
         barrier()
         if anuga.myid == 0:
