@@ -17,9 +17,6 @@ from anuga.operators.rate_operators import Polygonal_rate_operator
 from run_anuga.run_anuga.run_utils import is_dir_check, setup_input_data, update_web_interface, create_mesher_mesh, create_anuga_mesh, \
     make_frictions, post_process_sww, setup_logger, check_coordinates_are_in_polygon
 
-from celery.utils.log import get_task_logger
-logger = get_task_logger(__name__)
-
 
 def run_sim(package_dir, username=None, password=None, batch_number=1):
     run_args = package_dir, username, password

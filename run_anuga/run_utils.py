@@ -874,6 +874,7 @@ def setup_logger(input_data, username=None, password=None, batch_number=1):
         )
         web_handler.setLevel(logging.DEBUG)
         logger.addHandler(web_handler)
+    logger.setLevel(logging.DEBUG)
     return logger
 
 
