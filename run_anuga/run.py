@@ -29,27 +29,23 @@ def run_sim(package_dir, username=None, password=None, batch_number=1):
     run_args = package_dir, username, password
     input_data = setup_input_data(package_dir)
     logger = setup_logger(input_data, username, password, batch_number)
-    logger.critical(f"run_sim started with {batch_number=}")
+    logger.info(f"run_sim started with {batch_number=}")
     domain = None
     overall = None
     sim_success = True
     memory_usage_logs = list()
     try:
-        logger.critical(f"{anuga.myid=}")
+        logger.info(f"{anuga.myid=}")
         domain_name = input_data['run_label']
         checkpoint_dir = input_data['checkpoint_dir']
-        logger.critical(f"Building domain...")
+        logger.info(f"Building domain...")
 
         if len(os.listdir(checkpoint_dir)) > 0:
             sub_domain_name = None
             if anuga.numprocs > 1:
                 sub_domain_name = domain_name + "_P{}_{}".format(anuga.numprocs, anuga.myid)
-            logger.critical(f"{anuga.numprocs=}")
-            logger.critical(f"2 {sub_domain_name=}")
             checkpoint_times = set()
             for path, directory, filenames in os.walk(checkpoint_dir):
-                logger.critical(f"{filenames=}")
-                logger.critical(f"{directory=}")
                 if len(filenames) == 0:
                     return None
                 else:
@@ -60,45 +56,32 @@ def run_sim(package_dir, username=None, password=None, batch_number=1):
                         if domain_name_base == sub_domain_name:
                             checkpoint_times.add(float(checkpoint_time))
             combined = checkpoint_times
-            logger.critical(f"{combined=}")
-            logger.critical(f"1 sending...")
             for cpu in range(anuga.numprocs):
                 if anuga.myid != cpu:
                     anuga.send(checkpoint_times, cpu)
                     rec = anuga.receive(cpu)
-                    logger.critical(f"{rec=}")
                     combined = combined & rec
-            logger.critical(f"_get_checkpoint_times returning: {combined=}")
-            logger.critical(f"{checkpoint_times=}")
             checkpoint_times = list(checkpoint_times)
             checkpoint_times.sort()
-            logger.critical(f"{checkpoint_times=}")
             if len(checkpoint_times) == 0:
                 raise Exception("Unable to open checkpoint file")
             for checkpoint_time in reversed(checkpoint_times):
                 pickle_name = (os.path.join(checkpoint_dir, sub_domain_name) + "_" + str(checkpoint_time) + ".pickle")
-                logger.critical(f"{pickle_name=}")
-                logger.critical(f"{os.path.isfile(pickle_name)}")
                 try:
                     domain = pickle.load(open(pickle_name, "rb"))
+                    logger.info(f"{pickle_name=}")
                     success = True
                 except:
                     success = False
-                logger.critical(f"{success=}")
-                logger.critical(f"sending...")
                 overall = success
                 for cpu in range(anuga.numprocs):
                     if cpu != anuga.myid:
                         anuga.send(success, cpu)
-                logger.critical(f"receive...")
                 for cpu in range(anuga.numprocs):
                     if cpu != anuga.myid:
                         overall = overall & anuga.receive(cpu)
-                logger.critical(f"overall...")
-                logger.critical(f"{overall=}")
-                logger.critical(f"barrier...")
+                logger.info(f"{overall=}")
                 barrier()
-                logger.critical(f"barrier passed")
                 if overall:
                     break
             if not overall:
@@ -107,9 +90,9 @@ def run_sim(package_dir, username=None, password=None, batch_number=1):
             domain.communication_time = 0.0
             domain.communication_reduce_time = 0.0
             domain.communication_broadcast_time = 0.0
-            logger.critical('load_checkpoint_file succeeded. Checkpoint domain set.')
+            logger.info('load_checkpoint_file succeeded. Checkpoint domain set.')
         elif anuga.myid == 0:
-            logger.critical('No checkpoint file found. Starting new Simulation')
+            logger.info('No checkpoint file found. Starting new Simulation')
             update_web_interface(run_args, data={'status': 'building mesh'})
             if input_data['scenario_config'].get('simplify_mesh'):
                 mesher_mesh_filepath, mesh_size = create_mesher_mesh(input_data)
@@ -147,7 +130,7 @@ def run_sim(package_dir, username=None, password=None, batch_number=1):
             if input_data['scenario_config'].get('store_mesh'):
                 if getattr(domain, "dump_shapefile", None):
                     shapefile_name = f"{input_data['output_directory']}/{input_data['scenario_config'].get('run_id')}_{input_data['scenario_config'].get('id')}_{input_data['scenario_config'].get('project')}_mesh"
-                    logger.critical(f"mesh shapefile: {shapefile_name}")
+                    logger.info(f"mesh shapefile: {shapefile_name}")
                     domain.dump_shapefile(
                         shapefile_name=shapefile_name,
                         epsg_code=input_data['scenario_config'].get('epsg')
@@ -169,7 +152,7 @@ def run_sim(package_dir, username=None, password=None, batch_number=1):
             barrier()
             domain = distribute(domain, verbose=True)
         if anuga.myid == 0:
-            logger.critical(domain.mesh.statistics())
+            logger.info(domain.mesh.statistics())
         default_boundary_maps = {
             'exterior': anuga.Dirichlet_boundary([0, 0, 0]),
             'interior': anuga.Reflective_boundary(domain),
@@ -270,27 +253,15 @@ def run_sim(package_dir, username=None, password=None, batch_number=1):
                 memory_percent = psutil.virtual_memory().percent
                 memory_usage = psutil.virtual_memory().used
                 memory_usage_logs.append(memory_usage)
-                logger.critical(20 * "-")
-                logger.critical(f'{percentage_done}% | {minutes}m {seconds}s | mem: {memory_percent}% | disk: {psutil.disk_usage("/").percent}% | {domain.get_datetime().isoformat()}')
-                for name, inflow_function in inflow_functions.items():
-                    logger.critical(f"{name}: {inflow_function(t)} units/time")
+                logger.info(f'{percentage_done}% | {minutes}m {seconds}s | mem: {memory_percent}% | disk: {psutil.disk_usage("/").percent}% | {domain.get_datetime().isoformat()}')
                 start = time.time()
         barrier()
-        if anuga.myid == 0:
-            sww_files = glob.glob(f"{input_data['output_directory']}/*.sww")
-            for sww_file in sww_files:
-                if '_P' in sww_file:
-                    suffix = f"_P{sww_file.split('_P')[-1]}"
-                    standardised_sww_filepath = os.path.join(input_data['output_directory'], f"{input_data['run_label']}{suffix}")
-                    if not sww_file == standardised_sww_filepath:
-                        logger.critical(f"renaming: {sww_file} to {standardised_sww_filepath}")
-                        os.rename(sww_file, standardised_sww_filepath)
         domain.sww_merge(verbose=True, delete_old=False)
         barrier()
         if anuga.myid == 0:
             max_memory_usage = int(round(max(memory_usage_logs)))
             update_web_interface(run_args, data={"memory_used": max_memory_usage})
-            logger.critical("Processing results...")
+            logger.info("Processing results...")
             post_process_sww(package_dir, run_args=run_args)
     except Exception as e:
         update_web_interface(run_args, data={'status': 'error'})
@@ -298,7 +269,7 @@ def run_sim(package_dir, username=None, password=None, batch_number=1):
         raise
     finally:
         finalize()
-    logger.critical(f"finished run: {input_data['run_label']}")
+    logger.info(f"finished run: {input_data['run_label']}")
 
 
 if __name__ == '__main__':
@@ -315,7 +286,7 @@ if __name__ == '__main__':
     if not package_dir:
         package_dir = os.path.join(os.path.dirname(__file__), '..', '..')
     try:
-        logger.critical(f"run.py __main__ running {batch_number=}")
+        logger.info(f"run.py __main__ running {batch_number=}")
         run_sim(package_dir, username, password, batch_number)
     except Exception as e:
         run_args = (package_dir, username, password)
