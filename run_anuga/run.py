@@ -201,6 +201,7 @@ def run_sim(package_dir, username=None, password=None, batch_number=1):
             start = input_data['scenario_config'].get('model_start')
         datetime_range = pd.date_range(start=start, periods=duration + 1, freq='s')
         inflow_dataframe = pd.DataFrame(datetime_range, columns=['timestamp'])
+        inflow_functions = dict()
         for inflow_polygon in rainfall_inflow_polygons:
             polygon_name = inflow_polygon.get('id')
             data = inflow_polygon.get('properties').get('data')
@@ -217,6 +218,7 @@ def run_sim(package_dir, username=None, password=None, batch_number=1):
             else:
                 inflow_dataframe[polygon_name] = float(data)
             inflow_function = create_inflow_function(inflow_dataframe, polygon_name)
+            inflow_functions[polygon_name] = inflow_function
             geometry = inflow_polygon.get('geometry').get('coordinates')
             Polygonal_rate_operator(domain, rate=inflow_function, factor=1.0e-6, polygon=geometry, default_rate=0.00)
         if len(rainfall_inflow_polygons) >= 1 and len(catchment_polygons) > 0:
@@ -236,6 +238,7 @@ def run_sim(package_dir, username=None, password=None, batch_number=1):
             polyline_name = inflow_line.get('id')
             inflow_dataframe[polyline_name] = float(inflow_line.get('properties').get('data'))
             inflow_function = create_inflow_function(inflow_dataframe, polyline_name)
+            inflow_functions[polyline_name] = inflow_function
             geometry = inflow_line.get('geometry').get('coordinates')
             # check that inflow line is actually in the domain:
             if check_coordinates_are_in_polygon(geometry, boundary_polygon):
@@ -258,7 +261,6 @@ def run_sim(package_dir, username=None, password=None, batch_number=1):
         barrier()
         start = time.time()
         for t in domain.evolve(yieldstep=yieldstep, finaltime=duration):
-            domain.write_time()
             if anuga.myid == 0:
                 stop = time.time()
                 percentage_done = round(t * 100 / duration, 1)
@@ -268,8 +270,10 @@ def run_sim(package_dir, username=None, password=None, batch_number=1):
                 memory_percent = psutil.virtual_memory().percent
                 memory_usage = psutil.virtual_memory().used
                 memory_usage_logs.append(memory_usage)
-                logger.critical(f'{percentage_done}% | {minutes}m {seconds}s | mem usage: {memory_percent}% | disk usage: {psutil.disk_usage("/").percent}%')
-                domain.print_timestepping_statistics(track_speeds=True)
+                logger.critical(20 * "-")
+                logger.critical(f'{percentage_done}% | {minutes}m {seconds}s | mem: {memory_percent}% | disk: {psutil.disk_usage("/").percent}% | {domain.get_datetime().isoformat()}')
+                for name, inflow_function in inflow_functions.items():
+                    logger.critical(f"{name}: {inflow_function(t)} units/time")
                 start = time.time()
         barrier()
         if anuga.myid == 0:
