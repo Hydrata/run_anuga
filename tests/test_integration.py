@@ -13,8 +13,8 @@ from pathlib import Path
 
 @pytest.mark.parametrize(
     "zip_filename, package_dir_length, output_dir_name, result_directory_length", [
-        # ("package_testbull_existing_2m_889.zip", 4, "outputs_344_256_889", 10),
-        ("package_anuga_te_proposed_4_krzVHbr.zip", 4, "outputs_100_4_4", 10),
+        ("package_fourthreextwo_halves_checkpoint_173.zip", 4, "outputs_18_17_173", 10),
+        # ("package_anuga_te_proposed_4_krzVHbr.zip", 4, "outputs_100_4_4", 10),
     ])
 def test_end_to_end_run(tmp_path, zip_filename, package_dir_length, output_dir_name, result_directory_length):
     source_zip_input = Path(__file__).parent / "data" / zip_filename
