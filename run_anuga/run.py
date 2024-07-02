@@ -1,12 +1,8 @@
-import glob
 import json
-import shutil
-
 import dill as pickle
 import time
 import numpy
 import psutil
-
 import anuga
 import argparse
 import math
@@ -18,7 +14,7 @@ from anuga import distribute, finalize, barrier, Inlet_operator
 from anuga.utilities import quantity_setting_functions as qs
 from anuga.operators.rate_operators import Polygonal_rate_operator
 
-from run_anuga.run_anuga.run_utils import is_dir_check, setup_input_data, update_web_interface, create_mesher_mesh, create_anuga_mesh, make_interior_holes_and_tags, \
+from run_anuga.run_anuga.run_utils import is_dir_check, setup_input_data, update_web_interface, create_mesher_mesh, create_anuga_mesh, \
     make_frictions, post_process_sww, setup_logger, check_coordinates_are_in_polygon
 
 from celery.utils.log import get_task_logger
@@ -239,7 +235,7 @@ def run_sim(package_dir, username=None, password=None, batch_number=1):
         domain.set_checkpointing(
             checkpoint=True,
             checkpoint_dir=checkpoint_dir,
-            checkpoint_step=5
+            checkpoint_step=1
         )
         barrier()
         start = time.time()
