@@ -25,6 +25,7 @@ def run_sim(package_dir, username=None, password=None, batch_number=1):
     run_args = package_dir, username, password
     input_data = setup_input_data(package_dir)
     logger = setup_logger(input_data, username, password, batch_number)
+    logger.critical(f"{logger.handlers}")
     logger.info(f"run_sim started with {batch_number=}")
     domain = None
     overall = None
