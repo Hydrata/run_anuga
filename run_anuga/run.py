@@ -253,7 +253,7 @@ def run_sim(package_dir, username=None, password=None, batch_number=1):
                 logger.info(f'{percentage_done}% | {minutes}m {seconds}s | mem: {memory_percent}% | disk: {psutil.disk_usage("/").percent}% | {domain.get_datetime().isoformat()}')
                 start = time.time()
         barrier()
-        domain.sww_merge(verbose=True, delete_old=False)
+        domain.sww_merge(verbose=True, delete_old=True)
         barrier()
         if anuga.myid == 0:
             max_memory_usage = int(round(max(memory_usage_logs)))
