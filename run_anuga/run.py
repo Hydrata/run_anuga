@@ -15,7 +15,7 @@ from anuga.utilities import quantity_setting_functions as qs
 from anuga.operators.rate_operators import Polygonal_rate_operator
 
 from run_anuga.run_anuga.run_utils import is_dir_check, setup_input_data, update_web_interface, create_mesher_mesh, create_anuga_mesh, \
-    make_frictions, post_process_sww, setup_logger, check_coordinates_are_in_polygon
+    make_frictions, post_process_sww, setup_logger, check_coordinates_are_in_polygon, clean_checkpoint_directory
 
 from celery.utils.log import get_task_logger
 logger = get_task_logger(__name__)
@@ -25,24 +25,20 @@ def run_sim(package_dir, username=None, password=None, batch_number=1):
     run_args = package_dir, username, password
     input_data = setup_input_data(package_dir)
     logger = setup_logger(input_data, username, password, batch_number)
-    logger.critical(f"{logger.handlers}")
     logger.info(f"run_sim started with {batch_number=}")
     domain = None
     overall = None
-    sim_success = True
     memory_usage_logs = list()
     try:
-        logger.info(f"{anuga.myid=}")
         domain_name = input_data['run_label']
-        checkpoint_dir = input_data['checkpoint_dir']
-        logger.info(f"Building domain...")
-
-        if len(os.listdir(checkpoint_dir)) > 0:
+        checkpoint_directory = input_data['checkpoint_directory']
+        if len(os.listdir(checkpoint_directory)) > 0:
+            logger.info(f"Building domain...")
             sub_domain_name = None
             if anuga.numprocs > 1:
                 sub_domain_name = domain_name + "_P{}_{}".format(anuga.numprocs, anuga.myid)
             checkpoint_times = set()
-            for path, directory, filenames in os.walk(checkpoint_dir):
+            for path, directory, filenames in os.walk(checkpoint_directory):
                 if len(filenames) == 0:
                     return None
                 else:
@@ -63,7 +59,7 @@ def run_sim(package_dir, username=None, password=None, batch_number=1):
             if len(checkpoint_times) == 0:
                 raise Exception("Unable to open checkpoint file")
             for checkpoint_time in reversed(checkpoint_times):
-                pickle_name = (os.path.join(checkpoint_dir, sub_domain_name) + "_" + str(checkpoint_time) + ".pickle")
+                pickle_name = (os.path.join(checkpoint_directory, sub_domain_name) + "_" + str(checkpoint_time) + ".pickle")
                 try:
                     domain = pickle.load(open(pickle_name, "rb"))
                     logger.info(f"{pickle_name=}")
@@ -89,6 +85,7 @@ def run_sim(package_dir, username=None, password=None, batch_number=1):
             domain.communication_broadcast_time = 0.0
             logger.info('load_checkpoint_file succeeded. Checkpoint domain set.')
         elif anuga.myid == 0:
+            logger.info(f"Building domain...")
             logger.info('No checkpoint file found. Starting new Simulation')
             update_web_interface(run_args, data={'status': 'building mesh'})
             if input_data['scenario_config'].get('simplify_mesh'):
@@ -145,7 +142,7 @@ def run_sim(package_dir, username=None, password=None, batch_number=1):
             update_web_interface(run_args, data={'status': 'created mesh'})
         else:
             domain = None
-        if len(os.listdir(checkpoint_dir)) == 0:
+        if len(os.listdir(checkpoint_directory)) == 0:
             barrier()
             domain = distribute(domain, verbose=True)
         if anuga.myid == 0:
@@ -232,10 +229,10 @@ def run_sim(package_dir, username=None, password=None, batch_number=1):
             yieldstep = temporal_resolution_seconds
         if yieldstep > 60 * 30:  # At least yield every half hour, even if we go over max_yieldsteps
             yieldstep = 60 * 30
-        checkpoint_dir = input_data['checkpoint_dir']
+        checkpoint_directory = input_data['checkpoint_directory']
         domain.set_checkpointing(
             checkpoint=True,
-            checkpoint_dir=checkpoint_dir,
+            checkpoint_dir=checkpoint_directory,
             checkpoint_step=1
         )
         barrier()
@@ -251,6 +248,7 @@ def run_sim(package_dir, username=None, password=None, batch_number=1):
                 memory_usage = psutil.virtual_memory().used
                 memory_usage_logs.append(memory_usage)
                 logger.info(f'{percentage_done}% | {minutes}m {seconds}s | mem: {memory_percent}% | disk: {psutil.disk_usage("/").percent}% | {domain.get_datetime().isoformat()}')
+                clean_checkpoint_directory(checkpoint_directory)
                 start = time.time()
         barrier()
         domain.sww_merge(verbose=True, delete_old=True)

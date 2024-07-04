@@ -1,4 +1,5 @@
 import glob
+import re
 import shutil
 
 import cv2
@@ -71,6 +72,25 @@ class S3StacIO(DefaultStacIO):
 StacIO.set_default(S3StacIO)
 
 
+def clean_checkpoint_directory(checkpoint_directory):
+    file_dict = {}
+    for filename in glob.glob(f"{checkpoint_directory}/*.pickle"):
+        if not filename:
+            return
+        processor_check = re.search('P(\d+)', filename)
+        if not processor_check:
+            return
+        processor_number = processor_check.group(1)
+        timestamp = float(re.search('_([\d\.]+).pickle', filename).group(1))
+        if processor_number not in file_dict:
+            file_dict[processor_number] = []
+        file_dict[processor_number].append((timestamp, filename))
+    for files in file_dict.values():
+        files.sort(reverse=True)
+        for timestamp, filename in files[1:]:
+            logger.debug(f"removing: {filename}")
+            os.remove(filename)
+
 def is_dir_check(path):
     if os.path.isdir(path):
         return path
@@ -91,8 +111,8 @@ def setup_input_data(package_dir):
     input_data['output_directory'] = os.path.join(package_dir, f'outputs_{project_id}_{scenario_id}_{run_id}')
     input_data['mesh_filepath'] = f"{input_data['output_directory']}/run_{project_id}_{scenario_id}_{run_id}.msh"
     Path(input_data['output_directory']).mkdir(parents=True, exist_ok=True)
-    input_data['checkpoint_dir'] = f"{input_data['output_directory']}/checkpoints/"
-    Path(input_data['checkpoint_dir']).mkdir(parents=True, exist_ok=True)
+    input_data['checkpoint_directory'] = f"{input_data['output_directory']}/checkpoints/"
+    Path(input_data['checkpoint_directory']).mkdir(parents=True, exist_ok=True)
 
     input_data['boundary_filename'] = os.path.join(package_dir, f"inputs/{input_data['scenario_config'].get('boundary')}")
     input_data['boundary'] = json.load(open(input_data['boundary_filename']))
@@ -717,8 +737,8 @@ def post_process_sww(package_dir, run_args=None, output_raster_resolution=None):
     # for result_type in output_quantities:
         # make_video(output_directory, run_label, result_type)
 
-    if os.path.isdir(input_data['checkpoint_dir']):
-        shutil.rmtree(input_data['checkpoint_dir'])
+    if os.path.isdir(input_data['checkpoint_directory']):
+        shutil.rmtree(input_data['checkpoint_directory'])
     video_dir = f"{input_data['output_directory']}/videos/"
     if os.path.isdir(video_dir):
         shutil.rmtree(video_dir)
