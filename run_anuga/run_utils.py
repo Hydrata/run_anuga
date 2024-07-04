@@ -88,7 +88,6 @@ def clean_checkpoint_directory(checkpoint_directory):
     for files in file_dict.values():
         files.sort(reverse=True)
         for timestamp, filename in files[1:]:
-            logger.debug(f"removing: {filename}")
             os.remove(filename)
 
 def is_dir_check(path):
