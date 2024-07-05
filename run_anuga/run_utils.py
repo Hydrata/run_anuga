@@ -87,7 +87,7 @@ def clean_checkpoint_directory(checkpoint_directory):
         file_dict[processor_number].append((timestamp, filename))
     for files in file_dict.values():
         files.sort(reverse=True)
-        for timestamp, filename in files[1:]:
+        for timestamp, filename in files[5:]:
             os.remove(filename)
 
 def is_dir_check(path):
