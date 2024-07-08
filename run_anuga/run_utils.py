@@ -32,7 +32,7 @@ from anuga import Geo_reference
 from anuga.utilities import plot_utils as util
 try:
     from celery.utils.log import get_task_logger
-    logger = get_task_logger('run')
+    logger = get_task_logger(__name__)
     from django.conf import settings
 except ImportError:
     logger = logging.getLogger(__name__)
@@ -71,24 +71,6 @@ class S3StacIO(DefaultStacIO):
 
 StacIO.set_default(S3StacIO)
 
-
-def clean_checkpoint_directory(checkpoint_directory):
-    file_dict = {}
-    for filename in glob.glob(f"{checkpoint_directory}/*.pickle"):
-        if not filename:
-            return
-        processor_check = re.search('P(\d+)', filename)
-        if not processor_check:
-            return
-        processor_number = processor_check.group(1)
-        timestamp = float(re.search('_([\d\.]+).pickle', filename).group(1))
-        if processor_number not in file_dict:
-            file_dict[processor_number] = []
-        file_dict[processor_number].append((timestamp, filename))
-    for files in file_dict.values():
-        files.sort(reverse=True)
-        for timestamp, filename in files[5:]:
-            os.remove(filename)
 
 def is_dir_check(path):
     if os.path.isdir(path):

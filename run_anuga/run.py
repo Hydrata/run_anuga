@@ -15,7 +15,7 @@ from anuga.utilities import quantity_setting_functions as qs
 from anuga.operators.rate_operators import Polygonal_rate_operator
 
 from run_anuga.run_anuga.run_utils import is_dir_check, setup_input_data, update_web_interface, create_mesher_mesh, create_anuga_mesh, \
-    make_frictions, post_process_sww, setup_logger, check_coordinates_are_in_polygon, clean_checkpoint_directory
+    make_frictions, post_process_sww, setup_logger, check_coordinates_are_in_polygon
 
 from celery.utils.log import get_task_logger
 logger = get_task_logger(__name__)
@@ -248,7 +248,6 @@ def run_sim(package_dir, username=None, password=None, batch_number=1):
                 memory_usage = psutil.virtual_memory().used
                 memory_usage_logs.append(memory_usage)
                 logger.info(f'{percentage_done}% | {minutes}m {seconds}s | mem: {memory_percent}% | disk: {psutil.disk_usage("/").percent}% | {domain.get_datetime().isoformat()}')
-                clean_checkpoint_directory(checkpoint_directory)
                 start = time.time()
         barrier()
         domain.sww_merge(verbose=True, delete_old=True)
