@@ -148,6 +148,12 @@ def run_sim(package_dir, username=None, password=None, batch_number=1):
             domain.set_datadir(input_data['output_directory'])
             domain.set_minimum_storable_height(0.005)
             update_web_interface(run_args, data={'status': 'created mesh'})
+            logger.info(domain.mesh.statistics())
+        else:
+            domain = None
+        if not using_checkpoints:
+            barrier()
+            domain = distribute(domain, verbose=True)
 
             # setup rainfall
             def create_inflow_function(dataframe, name):
@@ -211,13 +217,6 @@ def run_sim(package_dir, username=None, password=None, batch_number=1):
                 # check that inflow line is actually in the domain:
                 if check_coordinates_are_in_polygon(geometry, boundary_polygon):
                     Inlet_operator(domain, geometry, Q=inflow_function)
-        else:
-            domain = None
-        if len(os.listdir(checkpoint_directory)) == 0:
-            barrier()
-            domain = distribute(domain, verbose=True)
-        if anuga.myid == 0:
-            logger.info(domain.mesh.statistics())
         default_boundary_maps = {
             'exterior': anuga.Dirichlet_boundary([0, 0, 0]),
             'interior': anuga.Reflective_boundary(domain),
