@@ -28,11 +28,17 @@ def run_sim(package_dir, username=None, password=None, batch_number=1):
     logger.info(f"run_sim started with {batch_number=}")
     domain = None
     overall = None
+    skip_initial_step = False
     memory_usage_logs = list()
+    duration = input_data['scenario_config'].get('duration')
+    start = '1/1/1970'
+    if input_data['scenario_config'].get('model_start'):
+        start = input_data['scenario_config'].get('model_start')
     try:
         domain_name = input_data['run_label']
         checkpoint_directory = input_data['checkpoint_directory']
-        if len(os.listdir(checkpoint_directory)) > 0:
+        using_checkpoints = len(os.listdir(checkpoint_directory)) > 0
+        if using_checkpoints:
             logger.info(f"Building domain...")
             sub_domain_name = None
             if anuga.numprocs > 1:
@@ -74,12 +80,14 @@ def run_sim(package_dir, username=None, password=None, batch_number=1):
                     if cpu != anuga.myid:
                         overall = overall & anuga.receive(cpu)
                 logger.info(f"{overall=}")
+                domain.set_evolve_starttime(checkpoint_time)
                 barrier()
                 if overall:
                     break
             if not overall:
                 raise Exception("Unable to open checkpoint file")
             domain.last_walltime = time.time()
+            # skip_initial_step = True
             domain.communication_time = 0.0
             domain.communication_reduce_time = 0.0
             domain.communication_broadcast_time = 0.0
@@ -140,6 +148,69 @@ def run_sim(package_dir, username=None, password=None, batch_number=1):
             domain.set_datadir(input_data['output_directory'])
             domain.set_minimum_storable_height(0.005)
             update_web_interface(run_args, data={'status': 'created mesh'})
+
+            # setup rainfall
+            def create_inflow_function(dataframe, name):
+                def rain(time_in_seconds):
+                    t_sec = int(math.floor(time_in_seconds))
+                    return dataframe[name][t_sec]
+
+                rain.__name__ = name
+                return rain
+
+            rainfall_inflow_polygons = [feature for feature in input_data.get('inflow').get('features') if
+                                        feature.get('properties').get('type') == 'Rainfall']
+            surface_inflow_lines = [feature for feature in input_data.get('inflow').get('features') if
+                                    feature.get('properties').get('type') == 'Surface']
+            catchment_polygons = [feature for feature in input_data.get('catchment').get('features')] if input_data.get(
+                'catchment') else []
+            boundary_polygon = input_data.get('boundary_polygon')
+            datetime_range = pd.date_range(start=start, periods=duration + 1, freq='s')
+            inflow_dataframe = pd.DataFrame(datetime_range, columns=['timestamp'])
+            inflow_functions = dict()
+            for inflow_polygon in rainfall_inflow_polygons:
+                polygon_name = inflow_polygon.get('id')
+                data = inflow_polygon.get('properties').get('data')
+                if isinstance(data, list):
+                    new_dataframe = pd.DataFrame(data)
+                    new_dataframe['timestamp'] = pd.to_datetime(new_dataframe['timestamp'])
+                    new_dataframe[polygon_name] = pd.to_numeric(new_dataframe['value'])
+                    if inflow_dataframe['timestamp'].dt.tz is None:
+                        inflow_dataframe['timestamp'] = inflow_dataframe['timestamp'].dt.tz_localize('UTC')
+                    if new_dataframe['timestamp'].dt.tz is None:
+                        new_dataframe['timestamp'] = new_dataframe['timestamp'].dt.tz_localize('UTC')
+                    inflow_dataframe = pd.merge(inflow_dataframe, new_dataframe, how='left', on='timestamp')
+                    inflow_dataframe.ffill(inplace=True)
+                else:
+                    inflow_dataframe[polygon_name] = float(data)
+                inflow_function = create_inflow_function(inflow_dataframe, polygon_name)
+                inflow_functions[polygon_name] = inflow_function
+                geometry = inflow_polygon.get('geometry').get('coordinates')
+                Polygonal_rate_operator(domain, rate=inflow_function, factor=1.0e-6, polygon=geometry,
+                                        default_rate=0.00)
+            if len(rainfall_inflow_polygons) >= 1 and len(catchment_polygons) > 0:
+                for catchment_polygon in catchment_polygons:
+                    uniform_rainfall_rate = float(rainfall_inflow_polygons[0].get('properties').get('data'))
+                    polygon_name = catchment_polygon.get('id')
+                    inflow_dataframe[polygon_name] = uniform_rainfall_rate
+                    inflow_function = create_inflow_function(inflow_dataframe, polygon_name)
+                    geometry = catchment_polygon.get('geometry').get('coordinates')[0]
+                    # The catchment needs to be wholly in the domain:
+                    if check_coordinates_are_in_polygon(geometry, boundary_polygon):
+                        Polygonal_rate_operator(domain, rate=inflow_function, factor=-1.0e-6, polygon=geometry,
+                                                default_rate=0.00)
+            if len(rainfall_inflow_polygons) > 1 and len(catchment_polygons) > 0:
+                raise NotImplementedError('Cannot handle multiple rainfall polygons together with catchment hydrology.')
+
+            for inflow_line in surface_inflow_lines:
+                polyline_name = inflow_line.get('id')
+                inflow_dataframe[polyline_name] = float(inflow_line.get('properties').get('data'))
+                inflow_function = create_inflow_function(inflow_dataframe, polyline_name)
+                inflow_functions[polyline_name] = inflow_function
+                geometry = inflow_line.get('geometry').get('coordinates')
+                # check that inflow line is actually in the domain:
+                if check_coordinates_are_in_polygon(geometry, boundary_polygon):
+                    Inlet_operator(domain, geometry, Q=inflow_function)
         else:
             domain = None
         if len(os.listdir(checkpoint_directory)) == 0:
@@ -159,68 +230,6 @@ def run_sim(package_dir, username=None, password=None, batch_number=1):
         for tag in domain.boundary.values():
             boundaries[tag] = default_boundary_maps[tag]
         domain.set_boundary(boundaries)
-
-        # setup rainfall
-        def create_inflow_function(dataframe, name):
-            def rain(time_in_seconds):
-                t_sec = int(math.floor(time_in_seconds))
-                return dataframe[name][t_sec]
-            rain.__name__ = name
-            return rain
-
-        rainfall_inflow_polygons = [feature for feature in input_data.get('inflow').get('features') if feature.get('properties').get('type') == 'Rainfall']
-        surface_inflow_lines = [feature for feature in input_data.get('inflow').get('features') if feature.get('properties').get('type') == 'Surface']
-        catchment_polygons =  [feature for feature in input_data.get('catchment').get('features')] if input_data.get('catchment') else []
-        boundary_polygon = input_data.get('boundary_polygon')
-        duration = input_data['scenario_config'].get('duration')
-        start = '1/1/1970'
-        if input_data['scenario_config'].get('model_start'):
-            start = input_data['scenario_config'].get('model_start')
-        datetime_range = pd.date_range(start=start, periods=duration + 1, freq='s')
-        inflow_dataframe = pd.DataFrame(datetime_range, columns=['timestamp'])
-        inflow_functions = dict()
-        for inflow_polygon in rainfall_inflow_polygons:
-            polygon_name = inflow_polygon.get('id')
-            data = inflow_polygon.get('properties').get('data')
-            if isinstance(data, list):
-                new_dataframe = pd.DataFrame(data)
-                new_dataframe['timestamp'] = pd.to_datetime(new_dataframe['timestamp'])
-                new_dataframe[polygon_name] = pd.to_numeric(new_dataframe['value'])
-                if inflow_dataframe['timestamp'].dt.tz is None:
-                    inflow_dataframe['timestamp'] = inflow_dataframe['timestamp'].dt.tz_localize('UTC')
-                if new_dataframe['timestamp'].dt.tz is None:
-                    new_dataframe['timestamp'] = new_dataframe['timestamp'].dt.tz_localize('UTC')
-                inflow_dataframe = pd.merge(inflow_dataframe, new_dataframe, how='left', on='timestamp')
-                inflow_dataframe.ffill(inplace=True)
-            else:
-                inflow_dataframe[polygon_name] = float(data)
-            inflow_function = create_inflow_function(inflow_dataframe, polygon_name)
-            inflow_functions[polygon_name] = inflow_function
-            geometry = inflow_polygon.get('geometry').get('coordinates')
-            Polygonal_rate_operator(domain, rate=inflow_function, factor=1.0e-6, polygon=geometry, default_rate=0.00)
-        if len(rainfall_inflow_polygons) >= 1 and len(catchment_polygons) > 0:
-            for catchment_polygon in catchment_polygons:
-                uniform_rainfall_rate = float(rainfall_inflow_polygons[0].get('properties').get('data'))
-                polygon_name = catchment_polygon.get('id')
-                inflow_dataframe[polygon_name] = uniform_rainfall_rate
-                inflow_function = create_inflow_function(inflow_dataframe, polygon_name)
-                geometry = catchment_polygon.get('geometry').get('coordinates')[0]
-                # The catchment needs to be wholly in the domain:
-                if check_coordinates_are_in_polygon(geometry, boundary_polygon):
-                    Polygonal_rate_operator(domain, rate=inflow_function, factor=-1.0e-6, polygon=geometry, default_rate=0.00)
-        if len(rainfall_inflow_polygons) > 1 and len(catchment_polygons) > 0:
-            raise NotImplementedError('Cannot handle multiple rainfall polygons together with catchment hydrology.')
-
-        for inflow_line in surface_inflow_lines:
-            polyline_name = inflow_line.get('id')
-            inflow_dataframe[polyline_name] = float(inflow_line.get('properties').get('data'))
-            inflow_function = create_inflow_function(inflow_dataframe, polyline_name)
-            inflow_functions[polyline_name] = inflow_function
-            geometry = inflow_line.get('geometry').get('coordinates')
-            # check that inflow line is actually in the domain:
-            if check_coordinates_are_in_polygon(geometry, boundary_polygon):
-                Inlet_operator(domain, geometry, Q=inflow_function)
-
         max_yieldsteps = 100
         temporal_resolution_seconds = 60  # At most yield every minute
         base_temporal_resolution_seconds = math.floor(duration/max_yieldsteps)
@@ -237,7 +246,7 @@ def run_sim(package_dir, username=None, password=None, batch_number=1):
         )
         barrier()
         start = time.time()
-        for t in domain.evolve(yieldstep=yieldstep, finaltime=duration):
+        for t in domain.evolve(yieldstep=yieldstep, finaltime=duration, skip_initial_step=skip_initial_step):
             if anuga.myid == 0:
                 stop = time.time()
                 percentage_done = round(t * 100 / duration, 1)

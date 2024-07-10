@@ -718,8 +718,6 @@ def post_process_sww(package_dir, run_args=None, output_raster_resolution=None):
     # for result_type in output_quantities:
         # make_video(output_directory, run_label, result_type)
 
-    if os.path.isdir(input_data['checkpoint_directory']):
-        shutil.rmtree(input_data['checkpoint_directory'])
     video_dir = f"{input_data['output_directory']}/videos/"
     if os.path.isdir(video_dir):
         shutil.rmtree(video_dir)
@@ -744,10 +742,11 @@ def make_video(input_directory_1, result_type):
     for i, file in enumerate(tif_files):
         raster = rasterio.open(file)
         data = raster.read(1)
+        label = str(file).split('/')[-1]
         plt.figure(figsize=(10, 10))
         plt.imshow(data, cmap='viridis', vmin=global_min, vmax=global_max)
         plt.axis('off')
-        plt.text(0, 0, str(file), color='white', fontsize=6, ha='left', va='top', path_effects=[pe.withStroke(linewidth=3, foreground='black')])
+        plt.text(0, 0, label, color='white', fontsize=10, ha='left', va='top', path_effects=[pe.withStroke(linewidth=3, foreground='black')])
         img_file = f"{image_directory}/frame_{result_type}_{i:03d}.png"
         plt.savefig(img_file, dpi=300)
         image_files.append(img_file)
@@ -807,10 +806,15 @@ def make_comparison_video(input_directory_1, input_directory_2, result_type):
                                                          (file_2, image_directory_2, image_files_2, raster_2),
                                                          (None, image_directory_diff, image_files_diff, diff)]:
             plt.figure(figsize=(10, 10))
-            plt.imshow(data, cmap='viridis', vmin=global_min, vmax=global_max)
+            if "diff" in image_directory:
+                cmap = "RdBu"
+            else:
+                cmap = "viridis"
+            plt.imshow(data, cmap=cmap, vmin=global_min, vmax=global_max)
             plt.axis('off')
             if file is not None:
-                plt.text(0, 0, str(file), color='white', fontsize=6, ha='left', va='top',
+                label = str(file).split('/')[-1]
+                plt.text(0, 0, label, color='white', fontsize=10, ha='left', va='top',
                          path_effects=[pe.withStroke(linewidth=3, foreground='black')])
             img_file = f"{image_directory}/frame_{result_type}_{i:03d}.png"
             plt.savefig(img_file, dpi=100)
