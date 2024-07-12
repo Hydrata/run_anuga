@@ -21,7 +21,7 @@ from celery.utils.log import get_task_logger
 logger = get_task_logger(__name__)
 
 
-def run_sim(package_dir, username=None, password=None, batch_number=1):
+def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoint_time=None):
     run_args = package_dir, username, password
     input_data = setup_input_data(package_dir)
     logger = setup_logger(input_data, username, password, batch_number)
@@ -43,49 +43,25 @@ def run_sim(package_dir, username=None, password=None, batch_number=1):
             sub_domain_name = None
             if anuga.numprocs > 1:
                 sub_domain_name = domain_name + "_P{}_{}".format(anuga.numprocs, anuga.myid)
-            checkpoint_times = set()
-            for path, directory, filenames in os.walk(checkpoint_directory):
-                if len(filenames) == 0:
-                    return None
-                else:
-                    for filename in filenames:
-                        filebase = os.path.splitext(filename)[0].rpartition("_")
-                        checkpoint_time = filebase[-1]
-                        domain_name_base = filebase[0]
-                        if domain_name_base == sub_domain_name:
-                            checkpoint_times.add(float(checkpoint_time))
-            combined = checkpoint_times
+            pickle_name = (os.path.join(checkpoint_directory, sub_domain_name) + "_" + str(checkpoint_time) + ".pickle")
+            try:
+                domain = pickle.load(open(pickle_name, "rb"))
+                logger.info(f"{pickle_name=}")
+                success = True
+            except:
+                success = False
+            overall = success
             for cpu in range(anuga.numprocs):
-                if anuga.myid != cpu:
-                    anuga.send(checkpoint_times, cpu)
-                    rec = anuga.receive(cpu)
-                    combined = combined & rec
-            checkpoint_times = list(checkpoint_times)
-            checkpoint_times.sort()
-            if len(checkpoint_times) == 0:
-                raise Exception("Unable to open checkpoint file")
-            for checkpoint_time in reversed(checkpoint_times):
-                pickle_name = (os.path.join(checkpoint_directory, sub_domain_name) + "_" + str(checkpoint_time) + ".pickle")
-                try:
-                    domain = pickle.load(open(pickle_name, "rb"))
-                    logger.info(f"{pickle_name=}")
-                    success = True
-                except:
-                    success = False
-                overall = success
-                for cpu in range(anuga.numprocs):
-                    if cpu != anuga.myid:
-                        anuga.send(success, cpu)
-                for cpu in range(anuga.numprocs):
-                    if cpu != anuga.myid:
-                        overall = overall & anuga.receive(cpu)
-                logger.info(f"{overall=}")
-                domain.set_evolve_starttime(checkpoint_time)
-                barrier()
-                if overall:
-                    break
+                if cpu != anuga.myid:
+                    anuga.send(success, cpu)
+            for cpu in range(anuga.numprocs):
+                if cpu != anuga.myid:
+                    overall = overall & anuga.receive(cpu)
+            logger.info(f"{overall=}")
+            domain.set_evolve_starttime(checkpoint_time)
+            barrier()
             if not overall:
-                raise Exception("Unable to open checkpoint file")
+                raise Exception(f"Unable to open checkpoint file: {pickle_name}")
             domain.last_walltime = time.time()
             # skip_initial_step = True
             domain.communication_time = 0.0
@@ -280,16 +256,18 @@ if __name__ == '__main__':
     parser.add_argument("password", nargs='?', help="your password at hydrata.com", type=str)
     parser.add_argument("--package_dir", "-pd", help="the base directory for your simulation, it contains the scenario.json file", type=is_dir_check)
     parser.add_argument("--batch_number", "-bn", help="when using checkpointing, the batch_number, is the number of times the run has been restarted.", type=str)
+    parser.add_argument("--checkpoint_time", "-ct", help="when using checkpointing, the checkpoint_time, is the time in seconds, to restart the simulation from.", type=str)
     args = parser.parse_args()
     username = args.username
     password = args.password
     package_dir = args.package_dir
     batch_number = args.batch_number
+    checkpoint_time = args.checkpoint_time
     if not package_dir:
         package_dir = os.path.join(os.path.dirname(__file__), '..', '..')
     try:
         logger.info(f"run.py __main__ running {batch_number=}")
-        run_sim(package_dir, username, password, batch_number)
+        run_sim(package_dir, username, password, batch_number, checkpoint_time)
     except Exception as e:
         run_args = (package_dir, username, password)
         logger.exception(e, exc_info=True)
