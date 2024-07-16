@@ -32,13 +32,13 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
     memory_usage_logs = list()
     duration = input_data['scenario_config'].get('duration')
     start = '1/1/1970'
+    batch_number = int(batch_number)
     if input_data['scenario_config'].get('model_start'):
         start = input_data['scenario_config'].get('model_start')
     try:
         domain_name = input_data['run_label']
         checkpoint_directory = input_data['checkpoint_directory']
-        using_checkpoints = len(os.listdir(checkpoint_directory)) > 0
-        if using_checkpoints:
+        if batch_number > 1:
             logger.info(f"Building domain...")
             sub_domain_name = None
             if anuga.numprocs > 1:
@@ -50,14 +50,28 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
                 success = True
             except:
                 success = False
-            overall = success
-            for cpu in range(anuga.numprocs):
-                if cpu != anuga.myid:
-                    anuga.send(success, cpu)
-            for cpu in range(anuga.numprocs):
-                if cpu != anuga.myid:
-                    overall = overall & anuga.receive(cpu)
-            logger.info(f"{overall=}")
+            for attempt in range(5):
+                logger.info(f"overall attempt: {attempt}")
+                overall = success
+                for cpu in range(anuga.numprocs):
+                    if cpu != anuga.myid:
+                        anuga.send(success, cpu)
+                        if attempt > 1:
+                            logger.info(f"cpu sent: {cpu}")
+                for cpu in range(anuga.numprocs):
+                    if cpu != anuga.myid:
+                        result = anuga.receive(cpu)
+                        if isinstance(result, tuple):  # If result is a tuple, then it is (buffer, rs)
+                            buffer, rs = result
+                        else:  # If result is not a tuple, then it is just buffer
+                            buffer = result
+                            rs = None  # Or some other default value, as per your requirement
+                        if attempt > 1:
+                            logger.info(f"cpu receive: {cpu}: {buffer}, {rs}, attempt: {attempt}")
+                        overall = overall & buffer
+                logger.info(f"{overall=}")
+                if overall:
+                    break
             domain.set_evolve_starttime(checkpoint_time)
             barrier()
             if not overall:
@@ -127,7 +141,7 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
             logger.info(domain.mesh.statistics())
         else:
             domain = None
-        if not using_checkpoints:
+        if batch_number == 1:
             barrier()
             domain = distribute(domain, verbose=True)
 
