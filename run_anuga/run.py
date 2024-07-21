@@ -57,7 +57,7 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
                     if cpu != anuga.myid:
                         anuga.send(success, cpu)
                         if attempt > 1:
-                            logger.info(f"cpu sent: {cpu}")
+                            logger.info(f"cpu sent: {cpu}, {success}")
                 for cpu in range(anuga.numprocs):
                     if cpu != anuga.myid:
                         result = anuga.receive(cpu)
@@ -70,6 +70,7 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
                             logger.info(f"cpu receive: {cpu}: {buffer}, {rs}, attempt: {attempt}")
                         overall = overall & buffer
                 logger.info(f"{overall=}")
+                time.sleep(10)
                 if overall:
                     break
             domain.set_evolve_starttime(checkpoint_time)
