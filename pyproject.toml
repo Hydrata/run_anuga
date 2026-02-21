@@ -47,7 +47,7 @@ dev = [
 ]
 
 [project.scripts]
-run-anuga = "run_anuga.run:main"
+run-anuga = "run_anuga.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["run_anuga*"]

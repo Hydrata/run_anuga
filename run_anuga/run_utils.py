@@ -10,12 +10,14 @@ import shutil
 import subprocess
 import sys
 from copy import deepcopy
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Optional
 from urllib.parse import urlparse
 
 from run_anuga._imports import import_optional
 from run_anuga import defaults
-from run_anuga.schema import validate_scenario, ValidationError
+from run_anuga.config import ScenarioConfig
 
 try:
     from celery.utils.log import get_task_logger
@@ -26,6 +28,14 @@ except ImportError:
     settings = dict()
 
 
+@dataclass
+class RunContext:
+    """Typed replacement for the (package_dir, username, password) tuple."""
+    package_dir: str
+    username: Optional[str] = None
+    password: Optional[str] = None
+
+
 def is_dir_check(path):
     if os.path.isdir(path):
         return path
@@ -33,15 +43,16 @@ def is_dir_check(path):
         raise argparse.ArgumentTypeError(f"readable_dir:{path} is not a valid path")
 
 
-def setup_input_data(package_dir):
+def _load_package_data(package_dir):
+    """Load and validate scenario config + input files. Pure Python, no geo deps."""
     if not os.path.isfile(os.path.join(package_dir, 'scenario.json')):
         raise FileNotFoundError(f'Could not find "scenario.json" in {package_dir}')
 
     input_data = dict()
     input_data['scenario_config'] = json.load(open(os.path.join(package_dir, 'scenario.json')))
     try:
-        validate_scenario(input_data['scenario_config'])
-    except ValidationError as e:
+        ScenarioConfig.model_validate(input_data['scenario_config'])
+    except Exception as e:
         logger.warning(f"Scenario validation: {e}")
     project_id = input_data['scenario_config'].get('project')
     scenario_id = input_data['scenario_config'].get('id')
@@ -79,6 +90,13 @@ def setup_input_data(package_dir):
     if input_data['scenario_config'].get('resolution'):
         input_data['resolution'] = input_data['scenario_config'].get('resolution')
 
+    return input_data
+
+
+def setup_input_data(package_dir):
+    """Full setup — requires geo deps for boundary processing."""
+    input_data = _load_package_data(package_dir)
+
     if len(input_data['boundary'].get('features')) == 0:
         raise AttributeError('No boundary features found')
     boundary_polygon, boundary_tags = create_boundary_polygon_from_boundaries(
@@ -92,7 +110,7 @@ def setup_input_data(package_dir):
 
 
 def update_web_interface(run_args, data, files=None):
-    package_dir, username, password = run_args
+    package_dir, username, password = run_args.package_dir, run_args.username, run_args.password
     if username and password:
         requests = import_optional("requests")
         input_data = setup_input_data(package_dir)
@@ -998,11 +1016,20 @@ def check_coordinates_are_in_polygon(coordinates, polygon):
     return True
 
 
-def generate_stac(output_directory, run_label, output_quantities, initial_time_iso_string):
-    if isinstance(settings, dict):
-        return
-    if not settings.AWS_ACCESS_KEY_ID or not settings.AWS_SECRET_ACCESS_KEY or not settings.ANUGA_S3_STAC_BUCKET_NAME:
-        return
+def generate_stac(output_directory, run_label, output_quantities, initial_time_iso_string,
+                  aws_access_key_id=None, aws_secret_access_key=None, s3_bucket_name=None):
+    _explicit_creds = aws_access_key_id is not None
+    # Fall back to Django settings if params not provided
+    if not _explicit_creds:
+        if isinstance(settings, dict):
+            return  # No Django settings and no explicit creds — silently skip
+        aws_access_key_id = getattr(settings, 'AWS_ACCESS_KEY_ID', None)
+        aws_secret_access_key = getattr(settings, 'AWS_SECRET_ACCESS_KEY', None)
+        s3_bucket_name = getattr(settings, 'ANUGA_S3_STAC_BUCKET_NAME', None)
+    if not aws_access_key_id or not aws_secret_access_key or not s3_bucket_name:
+        if not _explicit_creds:
+            return  # Django settings incomplete — silently skip (matches old behavior)
+        raise ValueError("AWS credentials required: pass aws_access_key_id, aws_secret_access_key, and s3_bucket_name")
 
     boto3 = import_optional("boto3")
     rasterio = import_optional("rasterio")
@@ -1016,8 +1043,8 @@ def generate_stac(output_directory, run_label, output_quantities, initial_time_i
         def __init__(self):
             self.s3 = boto3.resource(
                 's3',
-                aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
-                aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY
+                aws_access_key_id=aws_access_key_id,
+                aws_secret_access_key=aws_secret_access_key
             )
             super().__init__()
 
@@ -1042,7 +1069,6 @@ def generate_stac(output_directory, run_label, output_quantities, initial_time_i
 
     StacIO.set_default(S3StacIO)
 
-    s3_bucket_name = settings.ANUGA_S3_STAC_BUCKET_NAME
     s3_catalog_uri = f"s3://{s3_bucket_name}/{run_label}"
     catalog = Catalog(id=run_label, description=f"{run_label} - {initial_time_iso_string}")
     min_left, min_bottom, max_right, max_top = None, None, None, None
@@ -1067,8 +1093,8 @@ def generate_stac(output_directory, run_label, output_quantities, initial_time_i
             item_name = os.path.basename(tif_file).split('.')[0]
             s3_resource = boto3.resource(
                 's3',
-                aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
-                aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY
+                aws_access_key_id=aws_access_key_id,
+                aws_secret_access_key=aws_secret_access_key
             )
             s3_bucket = s3_resource.Bucket(s3_bucket_name)
             key = f"{run_label}/{result_type}/{os.path.basename(tif_file)}"

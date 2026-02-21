@@ -8,7 +8,7 @@ import traceback
 
 from run_anuga._imports import import_optional
 from run_anuga.run_utils import is_dir_check, setup_input_data, update_web_interface, create_mesher_mesh, create_anuga_mesh, \
-    make_frictions, post_process_sww, setup_logger, check_coordinates_are_in_polygon
+    make_frictions, post_process_sww, setup_logger, check_coordinates_are_in_polygon, RunContext
 from run_anuga import defaults
 from run_anuga.callbacks import NullCallback, HydrataCallback
 
@@ -31,7 +31,7 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
     from anuga.operators.rate_operators import Polygonal_rate_operator
 
     # Keep run_args for backward compat with update_web_interface in main() error handler.
-    run_args = package_dir, username, password
+    run_args = RunContext(package_dir, username, password)
     input_data = setup_input_data(package_dir)
 
     # Backward compat: auto-construct callback from username/password if not provided.
@@ -300,7 +300,7 @@ def main():
         logger.info(f"run.py main() running {batch_number=}")
         run_sim(package_dir, username, password, batch_number, checkpoint_time)
     except Exception as e:
-        run_args = (package_dir, username, password)
+        run_args = RunContext(package_dir, username, password)
         logger.exception(e, exc_info=True)
         update_web_interface(run_args, data={'status': 'error'})
         raise e

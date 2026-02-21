@@ -1,10 +1,6 @@
 """
 Pydantic configuration model for scenario.json.
 
-``ScenarioConfig`` replaces the JSON Schema dict in ``schema.py`` with a
-typed, validated model.  The old ``schema.py`` is kept temporarily for
-backward compatibility — both can coexist.
-
 Usage::
 
     from run_anuga.config import ScenarioConfig

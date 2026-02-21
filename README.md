@@ -41,48 +41,74 @@ package/
 | `simplify_mesh` | bool | no | Use adaptive mesher |
 | `model_start` | string | no | Start time (ISO 8601) |
 
-See `run_anuga/schema.py` for the full JSON Schema.
+See `run_anuga/config.py` for the Pydantic model with full validation.
 
 ## Installation
 
 ```bash
-# From the repo root
-pip install -e .
+# Core only — config parsing, validation, CLI (no geo deps)
+pip install run_anuga
 
-# With ANUGA (for running simulations)
-pip install -e ".[anuga]"
+# With simulation dependencies (GDAL, numpy, shapely, etc.)
+pip install "run_anuga[sim]"
 
-# With development tools
-pip install -e ".[dev]"
+# With visualisation (matplotlib, opencv)
+pip install "run_anuga[viz]"
+
+# With platform integration (requests, boto3, pystac)
+pip install "run_anuga[platform]"
+
+# Everything (sim + viz + platform + anuga + celery + django)
+pip install "run_anuga[full]"
+
+# Development tools (pytest, ruff)
+pip install "run_anuga[dev]"
 ```
-
-System dependencies: `gdal-bin`, `libgdal-dev` (for the GDAL Python bindings).
 
 ## CLI Usage
 
 ```bash
-# Run a simulation package
-run-anuga --package_dir /path/to/package/
+# Validate a scenario package (core only, no heavy deps)
+run-anuga validate /path/to/package/
 
-# With Hydrata server authentication
-run-anuga user@example.com password --package_dir /path/to/package/
+# Show package info
+run-anuga info /path/to/package/
 
-# With checkpointing (restart from a previous checkpoint)
-run-anuga --package_dir /path/to/package/ --batch_number 2 --checkpoint_time 1800
+# Run a simulation (requires [sim] + anuga)
+run-anuga run /path/to/package/
+
+# Run with Hydrata server authentication
+run-anuga run /path/to/package/ --username user@example.com --password secret
+
+# Run with checkpointing (restart from a previous checkpoint)
+run-anuga run /path/to/package/ --batch-number 2 --checkpoint-time 1800
+
+# Post-process SWW to GeoTIFFs (requires [sim])
+run-anuga post-process /path/to/package/
+
+# Generate video from result TIFFs (requires [viz])
+run-anuga viz /path/to/outputs/ depth
+
+# Upload results to S3 STAC catalog (requires [platform])
+run-anuga upload /path/to/outputs/ --bucket my-bucket
 ```
 
 ## Python API
 
 ```python
+from run_anuga.config import ScenarioConfig
+
+# Parse and validate a scenario package (core only, no geo deps)
+config = ScenarioConfig.from_package("/path/to/package")
+print(config.run_label)   # "run_42_1_7"
+print(config.duration)    # 3600
+print(config.epsg)        # "EPSG:28355"
+
+# Run a simulation with logging callback
 from run_anuga.run import run_sim
-from run_anuga.run_utils import setup_input_data
+from run_anuga.callbacks import LoggingCallback
 
-# Parse a package without running
-input_data = setup_input_data("/path/to/package")
-print(input_data['scenario_config']['duration'])
-
-# Run a simulation
-run_sim("/path/to/package")
+run_sim("/path/to/package", callback=LoggingCallback())
 ```
 
 ## Defaults
