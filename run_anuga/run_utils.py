@@ -32,6 +32,7 @@ from anuga import Geo_reference
 from anuga.utilities import plot_utils as util
 
 from run_anuga import defaults
+from run_anuga.schema import validate_scenario, ValidationError
 
 try:
     from celery.utils.log import get_task_logger
@@ -89,6 +90,10 @@ def setup_input_data(package_dir):
 
     input_data = dict()
     input_data['scenario_config'] = json.load(open(os.path.join(package_dir, 'scenario.json')))
+    try:
+        validate_scenario(input_data['scenario_config'])
+    except ValidationError as e:
+        logger.warning(f"Scenario validation: {e}")
     project_id = input_data['scenario_config'].get('project')
     scenario_id = input_data['scenario_config'].get('id')
     run_id = input_data['scenario_config'].get('run_id')
