@@ -1,0 +1,71 @@
+{
+    "type": "FeatureCollection",
+    "crs": {
+        "type": "name",
+        "properties": {
+            "name": "EPSG:28355"
+        }
+    },
+    "features": [
+        {
+            "type": "Feature",
+            "id": "south",
+            "geometry": {
+                "type": "LineString",
+                "coordinates": [
+                    [321000.0, 5812000.0],
+                    [321200.0, 5812000.0]
+                ]
+            },
+            "properties": {
+                "boundary": "Transmissive",
+                "location": "External"
+            }
+        },
+        {
+            "type": "Feature",
+            "id": "east",
+            "geometry": {
+                "type": "LineString",
+                "coordinates": [
+                    [321200.0, 5812000.0],
+                    [321200.0, 5812200.0]
+                ]
+            },
+            "properties": {
+                "boundary": "Reflective",
+                "location": "External"
+            }
+        },
+        {
+            "type": "Feature",
+            "id": "north",
+            "geometry": {
+                "type": "LineString",
+                "coordinates": [
+                    [321200.0, 5812200.0],
+                    [321000.0, 5812200.0]
+                ]
+            },
+            "properties": {
+                "boundary": "Transmissive",
+                "location": "External"
+            }
+        },
+        {
+            "type": "Feature",
+            "id": "west",
+            "geometry": {
+                "type": "LineString",
+                "coordinates": [
+                    [321000.0, 5812200.0],
+                    [321000.0, 5812000.0]
+                ]
+            },
+            "properties": {
+                "boundary": "Reflective",
+                "location": "External"
+            }
+        }
+    ]
+}

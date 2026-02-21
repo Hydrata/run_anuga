@@ -1,0 +1,30 @@
+{
+    "type": "FeatureCollection",
+    "crs": {
+        "type": "name",
+        "properties": {
+            "name": "EPSG:28355"
+        }
+    },
+    "features": [
+        {
+            "type": "Feature",
+            "id": "rainfall_1",
+            "geometry": {
+                "type": "Polygon",
+                "coordinates": [[
+                    [321000.0, 5812000.0],
+                    [321200.0, 5812000.0],
+                    [321200.0, 5812200.0],
+                    [321000.0, 5812200.0],
+                    [321000.0, 5812000.0]
+                ]]
+            },
+            "properties": {
+                "type": "Rainfall",
+                "data": "50.0",
+                "description": "Uniform 50 mm/hr rainfall over entire domain"
+            }
+        }
+    ]
+}
