@@ -14,11 +14,16 @@ from anuga import distribute, finalize, barrier, Inlet_operator
 from anuga.utilities import quantity_setting_functions as qs
 from anuga.operators.rate_operators import Polygonal_rate_operator
 
-from run_anuga.run_anuga.run_utils import is_dir_check, setup_input_data, update_web_interface, create_mesher_mesh, create_anuga_mesh, \
+from run_anuga.run_utils import is_dir_check, setup_input_data, update_web_interface, create_mesher_mesh, create_anuga_mesh, \
     make_frictions, post_process_sww, setup_logger, check_coordinates_are_in_polygon
+from run_anuga import defaults
 
-from celery.utils.log import get_task_logger
-logger = get_task_logger(__name__)
+try:
+    from celery.utils.log import get_task_logger
+    logger = get_task_logger(__name__)
+except ImportError:
+    import logging
+    logger = logging.getLogger(__name__)
 
 
 def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoint_time=None):
@@ -137,7 +142,7 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
             domain.set_quantity('stage', 0.0, verbose=False)
             domain.set_name(input_data['run_label'])
             domain.set_datadir(input_data['output_directory'])
-            domain.set_minimum_storable_height(0.005)
+            domain.set_minimum_storable_height(defaults.MINIMUM_STORABLE_HEIGHT_M)
             update_web_interface(run_args, data={'status': 'created mesh'})
             logger.info(domain.mesh.statistics())
         else:
@@ -183,7 +188,7 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
                 inflow_function = create_inflow_function(inflow_dataframe, polygon_name)
                 inflow_functions[polygon_name] = inflow_function
                 geometry = inflow_polygon.get('geometry').get('coordinates')
-                Polygonal_rate_operator(domain, rate=inflow_function, factor=1.0e-6, polygon=geometry,
+                Polygonal_rate_operator(domain, rate=inflow_function, factor=defaults.RAINFALL_FACTOR, polygon=geometry,
                                         default_rate=0.00)
             if len(rainfall_inflow_polygons) >= 1 and len(catchment_polygons) > 0:
                 for catchment_polygon in catchment_polygons:
@@ -194,7 +199,7 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
                     geometry = catchment_polygon.get('geometry').get('coordinates')[0]
                     # The catchment needs to be wholly in the domain:
                     if check_coordinates_are_in_polygon(geometry, boundary_polygon):
-                        Polygonal_rate_operator(domain, rate=inflow_function, factor=-1.0e-6, polygon=geometry,
+                        Polygonal_rate_operator(domain, rate=inflow_function, factor=-defaults.RAINFALL_FACTOR, polygon=geometry,
                                                 default_rate=0.00)
             if len(rainfall_inflow_polygons) > 1 and len(catchment_polygons) > 0:
                 raise NotImplementedError('Cannot handle multiple rainfall polygons together with catchment hydrology.')
@@ -220,14 +225,14 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
         for tag in domain.boundary.values():
             boundaries[tag] = default_boundary_maps[tag]
         domain.set_boundary(boundaries)
-        max_yieldsteps = 100
-        temporal_resolution_seconds = 60  # At most yield every minute
+        max_yieldsteps = defaults.MAX_YIELDSTEPS
+        temporal_resolution_seconds = defaults.MIN_YIELDSTEP_S
         base_temporal_resolution_seconds = math.floor(duration/max_yieldsteps)
         yieldstep = base_temporal_resolution_seconds
         if base_temporal_resolution_seconds < temporal_resolution_seconds:
             yieldstep = temporal_resolution_seconds
-        if yieldstep > 60 * 30:  # At least yield every half hour, even if we go over max_yieldsteps
-            yieldstep = 60 * 30
+        if yieldstep > defaults.MAX_YIELDSTEP_S:
+            yieldstep = defaults.MAX_YIELDSTEP_S
         checkpoint_directory = input_data['checkpoint_directory']
         domain.set_checkpointing(
             checkpoint=True,
@@ -265,8 +270,8 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
     logger.info(f"finished run: {input_data['run_label']}")
 
 
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
+def main():
+    parser = argparse.ArgumentParser(description="Run an ANUGA flood simulation from a Hydrata scenario package.")
     parser.add_argument("username", nargs='?', help="your username(email) at hydrata.com", type=str)
     parser.add_argument("password", nargs='?', help="your password at hydrata.com", type=str)
     parser.add_argument("--package_dir", "-pd", help="the base directory for your simulation, it contains the scenario.json file", type=is_dir_check)
@@ -279,12 +284,16 @@ if __name__ == '__main__':
     batch_number = args.batch_number
     checkpoint_time = args.checkpoint_time
     if not package_dir:
-        package_dir = os.path.join(os.path.dirname(__file__), '..', '..')
+        package_dir = os.path.join(os.path.dirname(__file__), '..')
     try:
-        logger.info(f"run.py __main__ running {batch_number=}")
+        logger.info(f"run.py main() running {batch_number=}")
         run_sim(package_dir, username, password, batch_number, checkpoint_time)
     except Exception as e:
         run_args = (package_dir, username, password)
         logger.exception(e, exc_info=True)
         update_web_interface(run_args, data={'status': 'error'})
         raise e
+
+
+if __name__ == '__main__':
+    main()

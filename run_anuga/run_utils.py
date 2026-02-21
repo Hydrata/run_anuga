@@ -30,6 +30,9 @@ from pystac.stac_io import DefaultStacIO, StacIO
 
 from anuga import Geo_reference
 from anuga.utilities import plot_utils as util
+
+from run_anuga import defaults
+
 try:
     from celery.utils.log import get_task_logger
     logger = get_task_logger(__name__)
@@ -69,7 +72,8 @@ class S3StacIO(DefaultStacIO):
             super().write_text(dest, txt, *args, **kwargs)
 
 
-StacIO.set_default(S3StacIO)
+if not isinstance(settings, dict):
+    StacIO.set_default(S3StacIO)
 
 
 def is_dir_check(path):
@@ -172,10 +176,9 @@ def create_mesher_mesh(input_data):
     ymax = uly
     user_resolution = float(input_data.get('resolution'))
     if input_data.get('structure_filename'):
-        building_height = 5
         burn_structures_into_raster = subprocess.run([
             "gdal_rasterize",
-            "-burn", str(building_height), "-add",
+            "-burn", str(defaults.BUILDING_BURN_HEIGHT_M), "-add",
             input_data['structure_filename'],
             input_data['elevation_filename']
         ],
@@ -188,7 +191,7 @@ def create_mesher_mesh(input_data):
             raise UserWarning(burn_structures_into_raster.stderr)
     mesh_region_shp_files = None
     minimum_triangle_area = max((user_resolution ** 2) / 2, (elevation_raster_resolution ** 2) / 2)
-    mesher_bin = os.environ.get('MESHER_EXE', '/opt/venv/hydrata/bin/mesher')
+    mesher_bin = os.environ.get('MESHER_EXE', defaults.DEFAULT_MESHER_EXE)
     if input_data.get('mesh_region_filename'):
         mesh_region_shp_files = list()
         for feature in input_data.get('mesh_region')['features']:
@@ -283,7 +286,7 @@ simplify_tol = 10
         #     raise UserWarning(mesh_regions_tif_mask.stderr)
     # the lowest triangle area we can have is 5m2 or the grid resolution squared
 
-    max_area = 10000000
+    max_area = defaults.MAX_TRIANGLE_AREA
     mesher_config_filepath = f"{input_data['output_directory']}/mesher_config.py"
     logger.critical(f"{mesher_config_filepath=}")
     max_rmse_tolerance = input_data['scenario_config'].get('max_rmse_tolerance', 1)
@@ -411,10 +414,9 @@ def create_anuga_mesh(input_data):
     boundary_tags = input_data['boundary_tags']
     logger.critical(f"creating anuga_mesh")
     if input_data.get('structure_filename'):
-        building_height = 5
         burn_structures_into_raster = subprocess.run([
             "gdal_rasterize",
-            "-burn", str(building_height), "-add",
+            "-burn", str(defaults.BUILDING_BURN_HEIGHT_M), "-add",
             input_data['structure_filename'],
             input_data['elevation_filename']
         ],
@@ -496,13 +498,13 @@ def make_frictions(input_data):
         for structure in input_data['structure']['features']:
             if structure.get('properties').get('method') == 'Mannings':
                 structure_polygon = structure.get('geometry').get('coordinates')[0]
-                frictions.append((structure_polygon, 10,))  # TODO: maybe make building value customisable
+                frictions.append((structure_polygon, defaults.BUILDING_MANNINGS_N,))
     if input_data.get('friction'):
         for friction in input_data['friction']['features']:
             friction_polygon = friction.get('geometry').get('coordinates')[0]
             friction_value = friction.get('properties').get('mannings')
             frictions.append((friction_polygon, friction_value,))
-    frictions.append(['All', 0.04])  # TODO: make default value customisable
+    frictions.append(['All', defaults.DEFAULT_MANNINGS_N])
     return frictions
 
 
@@ -685,12 +687,12 @@ def post_process_sww(package_dir, run_args=None, output_raster_resolution=None):
         EPSG_CODE=epsg_integer,
         proj4string=None,
         velocity_extrapolation=True,
-        min_allowed_height=1.0e-05,
+        min_allowed_height=defaults.MIN_ALLOWED_HEIGHT_M,
         output_dir=input_data['output_directory'],
         bounding_polygon=input_data['boundary_polygon'],
         internal_holes=interior_holes,
         verbose=False,
-        k_nearest_neighbours=3,
+        k_nearest_neighbours=defaults.K_NEAREST_NEIGHBOURS,
         creation_options=[]
     )
     util.Make_Geotif(
@@ -703,12 +705,12 @@ def post_process_sww(package_dir, run_args=None, output_raster_resolution=None):
         EPSG_CODE=epsg_integer,
         proj4string=None,
         velocity_extrapolation=True,
-        min_allowed_height=1.0e-05,
+        min_allowed_height=defaults.MIN_ALLOWED_HEIGHT_M,
         output_dir=input_data['output_directory'],
         bounding_polygon=input_data['boundary_polygon'],
         internal_holes=interior_holes,
         verbose=False,
-        k_nearest_neighbours=3,
+        k_nearest_neighbours=defaults.K_NEAREST_NEIGHBOURS,
         creation_options=[]
     )
     output_directory = input_data['output_directory']
@@ -886,8 +888,7 @@ def setup_logger(input_data, username=None, password=None, batch_number=1):
 def burn_structures_into_raster(structures_filename, raster_filename, backup=True):
     if backup:
         shutil.copyfile(raster_filename, f"{raster_filename[:-4]}_original.tif")
-    building_height = 5
-    output = subprocess.run(["gdal_rasterize", "-burn", str(building_height), "-add", structures_filename, raster_filename], capture_output=True, universal_newlines=True)
+    output = subprocess.run(["gdal_rasterize", "-burn", str(defaults.BUILDING_BURN_HEIGHT_M), "-add", structures_filename, raster_filename], capture_output=True, universal_newlines=True)
     print(output)
     if output.returncode != 0:
         raise output.stderr
