@@ -1,34 +1,45 @@
-import json
-import dill as pickle
-import time
-import numpy
-import psutil
-import anuga
 import argparse
+import json
+import logging
 import math
 import os
-import pandas as pd
+import time
 import traceback
 
-from anuga import distribute, finalize, barrier, Inlet_operator
-from anuga.utilities import quantity_setting_functions as qs
-from anuga.operators.rate_operators import Polygonal_rate_operator
-
+from run_anuga._imports import import_optional
 from run_anuga.run_utils import is_dir_check, setup_input_data, update_web_interface, create_mesher_mesh, create_anuga_mesh, \
     make_frictions, post_process_sww, setup_logger, check_coordinates_are_in_polygon
 from run_anuga import defaults
+from run_anuga.callbacks import NullCallback, HydrataCallback
 
 try:
     from celery.utils.log import get_task_logger
     logger = get_task_logger(__name__)
 except ImportError:
-    import logging
     logger = logging.getLogger(__name__)
 
 
-def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoint_time=None):
+def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoint_time=None, callback=None):
+    # Lazy imports — these are only needed when actually running a simulation.
+    anuga = import_optional("anuga")
+    pickle = import_optional("dill")
+    numpy = import_optional("numpy")
+    psutil = import_optional("psutil")
+    pd = import_optional("pandas")
+    from anuga import distribute, finalize, barrier, Inlet_operator
+    from anuga.utilities import quantity_setting_functions as qs
+    from anuga.operators.rate_operators import Polygonal_rate_operator
+
+    # Keep run_args for backward compat with update_web_interface in main() error handler.
     run_args = package_dir, username, password
     input_data = setup_input_data(package_dir)
+
+    # Backward compat: auto-construct callback from username/password if not provided.
+    if callback is None and username:
+        callback = HydrataCallback.from_config(
+            username, password, input_data['scenario_config']
+        )
+    callback = callback or NullCallback()
     logger = setup_logger(input_data, username, password, batch_number)
     logger.info(f"run_sim started with {batch_number=}")
     domain = None
@@ -44,7 +55,7 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
         domain_name = input_data['run_label']
         checkpoint_directory = input_data['checkpoint_directory']
         if batch_number > 1:
-            logger.info(f"Building domain...")
+            logger.info("Building domain...")
             sub_domain_name = None
             if anuga.numprocs > 1:
                 sub_domain_name = domain_name + "_P{}_{}".format(anuga.numprocs, anuga.myid)
@@ -89,9 +100,9 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
             domain.communication_broadcast_time = 0.0
             logger.info('load_checkpoint_file succeeded. Checkpoint domain set.')
         elif anuga.myid == 0:
-            logger.info(f"Building domain...")
+            logger.info("Building domain...")
             logger.info('No checkpoint file found. Starting new Simulation')
-            update_web_interface(run_args, data={'status': 'building mesh'})
+            callback.on_status('building mesh')
             if input_data['scenario_config'].get('simplify_mesh'):
                 mesher_mesh_filepath, mesh_size = create_mesher_mesh(input_data)
                 with open(mesher_mesh_filepath, 'r') as mesh_file:
@@ -108,7 +119,7 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
                         verbose=False
                     )
                     domain.set_quantity('elevation', elev, location='vertices')
-                    update_web_interface(run_args, data={'mesh_triangle_count': mesh_size})
+                    callback.on_metric('mesh_triangle_count', mesh_size)
             else:
                 if not os.path.isfile(input_data['mesh_filepath']):
                     anuga_mesh_filepath, mesh_size = create_anuga_mesh(input_data)
@@ -143,7 +154,7 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
             domain.set_name(input_data['run_label'])
             domain.set_datadir(input_data['output_directory'])
             domain.set_minimum_storable_height(defaults.MINIMUM_STORABLE_HEIGHT_M)
-            update_web_interface(run_args, data={'status': 'created mesh'})
+            callback.on_status('created mesh')
             logger.info(domain.mesh.statistics())
         else:
             domain = None
@@ -245,7 +256,7 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
             if anuga.myid == 0:
                 stop = time.time()
                 percentage_done = round(t * 100 / duration, 1)
-                update_web_interface(run_args, data={"status": f"{percentage_done}%"})
+                callback.on_status(f"{percentage_done}%")
                 duration_seconds = round(stop - start)
                 minutes, seconds = divmod(duration_seconds, 60)
                 memory_percent = psutil.virtual_memory().percent
@@ -258,11 +269,11 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
         barrier()
         if anuga.myid == 0:
             max_memory_usage = int(round(max(memory_usage_logs)))
-            update_web_interface(run_args, data={"memory_used": max_memory_usage})
+            callback.on_metric('memory_used', max_memory_usage)
             logger.info("Processing results...")
             post_process_sww(package_dir, run_args=run_args)
-    except Exception as e:
-        update_web_interface(run_args, data={'status': 'error'})
+    except Exception:
+        callback.on_status('error')
         logger.error(f"{traceback.format_exc()}")
         raise
     finally:

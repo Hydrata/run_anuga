@@ -44,5 +44,5 @@ K_NEAREST_NEIGHBOURS = 3
 """Number of nearest neighbours for GeoTIFF interpolation."""
 
 # External tool paths
-DEFAULT_MESHER_EXE = "/opt/venv/hydrata/bin/mesher"
-"""Default path to the mesher binary."""
+DEFAULT_MESHER_EXE = "mesher"
+"""Default name of the mesher binary.  Resolved via PATH or MESHER_EXE env var."""

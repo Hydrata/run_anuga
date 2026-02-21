@@ -1,36 +1,19 @@
-import glob
-import re
-import shutil
-
-import cv2
-import numpy as np
-import rasterio
-from matplotlib import pyplot as plt
-import matplotlib.patheffects as pe
-from urllib.parse import urlparse
-
-import anuga
 import argparse
-import boto3
 import datetime
+import glob
 import json
 import logging
+import logging.handlers
 import math
-import subprocess
 import os
-import requests
-
+import shutil
+import subprocess
+import sys
 from copy import deepcopy
 from pathlib import Path
-from osgeo import ogr, gdal, osr
-from shapely.geometry import Point, LineString, LinearRing, Polygon
-from shapely.prepared import prep
-from pystac import Item, Asset, Collection, MediaType, Extent, SpatialExtent, TemporalExtent, CatalogType, Catalog, Link
-from pystac.stac_io import DefaultStacIO, StacIO
+from urllib.parse import urlparse
 
-from anuga import Geo_reference
-from anuga.utilities import plot_utils as util
-
+from run_anuga._imports import import_optional
 from run_anuga import defaults
 from run_anuga.schema import validate_scenario, ValidationError
 
@@ -41,42 +24,6 @@ try:
 except ImportError:
     logger = logging.getLogger(__name__)
     settings = dict()
-
-
-class S3StacIO(DefaultStacIO):
-    def __init__(self):
-        self.s3 = boto3.resource(
-            's3',
-            aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
-            aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY
-        )
-        super().__init__()
-
-    def read_text(self, source, *args, **kwargs) -> str:
-        parsed = urlparse(source)
-        if parsed.scheme == "s3":
-            bucket = parsed.netloc
-            key = parsed.path[1:]
-
-            obj = self.s3.Object(bucket, key)
-            return obj.get()["Body"].read().decode("utf-8")
-        else:
-            return super().read_text(source, *args, **kwargs)
-
-    def write_text(self, dest, txt, *args, **kwargs) -> None:
-        parsed = urlparse(dest)
-        if parsed.scheme == "s3":
-            bucket = parsed.netloc
-            key = parsed.path[1:]
-            self.s3.Object(bucket, key).put(Body=txt, ContentEncoding="utf-8")
-        else:
-            super().write_text(dest, txt, *args, **kwargs)
-
-
-# When Django is loaded, settings is a LazySettings object — enable S3 STAC I/O.
-# In standalone mode, settings is a plain dict (see except ImportError above) — skip.
-if not isinstance(settings, dict):
-    StacIO.set_default(S3StacIO)
 
 
 def is_dir_check(path):
@@ -147,6 +94,7 @@ def setup_input_data(package_dir):
 def update_web_interface(run_args, data, files=None):
     package_dir, username, password = run_args
     if username and password:
+        requests = import_optional("requests")
         input_data = setup_input_data(package_dir)
         data['project'] = input_data['scenario_config'].get('project')
         data['scenario'] = input_data['scenario_config'].get('id')
@@ -166,6 +114,8 @@ def update_web_interface(run_args, data, files=None):
 
 
 def create_mesher_mesh(input_data):
+    gdal = import_optional("osgeo.gdal")
+    ogr = import_optional("osgeo.ogr")
     mesher_mesh_filepath = os.path.join(input_data['output_directory'], f"{input_data['elevation_filename'].split('/')[-1][:-4]}.mesh") or ""
     if os.path.isfile(mesher_mesh_filepath):
         with open(mesher_mesh_filepath, 'r') as mesh_file:
@@ -260,7 +210,7 @@ simplify_tol = 10
                 logger.critical(config_file.read())
             logger.critical(f"python {mesher_bin}.py {mesher_config_filepath}")
             mesher_out = subprocess.run([
-                '/opt/venv/hydrata/bin/python',
+                sys.executable,
                 f'{mesher_bin}.py',
                 mesher_config_filepath
             ],
@@ -391,7 +341,7 @@ constraints = {{
     logger.critical(f"python {mesher_bin}.py {mesher_config_filepath}")
     try:
         mesher_out = subprocess.run([
-            '/opt/venv/hydrata/bin/python',
+            sys.executable,
             f'{mesher_bin}.py',
             mesher_config_filepath
         ],
@@ -413,6 +363,8 @@ constraints = {{
 
 
 def create_anuga_mesh(input_data):
+    anuga = import_optional("anuga")
+    Geo_reference = anuga.Geo_reference
     mesh_filepath = input_data['mesh_filepath']
     triangle_resolution = (input_data['scenario_config'].get('resolution') ** 2) / 2
     interior_regions = make_interior_regions(input_data)
@@ -531,6 +483,7 @@ def lookup_boundary_tag(index, boundary_tags):
 
 
 def create_boundary_polygon_from_boundaries(boundaries_geojson):
+    ogr = import_optional("osgeo.ogr")
     geometry_collection = ogr.Geometry(ogr.wkbGeometryCollection)
     if boundaries_geojson.get('crs'):
         epsg_code = boundaries_geojson.get('crs').get('properties').get('name').split(':')[-1]
@@ -663,6 +616,9 @@ def create_boundary_polygon_from_boundaries(boundaries_geojson):
 
 
 def post_process_sww(package_dir, run_args=None, output_raster_resolution=None):
+    anuga = import_optional("anuga")
+    util = anuga.utilities.plot_utils
+    gdal = import_optional("osgeo.gdal")
     output_quantities = ['depth', 'velocity', 'depthIntegratedVelocity', 'stage']
     input_data = setup_input_data(package_dir)
     logger.critical(f'Generating output rasters on {anuga.myid}...')
@@ -734,6 +690,11 @@ def post_process_sww(package_dir, run_args=None, output_raster_resolution=None):
 
 
 def make_video(input_directory_1, result_type):
+    np = import_optional("numpy")
+    rasterio = import_optional("rasterio")
+    cv2 = import_optional("cv2")
+    plt = import_optional("matplotlib.pyplot")
+    pe = import_optional("matplotlib.patheffects")
     run_label_1 = os.path.basename(input_directory_1).replace('outputs', 'run')
     tif_files = glob.glob(f"{input_directory_1}/{run_label_1}_{result_type}_*.tif")
     tif_files = [tif_file for tif_file in tif_files if "_max" not in tif_file]
@@ -774,6 +735,11 @@ def make_video(input_directory_1, result_type):
 
 
 def make_comparison_video(input_directory_1, input_directory_2, result_type):
+    np = import_optional("numpy")
+    rasterio = import_optional("rasterio")
+    cv2 = import_optional("cv2")
+    plt = import_optional("matplotlib.pyplot")
+    pe = import_optional("matplotlib.patheffects")
     run_label_1 = os.path.basename(input_directory_1).replace('outputs', 'run')
     run_label_2 = os.path.basename(input_directory_2).replace('outputs', 'run')
 
@@ -861,12 +827,17 @@ def make_comparison_video(input_directory_1, input_directory_2, result_type):
 
 
 def setup_logger(input_data, username=None, password=None, batch_number=1):
-    if not username and password:
+    if not username or not password:
         username = os.environ.get('COMPUTE_USERNAME')
         password = os.environ.get('COMPUTE_PASSWORD')
     # Create handlers
     file_handler = logging.FileHandler(os.path.join(input_data['output_directory'], f'run_anuga_{batch_number}.log'))
     file_handler.setLevel(logging.DEBUG)
+
+    # Avoid duplicate handlers when run_sim() is called multiple times
+    for h in logger.handlers[:]:
+        if isinstance(h, logging.FileHandler) or isinstance(h, logging.handlers.HTTPHandler):
+            logger.removeHandler(h)
 
     # Add handlers to the logger
     logger.addHandler(file_handler)
@@ -903,6 +874,8 @@ def burn_structures_into_raster(structures_filename, raster_filename, backup=Tru
 
 
 def make_shp_from_polygon(boundary_polygon, epsg_code, shapefilepath, buffer=0):
+    ogr = import_optional("osgeo.ogr")
+    osr = import_optional("osgeo.osr")
     boundary_ring_geom = ogr.Geometry(ogr.wkbLinearRing)
     for point in boundary_polygon:
         boundary_ring_geom.AddPoint(point[0], point[1])
@@ -933,6 +906,9 @@ def snap_links_to_nodes(package_dir):
 
 
 def calculate_hydrology(package_dir):
+    shapely_geometry = import_optional("shapely.geometry")
+    Point, Polygon = shapely_geometry.Point, shapely_geometry.Polygon
+    prep = import_optional("shapely.prepared").prep
     input_data = setup_input_data(package_dir)
 
     # prepare Nodes
@@ -1010,6 +986,8 @@ def add_inflow_to_file(inflow_object, filepath):
 
 
 def check_coordinates_are_in_polygon(coordinates, polygon):
+    shapely_geometry = import_optional("shapely.geometry")
+    Point, Polygon = shapely_geometry.Point, shapely_geometry.Polygon
     shapely_polgyon = Polygon(polygon)
     if isinstance(coordinates[0], float):
         coordinates = [coordinates]
@@ -1025,6 +1003,45 @@ def generate_stac(output_directory, run_label, output_quantities, initial_time_i
         return
     if not settings.AWS_ACCESS_KEY_ID or not settings.AWS_SECRET_ACCESS_KEY or not settings.ANUGA_S3_STAC_BUCKET_NAME:
         return
+
+    boto3 = import_optional("boto3")
+    rasterio = import_optional("rasterio")
+    pystac = import_optional("pystac")
+    Item, Asset, Collection, MediaType = pystac.Item, pystac.Asset, pystac.Collection, pystac.MediaType
+    Extent, SpatialExtent, TemporalExtent = pystac.Extent, pystac.SpatialExtent, pystac.TemporalExtent
+    CatalogType, Catalog = pystac.CatalogType, pystac.Catalog
+    from pystac.stac_io import DefaultStacIO, StacIO
+
+    class S3StacIO(DefaultStacIO):
+        def __init__(self):
+            self.s3 = boto3.resource(
+                's3',
+                aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
+                aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY
+            )
+            super().__init__()
+
+        def read_text(self, source, *args, **kwargs) -> str:
+            parsed = urlparse(source)
+            if parsed.scheme == "s3":
+                bucket = parsed.netloc
+                key = parsed.path[1:]
+                obj = self.s3.Object(bucket, key)
+                return obj.get()["Body"].read().decode("utf-8")
+            else:
+                return super().read_text(source, *args, **kwargs)
+
+        def write_text(self, dest, txt, *args, **kwargs) -> None:
+            parsed = urlparse(dest)
+            if parsed.scheme == "s3":
+                bucket = parsed.netloc
+                key = parsed.path[1:]
+                self.s3.Object(bucket, key).put(Body=txt, ContentEncoding="utf-8")
+            else:
+                super().write_text(dest, txt, *args, **kwargs)
+
+    StacIO.set_default(S3StacIO)
+
     s3_bucket_name = settings.ANUGA_S3_STAC_BUCKET_NAME
     s3_catalog_uri = f"s3://{s3_bucket_name}/{run_label}"
     catalog = Catalog(id=run_label, description=f"{run_label} - {initial_time_iso_string}")

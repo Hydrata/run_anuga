@@ -1,12 +1,16 @@
+"""Integration tests — require ANUGA and all simulation dependencies.
+
+These are excluded from CI (--ignore=tests/test_integration.py).
+Any test file that imports from run_anuga.run or run_anuga.run_utils
+must go in this file, since those modules require heavy dependencies.
+"""
+
 import fnmatch
-import glob
 import shutil
 
 import pytest
 import os
 
-from run_anuga.run import run_sim
-from run_anuga.run_utils import make_video
 from shutil import unpack_archive
 from pathlib import Path
 
@@ -17,6 +21,10 @@ from pathlib import Path
         # ("package_anuga_te_proposed_4_krzVHbr.zip", 4, "outputs_100_4_4", 10),
     ])
 def test_end_to_end_run(tmp_path, zip_filename, package_dir_length, output_dir_name, result_directory_length):
+    # Import at test time, not module level, so the test file can be collected
+    # by pytest even when ANUGA is not installed.
+    from run_anuga.run import run_sim
+
     source_zip_input = Path(__file__).parent / "data" / zip_filename
     source_zip_target_dir = Path(__file__).parent / "data" / zip_filename.split('.')[0]
     print('start test_end_to_end_run')
