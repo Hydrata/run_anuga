@@ -54,7 +54,7 @@ class TestValidateScenario:
         with pytest.raises(ValidationError, match="format_version"):
             validate_scenario(_minimal_scenario(format_version="2.0"))
 
-    def test_format_version_wrong_type_rejected(self):
+    def test_format_version_unsupported_rejected(self):
         with pytest.raises(ValidationError, match="format_version"):
             validate_scenario(_minimal_scenario(format_version="0.9"))
 

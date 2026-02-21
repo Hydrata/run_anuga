@@ -100,7 +100,7 @@ All simulation constants are defined in `run_anuga/defaults.py`:
 | `MAX_YIELDSTEPS` | 100 | Max yield steps per simulation |
 | `MIN_YIELDSTEP_S` | 60 | Min yield interval (seconds) |
 | `MAX_YIELDSTEP_S` | 1800 | Max yield interval (seconds) |
-| `MAX_TRIANGLE_AREA` | 10,000,000 | Max triangle area for mesher |
+| `MAX_TRIANGLE_AREA` | 10_000_000 | Max triangle area for mesher |
 | `K_NEAREST_NEIGHBOURS` | 3 | Neighbours for GeoTIFF interpolation |
 
 ## Testing

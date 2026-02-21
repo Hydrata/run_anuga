@@ -2,7 +2,8 @@
 
 ## Elevation Data
 
-The example DEM (`inputs/dem.tif`) is intended to be sourced from the
+The example DEM (`inputs/dem.tif`) is a 200x200m clip of 1m resolution
+elevation data in EPSG:28356 (GDA94 / MGA zone 56), sourced from the
 [Geoscience Australia ELVIS portal](https://elevation.fsdf.org.au/).
 
 **License:** [Creative Commons Attribution 4.0 International (CC BY 4.0)](https://creativecommons.org/licenses/by/4.0/)

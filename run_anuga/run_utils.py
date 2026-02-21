@@ -73,6 +73,8 @@ class S3StacIO(DefaultStacIO):
             super().write_text(dest, txt, *args, **kwargs)
 
 
+# When Django is loaded, settings is a LazySettings object — enable S3 STAC I/O.
+# In standalone mode, settings is a plain dict (see except ImportError above) — skip.
 if not isinstance(settings, dict):
     StacIO.set_default(S3StacIO)
 
@@ -896,7 +898,7 @@ def burn_structures_into_raster(structures_filename, raster_filename, backup=Tru
     output = subprocess.run(["gdal_rasterize", "-burn", str(defaults.BUILDING_BURN_HEIGHT_M), "-add", structures_filename, raster_filename], capture_output=True, universal_newlines=True)
     print(output)
     if output.returncode != 0:
-        raise output.stderr
+        raise RuntimeError(output.stderr)
     return True
 
 

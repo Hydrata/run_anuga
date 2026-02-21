@@ -53,7 +53,7 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
                 domain = pickle.load(open(pickle_name, "rb"))
                 logger.info(f"{pickle_name=}")
                 success = True
-            except:
+            except Exception:
                 success = False
             for attempt in range(5):
                 logger.info(f"overall attempt: {attempt}")

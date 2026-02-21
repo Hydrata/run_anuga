@@ -3,7 +3,7 @@
     "id": 1,
     "run_id": 1,
     "project": 1,
-    "epsg": "EPSG:28355",
+    "epsg": "EPSG:28356",
     "name": "Australian Floodplain Example",
     "description": "A small 200x200m floodplain example with uniform rainfall. Uses 1m DEM from Geoscience Australia ELVIS portal.",
     "control_server": null,

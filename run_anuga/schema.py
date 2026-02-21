@@ -40,7 +40,7 @@ SCENARIO_SCHEMA = {
             "description": "Optional scenario description.",
         },
         "control_server": {
-            "type": "string",
+            "type": ["string", "null"],
             "description": "Base URL of the Hydrata control server.",
         },
         "elevation": {
@@ -86,6 +86,10 @@ SCENARIO_SCHEMA = {
         "simplify_mesh": {
             "type": ["boolean", "null"],
             "description": "If true, use the mesher binary for adaptive mesh simplification.",
+        },
+        "store_mesh": {
+            "type": ["boolean", "null"],
+            "description": "If true, export the generated mesh as a shapefile.",
         },
         "resolution": {
             "type": ["number", "null"],
