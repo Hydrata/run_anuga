@@ -5,8 +5,8 @@ import shutil
 import pytest
 import os
 
-from run_anuga.run_anuga.run import run_sim
-from run_anuga.run_anuga.run_utils import make_video
+from run_anuga.run import run_sim
+from run_anuga.run_utils import make_video
 from shutil import unpack_archive
 from pathlib import Path
 
