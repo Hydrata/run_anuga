@@ -22,7 +22,7 @@ jobs:
         run: |
           pip install --upgrade pip
           pip install ".[sim]"
-          pip install "anuga @ git+https://github.com/Hydrata/anuga_core.git@remove-gdal"
+          pip install "anuga @ git+https://github.com/Hydrata/anuga_core.git@main"
           pip install matplotlib scipy triangle netCDF4
           pip install pyinstaller
 
@@ -62,7 +62,7 @@ jobs:
         run: |
           pip install --upgrade pip
           pip install ".[sim]"
-          pip install "anuga @ git+https://github.com/Hydrata/anuga_core.git@remove-gdal"
+          pip install "anuga @ git+https://github.com/Hydrata/anuga_core.git@main"
           pip install mpi4py matplotlib scipy triangle netCDF4
           pip install pyinstaller
 

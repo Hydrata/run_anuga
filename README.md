@@ -1,6 +1,11 @@
 # run_anuga
 
+[![CI](https://github.com/Hydrata/run_anuga/actions/workflows/ci.yml/badge.svg)](https://github.com/Hydrata/run_anuga/actions/workflows/ci.yml)
+[![Release](https://github.com/Hydrata/run_anuga/actions/workflows/release.yml/badge.svg)](https://github.com/Hydrata/run_anuga/actions/workflows/release.yml)
+
 Run [ANUGA](https://github.com/anuga-community/anuga_core) flood simulations from Hydrata scenario packages.
+
+**Zero system dependencies** — all Python geo libraries (rasterio, shapely, geopandas) install from binary wheels. No GDAL, PROJ, or GEOS system packages required.
 
 ## Quick Start
 
@@ -25,6 +30,18 @@ run-anuga run examples/australian_floodplain/
 # 5. Post-process SWW to GeoTIFFs
 run-anuga post-process examples/australian_floodplain/
 ```
+
+### Windows (no Python required)
+
+Download the latest `run-anuga-windows-amd64.zip` from [Releases](https://github.com/Hydrata/run_anuga/releases), extract it, and run:
+
+```
+run-anuga.exe validate examples\australian_floodplain\
+run-anuga.exe run examples\australian_floodplain\
+run-anuga.exe post-process examples\australian_floodplain\
+```
+
+A Linux tarball (`run-anuga-linux-amd64.tar.gz`) is also available.
 
 ## System Dependencies
 
