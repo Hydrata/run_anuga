@@ -198,7 +198,7 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
                     inflow_dataframe[polygon_name] = float(data)
                 inflow_function = create_inflow_function(inflow_dataframe, polygon_name)
                 inflow_functions[polygon_name] = inflow_function
-                geometry = inflow_polygon.get('geometry').get('coordinates')
+                geometry = inflow_polygon.get('geometry').get('coordinates')[0]
                 Polygonal_rate_operator(domain, rate=inflow_function, factor=defaults.RAINFALL_FACTOR, polygon=geometry,
                                         default_rate=0.00)
             if len(rainfall_inflow_polygons) >= 1 and len(catchment_polygons) > 0:

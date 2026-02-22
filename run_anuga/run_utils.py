@@ -545,7 +545,7 @@ def create_boundary_polygon_from_boundaries(boundaries_geojson):
         base = centroid[0] - mid_x
         height = centroid[1] - mid_y
         # the angle in polar coordinates will sort our boundary lines into the correct order
-        angle = math.atan(height/base) + correction_for_polar_quadrants(base, height)
+        angle = math.atan2(height, base)
         line_list.append({
             "centroid": centroid,
             "boundary": feature.get('properties').get('boundary'),
@@ -575,7 +575,7 @@ def create_boundary_polygon_from_boundaries(boundaries_geojson):
     for index, point in enumerate(boundary_polygon):
         base = point[0] - mid_x
         height = point[1] - mid_y
-        angle = math.atan(height/base) + correction_for_polar_quadrants(base, height)
+        angle = math.atan2(height, base)
         boundary_polygon_with_angle_data.append({
             "point": point,
             "boundary": lookup_boundary_tag(index, boundary_tags),

@@ -2,6 +2,60 @@
 
 Run [ANUGA](https://github.com/anuga-community/anuga_core) flood simulations from Hydrata scenario packages.
 
+## Quick Start
+
+Run the bundled example (a 200x200m Australian floodplain with uniform rainfall):
+
+```bash
+# 1. Clone and install core package
+git clone https://github.com/Hydrata/run_anuga.git
+cd run_anuga
+pip install .
+
+# 2. Validate the example (no heavy deps needed)
+run-anuga validate examples/australian_floodplain/
+run-anuga info examples/australian_floodplain/
+
+# 3. Install simulation dependencies (see "System Dependencies" below first)
+pip install numpy setuptools
+pip install --no-build-isolation --no-binary GDAL "GDAL==$(gdal-config --version)"
+pip install ".[sim]"
+pip install anuga mpi4py matplotlib scipy triangle netCDF4 pymetis
+
+# 4. Run the simulation
+run-anuga run examples/australian_floodplain/
+
+# 5. Post-process SWW to GeoTIFFs
+run-anuga post-process examples/australian_floodplain/
+```
+
+## System Dependencies
+
+The `[sim]` and `[full]` extras require native C libraries. Install these before `pip install`:
+
+**Debian / Ubuntu:**
+
+```bash
+sudo apt-get install build-essential gfortran \
+    libopenmpi-dev openmpi-bin \
+    gdal-bin libgdal-dev libproj-dev libgeos-dev \
+    libhdf5-dev libnetcdf-dev
+```
+
+**GDAL version pinning:** The GDAL Python bindings must match your system's libgdal version. Install numpy first (GDAL needs it at build time for `gdal_array` support), then build GDAL from source:
+
+```bash
+pip install numpy setuptools
+pip install --no-build-isolation --no-binary GDAL "GDAL==$(gdal-config --version)"
+pip install "run_anuga[sim]"
+```
+
+**ANUGA undeclared dependencies:** The `anuga` package (v3.2) only declares `numpy` in its metadata, but actually requires several additional packages at import time. Install them explicitly:
+
+```bash
+pip install anuga mpi4py matplotlib scipy triangle netCDF4 pymetis
+```
+
 ## Package Format
 
 A scenario package is a directory (or zip) with this layout:
@@ -50,6 +104,9 @@ See `run_anuga/config.py` for the Pydantic model with full validation.
 pip install run_anuga
 
 # With simulation dependencies (GDAL, numpy, shapely, etc.)
+# Requires system deps — see "System Dependencies" above
+pip install numpy setuptools
+pip install --no-build-isolation --no-binary GDAL "GDAL==$(gdal-config --version)"
 pip install "run_anuga[sim]"
 
 # With visualisation (matplotlib, opencv)
@@ -83,7 +140,7 @@ run-anuga run /path/to/package/ --username user@example.com --password secret
 # Run with checkpointing (restart from a previous checkpoint)
 run-anuga run /path/to/package/ --batch-number 2 --checkpoint-time 1800
 
-# Post-process SWW to GeoTIFFs (requires [sim])
+# Post-process SWW to GeoTIFFs (requires [sim] + anuga)
 run-anuga post-process /path/to/package/
 
 # Generate video from result TIFFs (requires [viz])
@@ -137,6 +194,9 @@ pytest tests/ -v --ignore=tests/test_integration.py
 
 # Integration tests (requires ANUGA + MPI)
 pytest tests/test_integration.py -v
+
+# Docker-based README validation (tests install + CLI from scratch)
+bash test-docker/test_readme.sh
 ```
 
 ## License

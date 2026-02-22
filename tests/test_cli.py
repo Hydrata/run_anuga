@@ -73,7 +73,7 @@ class TestRunSubcommandImport:
             text=True,
         )
         assert result.returncode != 0
-        assert 'pip install "run_anuga[sim]"' in result.stderr
+        assert 'pip install "run_anuga[full]"' in result.stderr
 
     def test_post_process_import_error(self):
         result = subprocess.run(

@@ -8,7 +8,7 @@ are not installed, guiding users to the correct pip extra.
 from __future__ import annotations
 
 _EXTRA_MAP = {
-    "anuga": "sim",
+    "anuga": "full",
     "numpy": "sim",
     "pandas": "sim",
     "dill": "sim",
@@ -52,8 +52,21 @@ def import_optional(module_name: str, *, extra: str | None = None):
 
     try:
         return importlib.import_module(module_name)
-    except ImportError:
+    except ImportError as exc:
         top_level = module_name.split(".")[0]
+        # Check if the top-level package is installed but fails to import
+        # (e.g. anuga is installed but missing transitive deps like matplotlib)
+        from importlib.metadata import PackageNotFoundError, distribution
+        try:
+            distribution(top_level)
+        except PackageNotFoundError:
+            pass  # Not installed — fall through to helpful message
+        else:
+            # Package IS installed but import failed — show the real error
+            raise ImportError(
+                f"'{module_name}' is installed but failed to import: {exc}. "
+                f"This is likely a missing transitive dependency of '{top_level}'."
+            ) from exc
         extra = extra or _EXTRA_MAP.get(top_level, "full")
         raise ImportError(
             f"'{module_name}' is required for this operation but not installed. "

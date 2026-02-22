@@ -25,7 +25,7 @@ def test_import_nonexistent_raises():
 
 def test_import_hint_uses_extra_map():
     """The error message should reference the correct pip extra."""
-    with pytest.raises(ImportError, match="sim"):
+    with pytest.raises(ImportError, match="full"):
         import_optional("anuga")
 
 
