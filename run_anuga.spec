@@ -5,11 +5,15 @@ Build with: pyinstaller run_anuga.spec
 Produces: dist/run-anuga/ (--onedir bundle)
 
 The bundle includes rasterio, shapely, geopandas, and all simulation deps.
-ANUGA's C extensions are included via hidden imports.
+ANUGA is collected via collect_all() because meson-python's package structure
+confuses PyInstaller's auto-discovery (it misses pure Python modules, only
+collecting C extensions).
 """
 
 import os
 import sys
+
+from PyInstaller.utils.hooks import collect_all, collect_submodules
 
 # rasterio ships PROJ and GDAL data files that must be bundled
 try:
@@ -29,11 +33,14 @@ try:
 except Exception:
     pyproj_datas = []
 
+# anuga: meson-python built package — must force-collect everything
+anuga_datas, anuga_binaries, anuga_hiddenimports = collect_all('anuga')
+
 a = Analysis(
     ['run_anuga/cli.py'],
     pathex=[],
-    binaries=[],
-    datas=rasterio_datas + pyproj_datas + [('examples', 'examples')],
+    binaries=anuga_binaries,
+    datas=rasterio_datas + pyproj_datas + [('examples', 'examples')] + anuga_datas,
     hiddenimports=[
         # rasterio internals
         'rasterio._shim',
@@ -58,12 +65,6 @@ a = Analysis(
         # shapely
         'shapely',
         'shapely.geometry',
-        # anuga
-        'anuga',
-        'anuga.utilities.plot_utils',
-        'anuga.utilities.spatialInputUtil',
-        'anuga.file_conversion.tif2array',
-        'anuga.file_conversion.tif2point_values',
         # scipy (used by anuga)
         'scipy.spatial',
         'scipy.interpolate',
@@ -73,7 +74,10 @@ a = Analysis(
         # netCDF4
         'netCDF4',
         'cftime',
-    ],
+        # undeclared anuga runtime deps
+        'six',
+        'dill',
+    ] + anuga_hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
