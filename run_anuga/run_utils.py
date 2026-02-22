@@ -190,7 +190,7 @@ def create_mesher_mesh(input_data):
         mesh_size = len(mesh_dict['mesh']['elem'])
         return mesher_mesh_filepath, mesh_size
     # logger = setup_logger(input_data)
-    logger.critical(f"create_mesh running")
+    logger.critical("create_mesh running")
     with rasterio.open(input_data['elevation_filename']) as src:
         elevation_raster_resolution = src.transform.a
     user_resolution = float(input_data.get('resolution'))
@@ -286,8 +286,6 @@ simplify_tol = 10
     mesher_config_filepath = f"{input_data['output_directory']}/mesher_config.py"
     logger.critical(f"{mesher_config_filepath=}")
     max_rmse_tolerance = input_data['scenario_config'].get('max_rmse_tolerance', 1)
-    breaklines_shapefile_path = None
-
     text_blob = f"""mesher_path = '{mesher_bin}'
 dem_filename = '../inputs/{input_data["elevation_filename"].split("/")[-1]}'
 errormetric = 'rmse'
@@ -382,7 +380,7 @@ constraints = {{
             capture_output=True,
             universal_newlines=True
         )
-        logger.critical(f"***mesher_out***")
+        logger.critical("***mesher_out***")
         logger.critical(mesher_out.stdout)
         logger.critical(mesher_out.stderr)
         if mesher_out.returncode != 0:
@@ -405,7 +403,7 @@ def create_anuga_mesh(input_data):
     # interior_holes, hole_tags = make_interior_holes_and_tags(input_data)
     bounding_polygon = input_data['boundary_polygon']
     boundary_tags = input_data['boundary_tags']
-    logger.critical(f"creating anuga_mesh")
+    logger.critical("creating anuga_mesh")
     if input_data.get('structure_filename'):
         burn_structures_into_raster(input_data['structure_filename'], input_data['elevation_filename'], backup=False)
     mesh_geo_reference = Geo_reference(zone=int(input_data['scenario_config'].get('epsg')[-2:]))
@@ -507,7 +505,7 @@ def lookup_boundary_tag(index, boundary_tags):
 def create_boundary_polygon_from_boundaries(boundaries_geojson):
     from shapely.geometry import shape
     if boundaries_geojson.get('crs'):
-        epsg_code = boundaries_geojson.get('crs').get('properties').get('name').split(':')[-1]
+        _epsg_code = boundaries_geojson.get('crs').get('properties').get('name').split(':')[-1]
     else:
         return list(), dict()
     # Create a dict of the available boundary tags
@@ -687,9 +685,9 @@ def post_process_sww(package_dir, run_args=None, output_raster_resolution=None):
         k_nearest_neighbours=defaults.K_NEAREST_NEIGHBOURS,
         creation_options=[]
     )
-    output_directory = input_data['output_directory']
-    run_label = input_data['run_label']
-    initial_time_iso_string = input_data['scenario_config'].get('model_start', "1970-01-01T00:00:00+00:00")
+    _output_directory = input_data['output_directory']
+    _run_label = input_data['run_label']
+    _initial_time_iso_string = input_data['scenario_config'].get('model_start', "1970-01-01T00:00:00+00:00")
     # generate_stac(output_directory, run_label, output_quantities, initial_time_iso_string)
     # for result_type in output_quantities:
         # make_video(output_directory, run_label, result_type)
@@ -878,7 +876,6 @@ def burn_structures_into_raster(structures_filename, raster_filename, backup=Tru
     """Burn structure geometries into a raster file (additive)."""
     rasterio = import_optional("rasterio")
     from rasterio.features import rasterize
-    import numpy as np
 
     if backup:
         shutil.copyfile(raster_filename, f"{raster_filename[:-4]}_original.tif")

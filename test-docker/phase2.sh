@@ -21,10 +21,10 @@ echo "== 2b: pip install run_anuga[sim] (no system GDAL needed) =="
 test_step 2 "pip install run_anuga[sim]" \
     "pip install '/tmp/run_anuga_src[sim]' 2>&1 | tail -10"
 
-# Step 3: pip install anuga from remove-gdal branch + its undeclared deps
-# Use our fork's remove-gdal branch which replaces GDAL with rasterio
-ANUGA_SRC="anuga @ git+https://github.com/Hydrata/anuga_core.git@remove-gdal"
-test_step 3 "pip install anuga (remove-gdal branch) + deps" \
+# Step 3: pip install anuga from main branch + its undeclared deps
+# Use our fork which replaces GDAL with rasterio
+ANUGA_SRC="anuga @ git+https://github.com/Hydrata/anuga_core.git@main"
+test_step 3 "pip install anuga (main branch) + deps" \
     "pip install mpi4py matplotlib pymetis scipy triangle netCDF4 '$ANUGA_SRC' 2>&1 | tail -10"
 
 if [ "$last_rc" -ne 0 ]; then

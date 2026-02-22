@@ -33,7 +33,7 @@ a = Analysis(
     ['run_anuga/cli.py'],
     pathex=[],
     binaries=[],
-    datas=rasterio_datas + pyproj_datas,
+    datas=rasterio_datas + pyproj_datas + [('examples', 'examples')],
     hiddenimports=[
         # rasterio internals
         'rasterio._shim',
