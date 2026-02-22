@@ -32,13 +32,13 @@ jobs:
         with:
           mpi: msmpi
 
-      - name: Download pre-built wheels
+      - name: Download pre-built anuga wheel
         shell: bash
         run: |
           mkdir wheels
           gh release download "$ANUGA_CORE_TAG" \
             --repo Hydrata/anuga_core \
-            --pattern "*-cp312-cp312-win_amd64.whl" \
+            --pattern "anuga-*-cp312-cp312-win_amd64.whl" \
             --dir wheels
           ls -la wheels/
         env:
@@ -100,12 +100,12 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq libopenmpi-dev openmpi-bin
 
-      - name: Download pre-built wheels
+      - name: Download pre-built anuga wheel
         run: |
           mkdir wheels
           gh release download "$ANUGA_CORE_TAG" \
             --repo Hydrata/anuga_core \
-            --pattern "*-cp312-cp312-manylinux*.whl" \
+            --pattern "anuga-*-cp312-cp312-manylinux*.whl" \
             --dir wheels
           ls -la wheels/
         env:
