@@ -54,7 +54,17 @@ jobs:
         shell: bash
 
       - name: Debug anuga location
-        run: python -c "import anuga; import os; print('anuga at:', os.path.dirname(anuga.__file__))"
+        run: |
+          python -c "
+          import traceback, sys
+          try:
+              import anuga
+              import os
+              print('anuga at:', os.path.dirname(anuga.__file__))
+          except Exception:
+              traceback.print_exc()
+              sys.exit(1)
+          "
 
       - name: Build executable
         run: pyinstaller run_anuga.spec
