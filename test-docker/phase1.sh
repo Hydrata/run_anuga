@@ -19,11 +19,11 @@ test_step 2 "run-anuga --help" \
     "run-anuga --help"
 
 # Step 3: run-anuga validate
-test_step 3 "run-anuga validate examples/australian_floodplain/" \
-    "run-anuga validate /app/examples/australian_floodplain/"
+test_step 3 "run-anuga validate examples/small_test/" \
+    "run-anuga validate /app/examples/small_test/scenario.json"
 
 # Step 4: run-anuga info
-test_step 4 "run-anuga info examples/australian_floodplain/" \
-    "run-anuga info /app/examples/australian_floodplain/"
+test_step 4 "run-anuga info examples/small_test/" \
+    "run-anuga info /app/examples/small_test/scenario.json"
 
 print_summary

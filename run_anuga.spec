@@ -2,22 +2,20 @@
 """PyInstaller spec for run-anuga CLI executable.
 
 Build with: pyinstaller run_anuga.spec
-Produces: dist/run-anuga/ (--onedir bundle)
+Produces: dist/run-anuga (single-file executable)
 
 The bundle includes rasterio, shapely, geopandas, and all simulation deps.
-ANUGA is collected via collect_all() because meson-python's package structure
-confuses PyInstaller's auto-discovery (it misses pure Python modules, only
-collecting C extensions).
+ANUGA is collected via importlib path discovery because meson-python's package
+structure confuses PyInstaller's collect_all() on Windows.
 """
 
+import importlib
 import os
 import sys
 
 from PyInstaller.utils.hooks import collect_all, collect_submodules
 
-# rasterio ships PROJ and GDAL data files that must be bundled.
-# Older rasterio had gdal_data()/proj_data() functions; newer versions
-# store data directly in the package directory.
+# --- rasterio PROJ and GDAL data files ---
 rasterio_datas = []
 try:
     import rasterio
@@ -30,7 +28,7 @@ try:
 except Exception:
     pass
 
-# pyproj also ships PROJ data (used as fallback if rasterio's is missing)
+# --- pyproj PROJ data (fallback if rasterio's is missing) ---
 pyproj_datas = []
 try:
     import pyproj
@@ -40,14 +38,54 @@ try:
 except Exception:
     pass
 
-# anuga: meson-python built package — must force-collect everything
-anuga_datas, anuga_binaries, anuga_hiddenimports = collect_all('anuga')
+# --- anuga: meson-python built package ---
+# collect_all('anuga') works on Linux but fails on Windows with
+# "skipping data collection for module 'anuga' as it is not a package."
+# Workaround: locate the package via importlib and use os.walk to include
+# the entire directory, plus collect_submodules for hidden imports.
+anuga_datas = []
+anuga_binaries = []
+anuga_hiddenimports = []
+
+try:
+    anuga_datas, anuga_binaries, anuga_hiddenimports = collect_all('anuga')
+    print(f"collect_all('anuga'): {len(anuga_datas)} datas, "
+          f"{len(anuga_binaries)} binaries, {len(anuga_hiddenimports)} hiddenimports")
+except Exception as e:
+    print(f"collect_all('anuga') failed: {e}")
+
+# If collect_all returned nothing useful, fall back to manual discovery
+if not anuga_datas and not anuga_binaries:
+    print("collect_all('anuga') returned empty — using importlib fallback")
+    try:
+        spec = importlib.util.find_spec('anuga')
+        if spec and spec.origin:
+            anuga_pkg_dir = os.path.dirname(spec.origin)
+            print(f"Found anuga at: {anuga_pkg_dir}")
+            # Walk the entire anuga directory tree and add all files
+            for dirpath, dirnames, filenames in os.walk(anuga_pkg_dir):
+                for fn in filenames:
+                    full = os.path.join(dirpath, fn)
+                    rel = os.path.relpath(full, os.path.dirname(anuga_pkg_dir))
+                    dest_dir = os.path.dirname(rel)
+                    ext = os.path.splitext(fn)[1].lower()
+                    if ext in ('.pyd', '.so', '.dll', '.dylib'):
+                        anuga_binaries.append((full, dest_dir))
+                    else:
+                        anuga_datas.append((full, dest_dir))
+            print(f"Manual collection: {len(anuga_datas)} datas, "
+                  f"{len(anuga_binaries)} binaries")
+        # Hidden imports — collect all submodules
+        anuga_hiddenimports = collect_submodules('anuga')
+        print(f"collect_submodules('anuga'): {len(anuga_hiddenimports)} imports")
+    except Exception as e:
+        print(f"WARNING: Could not locate anuga package: {e}")
 
 a = Analysis(
     ['run_anuga/cli.py'],
     pathex=[],
     binaries=anuga_binaries,
-    datas=rasterio_datas + pyproj_datas + [('examples', 'examples')] + anuga_datas,
+    datas=rasterio_datas + pyproj_datas + anuga_datas,
     hiddenimports=[
         # rasterio internals
         'rasterio._shim',
@@ -101,22 +139,13 @@ pyz = PYZ(a.pure)
 exe = EXE(
     pyz,
     a.scripts,
+    a.binaries,
+    a.datas,
     [],
-    exclude_binaries=True,
     name='run-anuga',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
-    console=True,  # CLI tool, not GUI
-)
-
-coll = COLLECT(
-    exe,
-    a.binaries,
-    a.datas,
-    strip=False,
-    upx=True,
-    upx_exclude=[],
-    name='run-anuga',
+    console=True,
 )

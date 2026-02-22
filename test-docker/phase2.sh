@@ -42,19 +42,19 @@ test_step 5 "Verify no osgeo/GDAL installed" \
 
 # Step 6: run-anuga run
 # Copy example to writable location
-cp -r /app/examples/australian_floodplain /tmp/workdir/australian_floodplain
+cp -r /app/examples/small_test /tmp/workdir/small_test
 
-test_step 6 "run-anuga run examples/australian_floodplain/" \
-    "cd /tmp/workdir && run-anuga run /tmp/workdir/australian_floodplain/"
+test_step 6 "run-anuga run examples/small_test/" \
+    "cd /tmp/workdir && run-anuga run /tmp/workdir/small_test/"
 
 # Step 7: Check output files
 if [ "$last_rc" -eq 0 ]; then
     test_step 7 "Check for output files (.sww, .tif)" \
-        "find /tmp/workdir/australian_floodplain -name '*.sww' -o -name '*.tif' -not -name 'dem.tif'"
+        "find /tmp/workdir/small_test -name '*.sww' -o -name '*.tif' -not -name 'dem.tif'"
 
     echo ""
     echo "== Output directory listing =="
-    find /tmp/workdir/australian_floodplain/outputs_* -type f 2>/dev/null | sort || echo "(no outputs_* directory found)"
+    find /tmp/workdir/small_test/outputs_* -type f 2>/dev/null | sort || echo "(no outputs_* directory found)"
 else
     echo "    Step 7: Check for output files — SKIPPED (run failed)"
 fi

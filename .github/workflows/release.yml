@@ -31,23 +31,26 @@ jobs:
           pip install mpi4py matplotlib scipy triangle netCDF4 six dill pymetis
           pip install pyinstaller
 
+      - name: Debug anuga location
+        run: python -c "import anuga; import os; print('anuga at:', os.path.dirname(anuga.__file__))"
+
       - name: Build executable
         run: pyinstaller run_anuga.spec
 
       - name: Smoke test — validate and info
         run: |
-          dist\run-anuga\run-anuga.exe validate examples\australian_floodplain\scenario.json
-          dist\run-anuga\run-anuga.exe info examples\australian_floodplain\scenario.json
+          dist\run-anuga.exe validate examples\small_test\scenario.json
+          dist\run-anuga.exe info examples\small_test\scenario.json
 
       - name: Smoke test — run simulation
         run: |
-          Copy-Item -Recurse examples\australian_floodplain $env:TEMP\floodplain
-          dist\run-anuga\run-anuga.exe run $env:TEMP\floodplain\scenario.json
+          Copy-Item -Recurse examples\small_test $env:TEMP\small_test
+          dist\run-anuga.exe run $env:TEMP\small_test\scenario.json
         shell: pwsh
 
       - name: Verify output files
         run: |
-          $outputs = "$env:TEMP\floodplain\outputs_1_1_1"
+          $outputs = "$env:TEMP\small_test\outputs_1_1_1"
           if (-not (Test-Path "$outputs\run_1_1_1.sww")) { Write-Error "Missing .sww"; exit 1 }
           if (-not (Test-Path "$outputs\run_1_1_1_depth_max.tif")) { Write-Error "Missing depth_max.tif"; exit 1 }
           if (-not (Test-Path "$outputs\run_1_1_1_velocity_max.tif")) { Write-Error "Missing velocity_max.tif"; exit 1 }
@@ -55,14 +58,10 @@ jobs:
           Get-ChildItem "$outputs\*_max.tif" | ForEach-Object { Write-Host "  $($_.Name) ($($_.Length) bytes)" }
         shell: pwsh
 
-      - name: Package zip
-        run: Compress-Archive -Path dist\run-anuga\* -DestinationPath run-anuga-windows-amd64.zip
-        shell: pwsh
-
       - uses: actions/upload-artifact@v4
         with:
-          name: run-anuga-windows-amd64
-          path: run-anuga-windows-amd64.zip
+          name: run-anuga-windows
+          path: dist/run-anuga.exe
 
   build-linux:
     name: Build Linux executable
@@ -92,42 +91,49 @@ jobs:
 
       - name: Smoke test — validate and info
         run: |
-          dist/run-anuga/run-anuga validate examples/australian_floodplain/scenario.json
-          dist/run-anuga/run-anuga info examples/australian_floodplain/scenario.json
+          dist/run-anuga validate examples/small_test/scenario.json
+          dist/run-anuga info examples/small_test/scenario.json
 
       - name: Smoke test — run simulation
         run: |
-          cp -r examples/australian_floodplain /tmp/floodplain
-          dist/run-anuga/run-anuga run /tmp/floodplain/scenario.json
+          cp -r examples/small_test /tmp/small_test
+          dist/run-anuga run /tmp/small_test/scenario.json
 
       - name: Verify output files
         run: |
-          test -f /tmp/floodplain/outputs_1_1_1/run_1_1_1.sww || { echo "Missing .sww"; exit 1; }
-          test -f /tmp/floodplain/outputs_1_1_1/run_1_1_1_depth_max.tif || { echo "Missing depth_max.tif"; exit 1; }
-          test -f /tmp/floodplain/outputs_1_1_1/run_1_1_1_velocity_max.tif || { echo "Missing velocity_max.tif"; exit 1; }
+          test -f /tmp/small_test/outputs_1_1_1/run_1_1_1.sww || { echo "Missing .sww"; exit 1; }
+          test -f /tmp/small_test/outputs_1_1_1/run_1_1_1_depth_max.tif || { echo "Missing depth_max.tif"; exit 1; }
+          test -f /tmp/small_test/outputs_1_1_1/run_1_1_1_velocity_max.tif || { echo "Missing velocity_max.tif"; exit 1; }
           echo "All expected output files present"
-          ls -la /tmp/floodplain/outputs_1_1_1/*_max.tif
-
-      - name: Package tarball
-        run: tar czf run-anuga-linux-amd64.tar.gz -C dist run-anuga
+          ls -la /tmp/small_test/outputs_1_1_1/*_max.tif
 
       - uses: actions/upload-artifact@v4
         with:
-          name: run-anuga-linux-amd64
-          path: run-anuga-linux-amd64.tar.gz
+          name: run-anuga-linux
+          path: dist/run-anuga
 
   create-release:
     name: Create GitHub Release
     needs: [build-windows, build-linux]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: run-anuga-windows-amd64
+      - uses: actions/checkout@v4
 
       - uses: actions/download-artifact@v4
         with:
-          name: run-anuga-linux-amd64
+          name: run-anuga-windows
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: run-anuga-linux
+
+      - name: Package release assets
+        run: |
+          mv run-anuga.exe run-anuga-windows-amd64.exe
+          mv run-anuga run-anuga-linux-amd64
+          chmod +x run-anuga-linux-amd64
+          zip run-anuga-windows-amd64.zip run-anuga-windows-amd64.exe examples/small_test -r
+          tar czf run-anuga-linux-amd64.tar.gz run-anuga-linux-amd64 examples/small_test
 
       - name: Create release
         uses: softprops/action-gh-release@v2

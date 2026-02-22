@@ -9,7 +9,7 @@ Run [ANUGA](https://github.com/anuga-community/anuga_core) flood simulations fro
 
 ## Quick Start
 
-Run the bundled example (a 200x200m Australian floodplain with uniform rainfall):
+Run the bundled example (a small 200x200m test scenario with uniform rainfall):
 
 ```bash
 # 1. Clone and install core package
@@ -18,17 +18,17 @@ cd run_anuga
 pip install .
 
 # 2. Validate the example (no heavy deps needed)
-run-anuga validate examples/australian_floodplain/
-run-anuga info examples/australian_floodplain/
+run-anuga validate examples/small_test/scenario.json
+run-anuga info examples/small_test/scenario.json
 
 # 3. Install simulation dependencies (see "System Dependencies" below first)
 pip install ".[sim]" anuga mpi4py matplotlib scipy triangle netCDF4 pymetis
 
 # 4. Run the simulation
-run-anuga run examples/australian_floodplain/
+run-anuga run examples/small_test/scenario.json
 
 # 5. Post-process SWW to GeoTIFFs
-run-anuga post-process examples/australian_floodplain/
+run-anuga post-process examples/small_test/scenario.json
 ```
 
 ### Windows (no Python required)
@@ -36,9 +36,9 @@ run-anuga post-process examples/australian_floodplain/
 Download the latest `run-anuga-windows-amd64.zip` from [Releases](https://github.com/Hydrata/run_anuga/releases), extract it, and run:
 
 ```
-run-anuga.exe validate examples\australian_floodplain\
-run-anuga.exe run examples\australian_floodplain\
-run-anuga.exe post-process examples\australian_floodplain\
+run-anuga.exe validate examples\small_test\scenario.json
+run-anuga.exe run examples\small_test\scenario.json
+run-anuga.exe post-process examples\small_test\scenario.json
 ```
 
 A Linux tarball (`run-anuga-linux-amd64.tar.gz`) is also available.

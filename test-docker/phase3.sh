@@ -22,9 +22,9 @@ pip install '/tmp/run_anuga_src[sim]' mpi4py matplotlib pymetis scipy triangle n
 # First, run the simulation to get .sww output
 echo ""
 echo "== Pre-requisite: running simulation to generate .sww =="
-cp -r /app/examples/australian_floodplain /tmp/workdir/australian_floodplain
+cp -r /app/examples/small_test /tmp/workdir/small_test
 
-run-anuga run /tmp/workdir/australian_floodplain/ 2>&1 | tail -10
+run-anuga run /tmp/workdir/small_test/ 2>&1 | tail -10
 rc_run=$?
 
 if [ $rc_run -ne 0 ]; then
@@ -38,18 +38,18 @@ echo ""
 echo "== Post-process tests =="
 
 # Step 1: run-anuga post-process
-test_step 1 "run-anuga post-process examples/australian_floodplain/" \
-    "run-anuga post-process /tmp/workdir/australian_floodplain/"
+test_step 1 "run-anuga post-process examples/small_test/" \
+    "run-anuga post-process /tmp/workdir/small_test/"
 
 # Step 2: Check for GeoTIFF outputs
 if [ "$last_rc" -eq 0 ]; then
     test_step 2 "Check for *_depth_max.tif, *_velocity_max.tif" \
-        "find /tmp/workdir/australian_floodplain -name '*_depth_max.tif' -o -name '*_velocity_max.tif'"
+        "find /tmp/workdir/small_test -name '*_depth_max.tif' -o -name '*_velocity_max.tif'"
 
     # Also list all output files for the report
     echo ""
     echo "== All output files =="
-    find /tmp/workdir/australian_floodplain/outputs_* -type f 2>/dev/null | sort || echo "(no outputs_* directory found)"
+    find /tmp/workdir/small_test/outputs_* -type f 2>/dev/null | sort || echo "(no outputs_* directory found)"
 else
     echo "    Step 2: Check for GeoTIFFs — SKIPPED (post-process failed)"
 fi
