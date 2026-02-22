@@ -15,23 +15,30 @@ import sys
 
 from PyInstaller.utils.hooks import collect_all, collect_submodules
 
-# rasterio ships PROJ and GDAL data files that must be bundled
+# rasterio ships PROJ and GDAL data files that must be bundled.
+# Older rasterio had gdal_data()/proj_data() functions; newer versions
+# store data directly in the package directory.
+rasterio_datas = []
 try:
     import rasterio
-    rasterio_datas = [
-        (rasterio.gdal_data(), 'rasterio/gdal_data'),
-        (rasterio.proj_data(), 'rasterio/proj_data'),
-    ]
+    pkg_dir = os.path.dirname(rasterio.__file__)
+    for subdir, dest in [('gdal_data', 'rasterio/gdal_data'),
+                          ('proj_data', 'rasterio/proj_data')]:
+        data_path = os.path.join(pkg_dir, subdir)
+        if os.path.isdir(data_path):
+            rasterio_datas.append((data_path, dest))
 except Exception:
-    rasterio_datas = []
+    pass
 
-# pyproj also ships PROJ data
+# pyproj also ships PROJ data (used as fallback if rasterio's is missing)
+pyproj_datas = []
 try:
     import pyproj
     pyproj_datadir = pyproj.datadir.get_data_dir()
-    pyproj_datas = [(pyproj_datadir, 'pyproj/proj_dir/share/proj')]
+    if os.path.isdir(pyproj_datadir):
+        pyproj_datas = [(pyproj_datadir, 'pyproj/proj_dir/share/proj')]
 except Exception:
-    pyproj_datas = []
+    pass
 
 # anuga: meson-python built package — must force-collect everything
 anuga_datas, anuga_binaries, anuga_hiddenimports = collect_all('anuga')
