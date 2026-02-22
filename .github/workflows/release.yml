@@ -54,18 +54,7 @@ jobs:
         shell: bash
 
       - name: Debug anuga location
-        shell: bash
-        run: |
-          echo "=== Testing numpy import ==="
-          python -c "import numpy; print('numpy', numpy.__version__)"
-          echo "=== Testing anuga import with faulthandler ==="
-          python -X faulthandler -c "import anuga; import os; print('anuga at:', os.path.dirname(anuga.__file__))" 2>&1 || {
-            echo "=== Import failed, checking anuga install ==="
-            pip show anuga
-            echo "=== Listing anuga .pyd files ==="
-            python -c "import importlib.util, os; s=importlib.util.find_spec('anuga'); print('spec:', s); print('origin:', s.origin if s else 'N/A'); d=os.path.dirname(s.origin) if s and s.origin else ''; [print(f) for f in os.listdir(d)[:20]] if d else print('no dir')"
-            exit 1
-          }
+        run: python -X faulthandler -c "import anuga; import os; print('anuga at:', os.path.dirname(anuga.__file__))"
 
       - name: Build executable
         run: pyinstaller run_anuga.spec
@@ -109,14 +98,25 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq build-essential gfortran libopenmpi-dev openmpi-bin
+          sudo apt-get install -y -qq libopenmpi-dev openmpi-bin
+
+      - name: Download pre-built anuga wheel
+        run: |
+          mkdir wheels
+          gh release download "$ANUGA_CORE_TAG" \
+            --repo Hydrata/anuga_core \
+            --pattern "anuga-*-cp312-cp312-manylinux*.whl" \
+            --dir wheels
+          ls -la wheels/
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install dependencies
         run: |
           pip install --upgrade pip
           pip install ".[sim]"
-          pip install "anuga @ git+https://github.com/Hydrata/anuga_core.git@main"
-          pip install mpi4py matplotlib scipy triangle netCDF4 six dill pymetis
+          pip install wheels/*.whl
+          pip install mpi4py matplotlib scipy triangle netCDF4 six dill
           pip install pyinstaller
 
       - name: Build executable
