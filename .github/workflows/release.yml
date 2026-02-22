@@ -36,10 +36,13 @@ jobs:
         shell: bash
         run: |
           mkdir wheels
-          gh release download "$ANUGA_CORE_TAG" \
-            --repo Hydrata/anuga_core \
-            --pattern "anuga-*-cp312-cp312-win_amd64.whl" \
-            --dir wheels
+          if [ "$ANUGA_CORE_TAG" = "latest" ]; then
+            gh release download --repo Hydrata/anuga_core \
+              --pattern "anuga-*-cp312-cp312-win_amd64.whl" --dir wheels
+          else
+            gh release download "$ANUGA_CORE_TAG" --repo Hydrata/anuga_core \
+              --pattern "anuga-*-cp312-cp312-win_amd64.whl" --dir wheels
+          fi
           ls -la wheels/
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -103,10 +106,13 @@ jobs:
       - name: Download pre-built anuga wheel
         run: |
           mkdir wheels
-          gh release download "$ANUGA_CORE_TAG" \
-            --repo Hydrata/anuga_core \
-            --pattern "anuga-*-cp312-cp312-manylinux*.whl" \
-            --dir wheels
+          if [ "$ANUGA_CORE_TAG" = "latest" ]; then
+            gh release download --repo Hydrata/anuga_core \
+              --pattern "anuga-*-cp312-cp312-manylinux*.whl" --dir wheels
+          else
+            gh release download "$ANUGA_CORE_TAG" --repo Hydrata/anuga_core \
+              --pattern "anuga-*-cp312-cp312-manylinux*.whl" --dir wheels
+          fi
           ls -la wheels/
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
