@@ -46,6 +46,8 @@ jobs:
 
       - name: Install dependencies
         run: |
+          # Remove Strawberry Perl from PATH — its GCC breaks meson-python builds
+          export PATH=$(echo "$PATH" | tr ':' '\n' | grep -v Strawberry | tr '\n' ':')
           pip install --upgrade pip
           pip install ".[sim]"
           pip install wheels/*.whl
