@@ -98,25 +98,14 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq libopenmpi-dev openmpi-bin
-
-      - name: Download pre-built anuga wheel
-        run: |
-          mkdir wheels
-          gh release download "$ANUGA_CORE_TAG" \
-            --repo Hydrata/anuga_core \
-            --pattern "anuga-*-cp312-cp312-manylinux*.whl" \
-            --dir wheels
-          ls -la wheels/
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          sudo apt-get install -y -qq build-essential gfortran libopenmpi-dev openmpi-bin
 
       - name: Install dependencies
         run: |
           pip install --upgrade pip
           pip install ".[sim]"
-          pip install wheels/*.whl
-          pip install mpi4py matplotlib scipy triangle netCDF4 six dill
+          pip install "anuga @ git+https://github.com/Hydrata/anuga_core.git@main"
+          pip install mpi4py matplotlib scipy triangle netCDF4 six dill pymetis
           pip install pyinstaller
 
       - name: Build executable
