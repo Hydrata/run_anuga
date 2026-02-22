@@ -84,7 +84,7 @@ a = Analysis(
     ] + anuga_hiddenimports,
     hookspath=[],
     hooksconfig={},
-    runtime_hooks=[],
+    runtime_hooks=['pyinstaller_hooks/rthook_projdata.py'],
     excludes=[],
     noarchive=False,
 )
