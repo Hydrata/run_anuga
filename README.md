@@ -17,10 +17,7 @@ run-anuga validate examples/australian_floodplain/
 run-anuga info examples/australian_floodplain/
 
 # 3. Install simulation dependencies (see "System Dependencies" below first)
-pip install numpy setuptools
-pip install --no-build-isolation --no-binary GDAL "GDAL==$(gdal-config --version)"
-pip install ".[sim]"
-pip install anuga mpi4py matplotlib scipy triangle netCDF4 pymetis
+pip install ".[sim]" anuga mpi4py matplotlib scipy triangle netCDF4 pymetis
 
 # 4. Run the simulation
 run-anuga run examples/australian_floodplain/
@@ -31,29 +28,22 @@ run-anuga post-process examples/australian_floodplain/
 
 ## System Dependencies
 
-The `[sim]` and `[full]` extras require native C libraries. Install these before `pip install`:
+ANUGA requires MPI for parallel simulations. Install the MPI libraries before `pip install`:
 
 **Debian / Ubuntu:**
 
 ```bash
 sudo apt-get install build-essential gfortran \
     libopenmpi-dev openmpi-bin \
-    gdal-bin libgdal-dev libproj-dev libgeos-dev \
     libhdf5-dev libnetcdf-dev
 ```
 
-**GDAL version pinning:** The GDAL Python bindings must match your system's libgdal version. Install numpy first (GDAL needs it at build time for `gdal_array` support), then build GDAL from source:
-
-```bash
-pip install numpy setuptools
-pip install --no-build-isolation --no-binary GDAL "GDAL==$(gdal-config --version)"
-pip install "run_anuga[sim]"
-```
+All Python dependencies (rasterio, shapely, geopandas, numpy, etc.) install from binary wheels — no system-level geo libraries (GDAL, PROJ, GEOS) are needed.
 
 **ANUGA undeclared dependencies:** The `anuga` package (v3.2) only declares `numpy` in its metadata, but actually requires several additional packages at import time. Install them explicitly:
 
 ```bash
-pip install anuga mpi4py matplotlib scipy triangle netCDF4 pymetis
+pip install "run_anuga[sim]" anuga mpi4py matplotlib scipy triangle netCDF4 pymetis
 ```
 
 ## Package Format
@@ -103,10 +93,7 @@ See `run_anuga/config.py` for the Pydantic model with full validation.
 # Core only — config parsing, validation, CLI (no geo deps)
 pip install run_anuga
 
-# With simulation dependencies (GDAL, numpy, shapely, etc.)
-# Requires system deps — see "System Dependencies" above
-pip install numpy setuptools
-pip install --no-build-isolation --no-binary GDAL "GDAL==$(gdal-config --version)"
+# With simulation dependencies (rasterio, numpy, shapely, geopandas, etc.)
 pip install "run_anuga[sim]"
 
 # With visualisation (matplotlib, opencv)

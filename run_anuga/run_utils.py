@@ -131,9 +131,58 @@ def update_web_interface(run_args, data, files=None):
             logger.error(f"Error updating web interface. HTTP code: {status_code} - {response.text}")
 
 
+def _clip_and_resample(src_path, dst_path, cutline_path, resolution):
+    """Clip raster to cutline shapefile and resample to target resolution.
+
+    Replaces: gdalwarp -cutline ... -crop_to_cutline -of GTiff -r cubic -tr res res
+    """
+    rasterio = import_optional("rasterio")
+    gpd = import_optional("geopandas")
+    from rasterio.warp import reproject, Resampling
+    from rasterio.features import geometry_mask
+    import numpy as np
+
+    polygon = gpd.read_file(cutline_path)
+    bounds = polygon.total_bounds  # [minx, miny, maxx, maxy]
+    width = max(1, int(round((bounds[2] - bounds[0]) / resolution)))
+    height = max(1, int(round((bounds[3] - bounds[1]) / resolution)))
+    dst_transform = rasterio.transform.from_bounds(
+        bounds[0], bounds[1], bounds[2], bounds[3], width, height
+    )
+
+    with rasterio.open(src_path) as src:
+        dst_data = np.empty((height, width), dtype=src.dtypes[0])
+        reproject(
+            source=rasterio.band(src, 1),
+            destination=dst_data,
+            src_transform=src.transform,
+            src_crs=src.crs,
+            dst_transform=dst_transform,
+            dst_crs=src.crs,
+            resampling=Resampling.cubic,
+        )
+        nodata = src.nodata if src.nodata is not None else -9999
+        # Mask pixels outside cutline
+        mask = geometry_mask(polygon.geometry, out_shape=(height, width),
+                             transform=dst_transform, invert=True)
+        dst_data[~mask] = nodata
+
+        profile = src.profile.copy()
+        profile.update({
+            'driver': 'GTiff',
+            'height': height,
+            'width': width,
+            'transform': dst_transform,
+            'nodata': nodata,
+        })
+
+    with rasterio.open(dst_path, 'w', **profile) as dst:
+        dst.write(dst_data, 1)
+
+
 def create_mesher_mesh(input_data):
-    gdal = import_optional("osgeo.gdal")
-    ogr = import_optional("osgeo.ogr")
+    rasterio = import_optional("rasterio")
+    gpd = import_optional("geopandas")
     mesher_mesh_filepath = os.path.join(input_data['output_directory'], f"{input_data['elevation_filename'].split('/')[-1][:-4]}.mesh") or ""
     if os.path.isfile(mesher_mesh_filepath):
         with open(mesher_mesh_filepath, 'r') as mesh_file:
@@ -142,28 +191,11 @@ def create_mesher_mesh(input_data):
         return mesher_mesh_filepath, mesh_size
     # logger = setup_logger(input_data)
     logger.critical(f"create_mesh running")
-    elevation_raster = gdal.Open(input_data['elevation_filename'])
-    ulx, xres, xskew, uly, yskew, yres = elevation_raster.GetGeoTransform()
-    elevation_raster_resolution = xres
-    xmin = ulx
-    xmax = ulx + (elevation_raster.RasterXSize * xres)
-    ymin = uly + (elevation_raster.RasterYSize * yres)  # note yres is negative
-    ymax = uly
+    with rasterio.open(input_data['elevation_filename']) as src:
+        elevation_raster_resolution = src.transform.a
     user_resolution = float(input_data.get('resolution'))
     if input_data.get('structure_filename'):
-        burn_structures_into_raster = subprocess.run([
-            "gdal_rasterize",
-            "-burn", str(defaults.BUILDING_BURN_HEIGHT_M), "-add",
-            input_data['structure_filename'],
-            input_data['elevation_filename']
-        ],
-            capture_output=True,
-            universal_newlines=True
-        )
-        logger.critical(burn_structures_into_raster.stdout)
-        if burn_structures_into_raster.returncode != 0:
-            logger.critical(burn_structures_into_raster.stderr)
-            raise UserWarning(burn_structures_into_raster.stderr)
+        burn_structures_into_raster(input_data['structure_filename'], input_data['elevation_filename'], backup=False)
     mesh_region_shp_files = None
     minimum_triangle_area = max((user_resolution ** 2) / 2, (elevation_raster_resolution ** 2) / 2)
     mesher_bin = os.environ.get('MESHER_EXE', defaults.DEFAULT_MESHER_EXE)
@@ -179,24 +211,13 @@ def create_mesher_mesh(input_data):
             epsg_code = int(input_data.get('mesh_region').get('crs').get('properties').get('name').split(':')[-1])
             make_shp_from_polygon(feature.get('geometry').get('coordinates')[0], epsg_code, shp_boundary_filepath)
             logger.critical(shp_boundary_filepath)
-            mesh_region_clip = subprocess.run([
-                'gdalwarp',
-                f'-cutline', f'{shp_boundary_filepath}',
-                '-crop_to_cutline',
-                '-of', 'GTiff',
-                '-r', 'cubic',
-                '-tr', str(resolution), str(resolution),
-                f'{input_data["elevation_filename"]}',
-                f'{tif_mesh_region_filepath}'
-            ],
-                capture_output=True,
-                universal_newlines=True
+            _clip_and_resample(
+                input_data['elevation_filename'],
+                tif_mesh_region_filepath,
+                shp_boundary_filepath,
+                resolution
             )
-            logger.critical(mesh_region_clip)
-            logger.critical(mesh_region_clip.stdout)
-            if mesh_region_clip.returncode != 0:
-                logger.critical(mesh_region_clip.stderr)
-                raise UserWarning(mesh_region_clip.stderr)
+            logger.critical(f"Clipped and resampled to {tif_mesh_region_filepath}")
             mesh_region_shp_triangles = os.path.join(mesh_region_directory, mesh_region_name, f"{mesh_region_name}_USM.shp")
             mesh_region_shp_extent = os.path.join(mesh_region_directory, mesh_region_name, f"line_{mesh_region_name}.shp")
             mesh_region_shp_files.append({
@@ -304,43 +325,38 @@ simplify_tol = 10
         shutil.copy(f"{base_file_name}.dbf", f"{base_combined_filename}_0.dbf")
         for index, mesh_region in enumerate(mesh_region_shp_files):
             combined_layer_path = f"{base_combined_filename}_{index}.shp"
-            combined_ds = ogr.Open(combined_layer_path, 1)
-            eraser_ds = ogr.Open(mesh_region.get('mesh_region_shp_extent'))
-            combined_layer = combined_ds.GetLayer()
-            eraser_layer = eraser_ds.GetLayer()
+            combined = gpd.read_file(combined_layer_path)
+            eraser = gpd.read_file(mesh_region.get('mesh_region_shp_extent'))
             print(70*'*')
             print(f"resolution: {mesh_region.get('resolution')}")
             print(f"combined_layer_path: {combined_layer_path}")
             print(f"eraser_layer: {mesh_region.get('mesh_region_shp_extent')}")
-            print(f"combined_layer.GetFeatureCount(): {combined_layer.GetFeatureCount()}")
+            print(f"combined_layer feature count: {len(combined)}")
+            print(f"eraser_layer feature count: {len(eraser)}")
 
-            # driver = ogr.GetDriverByName('MEMORY')
-            # new_combined_memory_name = f"{base_combined_filename}_{index + 1}_memory"
-            # new_combined_memory_ds = driver.CreateDataSource(new_combined_memory_name)
-            # srs = eraser_layer.GetSpatialRef()
-            # new_combined_memory_layer = new_combined_memory_ds.CreateLayer('', srs, ogr.wkbPolygon)
+            # Erase eraser extent from combined triangles
+            if len(combined) > 0 and len(eraser) > 0:
+                erased = gpd.overlay(combined, eraser, how='difference')
+            else:
+                erased = combined
 
-            shp_driver = ogr.GetDriverByName('ESRI Shapefile')
-            new_combined_shp_name = f"{base_combined_filename}_{index + 1}.shp"
-            new_combined_shp_ds = shp_driver.CreateDataSource(new_combined_shp_name)
-            srs = combined_layer.GetSpatialRef()
-            new_combined_shp_layer = new_combined_shp_ds.CreateLayer('triangles', srs, ogr.wkbPolygon)
+            print(f"after erase feature count: {len(erased)}")
 
-            print(f"eraser_layer.GetFeatureCount(): {eraser_layer.GetFeatureCount()}")
-            combined_layer.Erase(eraser_layer, new_combined_shp_layer)
-            print(f"combined_layer.GetFeatureCount(): {combined_layer.GetFeatureCount()}")
-            print(f"new_combined_shp_layer.GetFeatureCount(): {new_combined_shp_layer.GetFeatureCount()}")
-            new_triangles_ds = ogr.Open(mesh_region.get('mesh_region_shp_triangles'))
-            new_triangles_layer = new_triangles_ds.GetLayer()
+            # Add new triangles from this mesh region
+            new_triangles = gpd.read_file(mesh_region.get('mesh_region_shp_triangles'))
             print(f"new_triangles_layer: {mesh_region.get('mesh_region_shp_triangles')}")
-            print(f"new_triangles_layer.GetFeatureCount(): {new_triangles_layer.GetFeatureCount()}")
+            print(f"new_triangles feature count: {len(new_triangles)}")
 
-            for triangle in new_triangles_layer:
-                out_feat = ogr.Feature(new_combined_shp_layer.GetLayerDefn())
-                out_feat.SetGeometry(triangle.GetGeometryRef().Clone())
-                new_combined_shp_layer.CreateFeature(out_feat)
-            new_combined_shp_layer.SyncToDisk()
-            print(f"final new_combined_shp_layer.GetFeatureCount(): {new_combined_shp_layer.GetFeatureCount()}")
+            # Combine erased + new triangles (keep only geometry)
+            import pandas as pd
+            final = gpd.GeoDataFrame(
+                pd.concat([erased[['geometry']], new_triangles[['geometry']]], ignore_index=True),
+                crs=combined.crs
+            )
+            new_combined_shp_name = f"{base_combined_filename}_{index + 1}.shp"
+            final.to_file(new_combined_shp_name)
+
+            print(f"final combined feature count: {len(final)}")
             print(70*'*')
 
         text_blob += f"""
@@ -391,19 +407,7 @@ def create_anuga_mesh(input_data):
     boundary_tags = input_data['boundary_tags']
     logger.critical(f"creating anuga_mesh")
     if input_data.get('structure_filename'):
-        burn_structures_into_raster = subprocess.run([
-            "gdal_rasterize",
-            "-burn", str(defaults.BUILDING_BURN_HEIGHT_M), "-add",
-            input_data['structure_filename'],
-            input_data['elevation_filename']
-        ],
-            capture_output=True,
-            universal_newlines=True
-        )
-        logger.critical(burn_structures_into_raster.stdout)
-        if burn_structures_into_raster.returncode != 0:
-            logger.critical(burn_structures_into_raster.stderr)
-            raise UserWarning(burn_structures_into_raster.stderr)
+        burn_structures_into_raster(input_data['structure_filename'], input_data['elevation_filename'], backup=False)
     mesh_geo_reference = Geo_reference(zone=int(input_data['scenario_config'].get('epsg')[-2:]))
     anuga_mesh = anuga.pmesh.mesh_interface.create_mesh_from_regions(
         bounding_polygon=bounding_polygon,
@@ -501,8 +505,7 @@ def lookup_boundary_tag(index, boundary_tags):
 
 
 def create_boundary_polygon_from_boundaries(boundaries_geojson):
-    ogr = import_optional("osgeo.ogr")
-    geometry_collection = ogr.Geometry(ogr.wkbGeometryCollection)
+    from shapely.geometry import shape
     if boundaries_geojson.get('crs'):
         epsg_code = boundaries_geojson.get('crs').get('properties').get('name').split(':')[-1]
     else:
@@ -515,17 +518,12 @@ def create_boundary_polygon_from_boundaries(boundaries_geojson):
         if feature.get('properties').get('location') != "External":
             continue
         boundary_tag_labels[feature.get('properties').get('boundary')] = []
-        geometry = ogr.CreateGeometryFromJson(json.dumps(feature.get('geometry')))
-        geometry_collection.AddGeometry(geometry)
+        geometry = shape(feature.get('geometry'))
         # Collect a list of the coordinates associated with each boundary tag:
         feature_coordinates = feature.get('geometry').get('coordinates')
         for coordinate in feature_coordinates:
             all_x_coordinates.append(coordinate[0])
             all_y_coordinates.append(coordinate[1])
-    srs = ogr.osr.SpatialReference()
-    epsg_integer = int(epsg_code.split(':')[1] if ':' in epsg_code else epsg_code)
-    srs.ImportFromEPSG(epsg_integer)
-
     # Find the center of our project
     max_x = max(all_x_coordinates)
     max_y = max(all_y_coordinates)
@@ -540,8 +538,8 @@ def create_boundary_polygon_from_boundaries(boundaries_geojson):
         if feature.get('properties').get('location') != "External":
             # discard any internal boundaries from the boundary_polygon
             continue
-        geometry = ogr.CreateGeometryFromJson(json.dumps(feature.get('geometry')))
-        centroid = json.loads(geometry.Centroid().ExportToJson()).get('coordinates')
+        geometry = shape(feature.get('geometry'))
+        centroid = [geometry.centroid.x, geometry.centroid.y]
         base = centroid[0] - mid_x
         height = centroid[1] - mid_y
         # the angle in polar coordinates will sort our boundary lines into the correct order
@@ -636,13 +634,9 @@ def create_boundary_polygon_from_boundaries(boundaries_geojson):
 def post_process_sww(package_dir, run_args=None, output_raster_resolution=None):
     anuga = import_optional("anuga")
     util = anuga.utilities.plot_utils
-    gdal = import_optional("osgeo.gdal")
     output_quantities = ['depth', 'velocity', 'depthIntegratedVelocity', 'stage']
     input_data = setup_input_data(package_dir)
     logger.critical(f'Generating output rasters on {anuga.myid}...')
-    raster = gdal.Open(input_data['elevation_filename'])
-    gt = raster.GetGeoTransform()
-    # resolution = 1 if math.floor(gt[1] / 4) == 0 else math.floor(gt[1] / 4)
     resolutions = list()
     if input_data.get('mesh_region'):
         for feature in input_data.get('mesh_region').get('features') or list():
@@ -882,40 +876,51 @@ def setup_logger(input_data, username=None, password=None, batch_number=1):
 
 
 def burn_structures_into_raster(structures_filename, raster_filename, backup=True):
+    """Burn structure geometries into a raster file (additive)."""
+    rasterio = import_optional("rasterio")
+    from rasterio.features import rasterize
+    import numpy as np
+
     if backup:
         shutil.copyfile(raster_filename, f"{raster_filename[:-4]}_original.tif")
-    output = subprocess.run(["gdal_rasterize", "-burn", str(defaults.BUILDING_BURN_HEIGHT_M), "-add", structures_filename, raster_filename], capture_output=True, universal_newlines=True)
-    print(output)
-    if output.returncode != 0:
-        raise RuntimeError(output.stderr)
+
+    with open(structures_filename) as f:
+        structures = json.load(f)
+
+    shapes = []
+    for feature in structures.get('features', []):
+        geom = feature.get('geometry')
+        if geom:
+            shapes.append((geom, defaults.BUILDING_BURN_HEIGHT_M))
+
+    if not shapes:
+        return True
+
+    with rasterio.open(raster_filename, 'r+') as src:
+        existing = src.read(1)
+        burn = rasterize(
+            shapes,
+            out_shape=src.shape,
+            transform=src.transform,
+            fill=0,
+            dtype=existing.dtype
+        )
+        src.write(existing + burn, 1)
+
     return True
 
 
 def make_shp_from_polygon(boundary_polygon, epsg_code, shapefilepath, buffer=0):
-    ogr = import_optional("osgeo.ogr")
-    osr = import_optional("osgeo.osr")
-    boundary_ring_geom = ogr.Geometry(ogr.wkbLinearRing)
-    for point in boundary_polygon:
-        boundary_ring_geom.AddPoint(point[0], point[1])
-    boundary_ring_geom.AddPoint(boundary_polygon[0][0], boundary_polygon[0][1])
-    boundary_polygon_geom = ogr.Geometry(ogr.wkbPolygon)
-    boundary_polygon_geom.AddGeometry(boundary_ring_geom)
-    logger.critical(f"{boundary_polygon_geom=}")
+    gpd = import_optional("geopandas")
+    from shapely.geometry import Polygon
 
-    driver = ogr.GetDriverByName("ESRI Shapefile")
-    ds = driver.CreateDataSource(shapefilepath)
-    srs = osr.SpatialReference()
-    srs.ImportFromEPSG(epsg_code)
-    layer = ds.CreateLayer("mesh_region", srs, ogr.wkbPolygon)
-    id_field = ogr.FieldDefn("id", ogr.OFTInteger)
-    layer.CreateField(id_field)
-    feature_defn = layer.GetLayerDefn()
-    feature = ogr.Feature(feature_defn)
-    feature.SetGeometry(boundary_polygon_geom)
-    feature.SetField("id", 1)
-    layer.CreateFeature(feature)
-    feature = None
-    ds = None
+    poly = Polygon(boundary_polygon)
+    if buffer > 0:
+        poly = poly.buffer(buffer)
+    logger.critical(f"make_shp_from_polygon: {poly}")
+
+    gdf = gpd.GeoDataFrame({'id': [1]}, geometry=[poly], crs=f"EPSG:{epsg_code}")
+    gdf.to_file(shapefilepath)
 
 
 def snap_links_to_nodes(package_dir):

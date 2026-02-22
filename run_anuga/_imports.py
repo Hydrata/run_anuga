@@ -1,7 +1,7 @@
 """
 Lazy import helper for optional dependencies.
 
-Provides clear error messages when heavy dependencies (GDAL, anuga, etc.)
+Provides clear error messages when heavy dependencies (rasterio, anuga, etc.)
 are not installed, guiding users to the correct pip extra.
 """
 
@@ -14,8 +14,8 @@ _EXTRA_MAP = {
     "dill": "sim",
     "psutil": "sim",
     "shapely": "sim",
-    "osgeo": "sim",
     "rasterio": "sim",
+    "geopandas": "sim",
     "cv2": "viz",
     "matplotlib": "viz",
     "requests": "platform",
@@ -33,7 +33,7 @@ def import_optional(module_name: str, *, extra: str | None = None):
     Parameters
     ----------
     module_name : str
-        Dotted module path, e.g. ``"osgeo.ogr"`` or ``"anuga"``.
+        Dotted module path, e.g. ``"rasterio"`` or ``"anuga"``.
     extra : str or None
         pip extra name (e.g. ``"sim"``).  If *None*, looked up from ``_EXTRA_MAP``
         using the top-level package name.

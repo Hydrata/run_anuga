@@ -13,14 +13,11 @@ echo "== Setting up: system deps + run_anuga[sim] + anuga =="
 
 apt-get update -qq && apt-get install -y -qq \
     build-essential gfortran libopenmpi-dev openmpi-bin \
-    gdal-bin libgdal-dev libproj-dev libgeos-dev \
     libhdf5-dev libnetcdf-dev 2>&1 | tail -3
-export GDAL_CONFIG=/usr/bin/gdal-config
-GDAL_VER=$(gdal-config --version)
 
-pip install numpy setuptools 2>&1 | tail -3
-pip install --no-build-isolation --no-binary GDAL "GDAL==$GDAL_VER" 2>&1 | tail -3
-pip install '/tmp/run_anuga_src[sim]' mpi4py matplotlib pymetis scipy triangle netCDF4 anuga 2>&1 | tail -5
+# Install anuga from our remove-gdal branch (replaces GDAL with rasterio)
+ANUGA_SRC="anuga @ git+https://github.com/Hydrata/anuga_core.git@remove-gdal"
+pip install '/tmp/run_anuga_src[sim]' mpi4py matplotlib pymetis scipy triangle netCDF4 "$ANUGA_SRC" 2>&1 | tail -5
 
 # First, run the simulation to get .sww output
 echo ""
