@@ -51,7 +51,7 @@ jobs:
           pip install --upgrade pip
           pip install ".[sim]"
           pip install wheels/*.whl
-          pip install mpi4py matplotlib scipy triangle netCDF4 six dill pymetis
+          pip install mpi4py matplotlib scipy triangle netCDF4 six dill
           pip install pyinstaller
         shell: bash
 
@@ -118,7 +118,7 @@ jobs:
           pip install --upgrade pip
           pip install ".[sim]"
           pip install wheels/*.whl
-          pip install mpi4py matplotlib scipy triangle netCDF4 six dill pymetis
+          pip install mpi4py matplotlib scipy triangle netCDF4 six dill
           pip install pyinstaller
 
       - name: Build executable
