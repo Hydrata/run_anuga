@@ -1,0 +1,104 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    name: Build Windows executable
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install ".[sim]"
+          pip install "anuga @ git+https://github.com/Hydrata/anuga_core.git@main"
+          pip install matplotlib scipy triangle netCDF4
+          pip install pyinstaller
+
+      - name: Build executable
+        run: pyinstaller run_anuga.spec
+
+      - name: Smoke test
+        run: |
+          dist\run-anuga\run-anuga.exe validate examples\australian_floodplain\
+          dist\run-anuga\run-anuga.exe info examples\australian_floodplain\
+
+      - name: Package zip
+        run: Compress-Archive -Path dist\run-anuga\* -DestinationPath run-anuga-windows-amd64.zip
+        shell: pwsh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: run-anuga-windows-amd64
+          path: run-anuga-windows-amd64.zip
+
+  build-linux:
+    name: Build Linux executable
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq build-essential gfortran libopenmpi-dev openmpi-bin libhdf5-dev libnetcdf-dev
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install ".[sim]"
+          pip install "anuga @ git+https://github.com/Hydrata/anuga_core.git@main"
+          pip install mpi4py matplotlib scipy triangle netCDF4
+          pip install pyinstaller
+
+      - name: Build executable
+        run: pyinstaller run_anuga.spec
+
+      - name: Smoke test
+        run: |
+          dist/run-anuga/run-anuga validate examples/australian_floodplain/
+          dist/run-anuga/run-anuga info examples/australian_floodplain/
+
+      - name: Package tarball
+        run: tar czf run-anuga-linux-amd64.tar.gz -C dist run-anuga
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: run-anuga-linux-amd64
+          path: run-anuga-linux-amd64.tar.gz
+
+  create-release:
+    name: Create GitHub Release
+    needs: [build-windows, build-linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: run-anuga-windows-amd64
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: run-anuga-linux-amd64
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            run-anuga-windows-amd64.zip
+            run-anuga-linux-amd64.tar.gz

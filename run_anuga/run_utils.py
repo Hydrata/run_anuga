@@ -1,35 +1,24 @@
-import glob
-import re
-import shutil
-
-import cv2
-import numpy as np
-import rasterio
-from matplotlib import pyplot as plt
-import matplotlib.patheffects as pe
-from urllib.parse import urlparse
-
-import anuga
 import argparse
-import boto3
 import datetime
+import glob
 import json
 import logging
+import logging.handlers
 import math
-import subprocess
 import os
-import requests
-
+import shutil
+import subprocess
+import sys
 from copy import deepcopy
+from dataclasses import dataclass
 from pathlib import Path
-from osgeo import ogr, gdal, osr
-from shapely.geometry import Point, LineString, LinearRing, Polygon
-from shapely.prepared import prep
-from pystac import Item, Asset, Collection, MediaType, Extent, SpatialExtent, TemporalExtent, CatalogType, Catalog, Link
-from pystac.stac_io import DefaultStacIO, StacIO
+from typing import Optional
+from urllib.parse import urlparse
 
-from anuga import Geo_reference
-from anuga.utilities import plot_utils as util
+from run_anuga._imports import import_optional
+from run_anuga import defaults
+from run_anuga.config import ScenarioConfig
+
 try:
     from celery.utils.log import get_task_logger
     logger = get_task_logger(__name__)
@@ -39,37 +28,12 @@ except ImportError:
     settings = dict()
 
 
-class S3StacIO(DefaultStacIO):
-    def __init__(self):
-        self.s3 = boto3.resource(
-            's3',
-            aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
-            aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY
-        )
-        super().__init__()
-
-    def read_text(self, source, *args, **kwargs) -> str:
-        parsed = urlparse(source)
-        if parsed.scheme == "s3":
-            bucket = parsed.netloc
-            key = parsed.path[1:]
-
-            obj = self.s3.Object(bucket, key)
-            return obj.get()["Body"].read().decode("utf-8")
-        else:
-            return super().read_text(source, *args, **kwargs)
-
-    def write_text(self, dest, txt, *args, **kwargs) -> None:
-        parsed = urlparse(dest)
-        if parsed.scheme == "s3":
-            bucket = parsed.netloc
-            key = parsed.path[1:]
-            self.s3.Object(bucket, key).put(Body=txt, ContentEncoding="utf-8")
-        else:
-            super().write_text(dest, txt, *args, **kwargs)
-
-
-StacIO.set_default(S3StacIO)
+@dataclass
+class RunContext:
+    """Typed replacement for the (package_dir, username, password) tuple."""
+    package_dir: str
+    username: Optional[str] = None
+    password: Optional[str] = None
 
 
 def is_dir_check(path):
@@ -79,12 +43,17 @@ def is_dir_check(path):
         raise argparse.ArgumentTypeError(f"readable_dir:{path} is not a valid path")
 
 
-def setup_input_data(package_dir):
+def _load_package_data(package_dir):
+    """Load and validate scenario config + input files. Pure Python, no geo deps."""
     if not os.path.isfile(os.path.join(package_dir, 'scenario.json')):
         raise FileNotFoundError(f'Could not find "scenario.json" in {package_dir}')
 
     input_data = dict()
     input_data['scenario_config'] = json.load(open(os.path.join(package_dir, 'scenario.json')))
+    try:
+        ScenarioConfig.model_validate(input_data['scenario_config'])
+    except Exception as e:
+        logger.warning(f"Scenario validation: {e}")
     project_id = input_data['scenario_config'].get('project')
     scenario_id = input_data['scenario_config'].get('id')
     run_id = input_data['scenario_config'].get('run_id')
@@ -121,6 +90,13 @@ def setup_input_data(package_dir):
     if input_data['scenario_config'].get('resolution'):
         input_data['resolution'] = input_data['scenario_config'].get('resolution')
 
+    return input_data
+
+
+def setup_input_data(package_dir):
+    """Full setup — requires geo deps for boundary processing."""
+    input_data = _load_package_data(package_dir)
+
     if len(input_data['boundary'].get('features')) == 0:
         raise AttributeError('No boundary features found')
     boundary_polygon, boundary_tags = create_boundary_polygon_from_boundaries(
@@ -134,8 +110,9 @@ def setup_input_data(package_dir):
 
 
 def update_web_interface(run_args, data, files=None):
-    package_dir, username, password = run_args
+    package_dir, username, password = run_args.package_dir, run_args.username, run_args.password
     if username and password:
+        requests = import_optional("requests")
         input_data = setup_input_data(package_dir)
         data['project'] = input_data['scenario_config'].get('project')
         data['scenario'] = input_data['scenario_config'].get('id')
@@ -154,7 +131,58 @@ def update_web_interface(run_args, data, files=None):
             logger.error(f"Error updating web interface. HTTP code: {status_code} - {response.text}")
 
 
+def _clip_and_resample(src_path, dst_path, cutline_path, resolution):
+    """Clip raster to cutline shapefile and resample to target resolution.
+
+    Replaces: gdalwarp -cutline ... -crop_to_cutline -of GTiff -r cubic -tr res res
+    """
+    rasterio = import_optional("rasterio")
+    gpd = import_optional("geopandas")
+    from rasterio.warp import reproject, Resampling
+    from rasterio.features import geometry_mask
+    import numpy as np
+
+    polygon = gpd.read_file(cutline_path)
+    bounds = polygon.total_bounds  # [minx, miny, maxx, maxy]
+    width = max(1, int(round((bounds[2] - bounds[0]) / resolution)))
+    height = max(1, int(round((bounds[3] - bounds[1]) / resolution)))
+    dst_transform = rasterio.transform.from_bounds(
+        bounds[0], bounds[1], bounds[2], bounds[3], width, height
+    )
+
+    with rasterio.open(src_path) as src:
+        dst_data = np.empty((height, width), dtype=src.dtypes[0])
+        reproject(
+            source=rasterio.band(src, 1),
+            destination=dst_data,
+            src_transform=src.transform,
+            src_crs=src.crs,
+            dst_transform=dst_transform,
+            dst_crs=src.crs,
+            resampling=Resampling.cubic,
+        )
+        nodata = src.nodata if src.nodata is not None else -9999
+        # Mask pixels outside cutline
+        mask = geometry_mask(polygon.geometry, out_shape=(height, width),
+                             transform=dst_transform, invert=True)
+        dst_data[~mask] = nodata
+
+        profile = src.profile.copy()
+        profile.update({
+            'driver': 'GTiff',
+            'height': height,
+            'width': width,
+            'transform': dst_transform,
+            'nodata': nodata,
+        })
+
+    with rasterio.open(dst_path, 'w', **profile) as dst:
+        dst.write(dst_data, 1)
+
+
 def create_mesher_mesh(input_data):
+    rasterio = import_optional("rasterio")
+    gpd = import_optional("geopandas")
     mesher_mesh_filepath = os.path.join(input_data['output_directory'], f"{input_data['elevation_filename'].split('/')[-1][:-4]}.mesh") or ""
     if os.path.isfile(mesher_mesh_filepath):
         with open(mesher_mesh_filepath, 'r') as mesh_file:
@@ -163,32 +191,14 @@ def create_mesher_mesh(input_data):
         return mesher_mesh_filepath, mesh_size
     # logger = setup_logger(input_data)
     logger.critical(f"create_mesh running")
-    elevation_raster = gdal.Open(input_data['elevation_filename'])
-    ulx, xres, xskew, uly, yskew, yres = elevation_raster.GetGeoTransform()
-    elevation_raster_resolution = xres
-    xmin = ulx
-    xmax = ulx + (elevation_raster.RasterXSize * xres)
-    ymin = uly + (elevation_raster.RasterYSize * yres)  # note yres is negative
-    ymax = uly
+    with rasterio.open(input_data['elevation_filename']) as src:
+        elevation_raster_resolution = src.transform.a
     user_resolution = float(input_data.get('resolution'))
     if input_data.get('structure_filename'):
-        building_height = 5
-        burn_structures_into_raster = subprocess.run([
-            "gdal_rasterize",
-            "-burn", str(building_height), "-add",
-            input_data['structure_filename'],
-            input_data['elevation_filename']
-        ],
-            capture_output=True,
-            universal_newlines=True
-        )
-        logger.critical(burn_structures_into_raster.stdout)
-        if burn_structures_into_raster.returncode != 0:
-            logger.critical(burn_structures_into_raster.stderr)
-            raise UserWarning(burn_structures_into_raster.stderr)
+        burn_structures_into_raster(input_data['structure_filename'], input_data['elevation_filename'], backup=False)
     mesh_region_shp_files = None
     minimum_triangle_area = max((user_resolution ** 2) / 2, (elevation_raster_resolution ** 2) / 2)
-    mesher_bin = os.environ.get('MESHER_EXE', '/opt/venv/hydrata/bin/mesher')
+    mesher_bin = os.environ.get('MESHER_EXE', defaults.DEFAULT_MESHER_EXE)
     if input_data.get('mesh_region_filename'):
         mesh_region_shp_files = list()
         for feature in input_data.get('mesh_region')['features']:
@@ -201,24 +211,13 @@ def create_mesher_mesh(input_data):
             epsg_code = int(input_data.get('mesh_region').get('crs').get('properties').get('name').split(':')[-1])
             make_shp_from_polygon(feature.get('geometry').get('coordinates')[0], epsg_code, shp_boundary_filepath)
             logger.critical(shp_boundary_filepath)
-            mesh_region_clip = subprocess.run([
-                'gdalwarp',
-                f'-cutline', f'{shp_boundary_filepath}',
-                '-crop_to_cutline',
-                '-of', 'GTiff',
-                '-r', 'cubic',
-                '-tr', str(resolution), str(resolution),
-                f'{input_data["elevation_filename"]}',
-                f'{tif_mesh_region_filepath}'
-            ],
-                capture_output=True,
-                universal_newlines=True
+            _clip_and_resample(
+                input_data['elevation_filename'],
+                tif_mesh_region_filepath,
+                shp_boundary_filepath,
+                resolution
             )
-            logger.critical(mesh_region_clip)
-            logger.critical(mesh_region_clip.stdout)
-            if mesh_region_clip.returncode != 0:
-                logger.critical(mesh_region_clip.stderr)
-                raise UserWarning(mesh_region_clip.stderr)
+            logger.critical(f"Clipped and resampled to {tif_mesh_region_filepath}")
             mesh_region_shp_triangles = os.path.join(mesh_region_directory, mesh_region_name, f"{mesh_region_name}_USM.shp")
             mesh_region_shp_extent = os.path.join(mesh_region_directory, mesh_region_name, f"line_{mesh_region_name}.shp")
             mesh_region_shp_files.append({
@@ -250,7 +249,7 @@ simplify_tol = 10
                 logger.critical(config_file.read())
             logger.critical(f"python {mesher_bin}.py {mesher_config_filepath}")
             mesher_out = subprocess.run([
-                '/opt/venv/hydrata/bin/python',
+                sys.executable,
                 f'{mesher_bin}.py',
                 mesher_config_filepath
             ],
@@ -283,7 +282,7 @@ simplify_tol = 10
         #     raise UserWarning(mesh_regions_tif_mask.stderr)
     # the lowest triangle area we can have is 5m2 or the grid resolution squared
 
-    max_area = 10000000
+    max_area = defaults.MAX_TRIANGLE_AREA
     mesher_config_filepath = f"{input_data['output_directory']}/mesher_config.py"
     logger.critical(f"{mesher_config_filepath=}")
     max_rmse_tolerance = input_data['scenario_config'].get('max_rmse_tolerance', 1)
@@ -324,45 +323,40 @@ simplify_tol = 10
         shutil.copy(f"{base_file_name}.shx", f"{base_combined_filename}_0.shx")
         shutil.copy(f"{base_file_name}.prj", f"{base_combined_filename}_0.prj")
         shutil.copy(f"{base_file_name}.dbf", f"{base_combined_filename}_0.dbf")
+        import pandas as pd
         for index, mesh_region in enumerate(mesh_region_shp_files):
             combined_layer_path = f"{base_combined_filename}_{index}.shp"
-            combined_ds = ogr.Open(combined_layer_path, 1)
-            eraser_ds = ogr.Open(mesh_region.get('mesh_region_shp_extent'))
-            combined_layer = combined_ds.GetLayer()
-            eraser_layer = eraser_ds.GetLayer()
+            combined = gpd.read_file(combined_layer_path)
+            eraser = gpd.read_file(mesh_region.get('mesh_region_shp_extent'))
             print(70*'*')
             print(f"resolution: {mesh_region.get('resolution')}")
             print(f"combined_layer_path: {combined_layer_path}")
             print(f"eraser_layer: {mesh_region.get('mesh_region_shp_extent')}")
-            print(f"combined_layer.GetFeatureCount(): {combined_layer.GetFeatureCount()}")
+            print(f"combined_layer feature count: {len(combined)}")
+            print(f"eraser_layer feature count: {len(eraser)}")
 
-            # driver = ogr.GetDriverByName('MEMORY')
-            # new_combined_memory_name = f"{base_combined_filename}_{index + 1}_memory"
-            # new_combined_memory_ds = driver.CreateDataSource(new_combined_memory_name)
-            # srs = eraser_layer.GetSpatialRef()
-            # new_combined_memory_layer = new_combined_memory_ds.CreateLayer('', srs, ogr.wkbPolygon)
+            # Erase eraser extent from combined triangles
+            if len(combined) > 0 and len(eraser) > 0:
+                erased = gpd.overlay(combined, eraser, how='difference')
+            else:
+                erased = combined
 
-            shp_driver = ogr.GetDriverByName('ESRI Shapefile')
-            new_combined_shp_name = f"{base_combined_filename}_{index + 1}.shp"
-            new_combined_shp_ds = shp_driver.CreateDataSource(new_combined_shp_name)
-            srs = combined_layer.GetSpatialRef()
-            new_combined_shp_layer = new_combined_shp_ds.CreateLayer('triangles', srs, ogr.wkbPolygon)
+            print(f"after erase feature count: {len(erased)}")
 
-            print(f"eraser_layer.GetFeatureCount(): {eraser_layer.GetFeatureCount()}")
-            combined_layer.Erase(eraser_layer, new_combined_shp_layer)
-            print(f"combined_layer.GetFeatureCount(): {combined_layer.GetFeatureCount()}")
-            print(f"new_combined_shp_layer.GetFeatureCount(): {new_combined_shp_layer.GetFeatureCount()}")
-            new_triangles_ds = ogr.Open(mesh_region.get('mesh_region_shp_triangles'))
-            new_triangles_layer = new_triangles_ds.GetLayer()
+            # Add new triangles from this mesh region
+            new_triangles = gpd.read_file(mesh_region.get('mesh_region_shp_triangles'))
             print(f"new_triangles_layer: {mesh_region.get('mesh_region_shp_triangles')}")
-            print(f"new_triangles_layer.GetFeatureCount(): {new_triangles_layer.GetFeatureCount()}")
+            print(f"new_triangles feature count: {len(new_triangles)}")
 
-            for triangle in new_triangles_layer:
-                out_feat = ogr.Feature(new_combined_shp_layer.GetLayerDefn())
-                out_feat.SetGeometry(triangle.GetGeometryRef().Clone())
-                new_combined_shp_layer.CreateFeature(out_feat)
-            new_combined_shp_layer.SyncToDisk()
-            print(f"final new_combined_shp_layer.GetFeatureCount(): {new_combined_shp_layer.GetFeatureCount()}")
+            # Combine erased + new triangles (keep only geometry)
+            final = gpd.GeoDataFrame(
+                pd.concat([erased[['geometry']], new_triangles[['geometry']]], ignore_index=True),
+                crs=combined.crs
+            )
+            new_combined_shp_name = f"{base_combined_filename}_{index + 1}.shp"
+            final.to_file(new_combined_shp_name)
+
+            print(f"final combined feature count: {len(final)}")
             print(70*'*')
 
         text_blob += f"""
@@ -381,7 +375,7 @@ constraints = {{
     logger.critical(f"python {mesher_bin}.py {mesher_config_filepath}")
     try:
         mesher_out = subprocess.run([
-            '/opt/venv/hydrata/bin/python',
+            sys.executable,
             f'{mesher_bin}.py',
             mesher_config_filepath
         ],
@@ -403,6 +397,8 @@ constraints = {{
 
 
 def create_anuga_mesh(input_data):
+    anuga = import_optional("anuga")
+    Geo_reference = anuga.Geo_reference
     mesh_filepath = input_data['mesh_filepath']
     triangle_resolution = (input_data['scenario_config'].get('resolution') ** 2) / 2
     interior_regions = make_interior_regions(input_data)
@@ -411,20 +407,7 @@ def create_anuga_mesh(input_data):
     boundary_tags = input_data['boundary_tags']
     logger.critical(f"creating anuga_mesh")
     if input_data.get('structure_filename'):
-        building_height = 5
-        burn_structures_into_raster = subprocess.run([
-            "gdal_rasterize",
-            "-burn", str(building_height), "-add",
-            input_data['structure_filename'],
-            input_data['elevation_filename']
-        ],
-            capture_output=True,
-            universal_newlines=True
-        )
-        logger.critical(burn_structures_into_raster.stdout)
-        if burn_structures_into_raster.returncode != 0:
-            logger.critical(burn_structures_into_raster.stderr)
-            raise UserWarning(burn_structures_into_raster.stderr)
+        burn_structures_into_raster(input_data['structure_filename'], input_data['elevation_filename'], backup=False)
     mesh_geo_reference = Geo_reference(zone=int(input_data['scenario_config'].get('epsg')[-2:]))
     anuga_mesh = anuga.pmesh.mesh_interface.create_mesh_from_regions(
         bounding_polygon=bounding_polygon,
@@ -496,13 +479,13 @@ def make_frictions(input_data):
         for structure in input_data['structure']['features']:
             if structure.get('properties').get('method') == 'Mannings':
                 structure_polygon = structure.get('geometry').get('coordinates')[0]
-                frictions.append((structure_polygon, 10,))  # TODO: maybe make building value customisable
+                frictions.append((structure_polygon, defaults.BUILDING_MANNINGS_N,))
     if input_data.get('friction'):
         for friction in input_data['friction']['features']:
             friction_polygon = friction.get('geometry').get('coordinates')[0]
             friction_value = friction.get('properties').get('mannings')
             frictions.append((friction_polygon, friction_value,))
-    frictions.append(['All', 0.04])  # TODO: make default value customisable
+    frictions.append(['All', defaults.DEFAULT_MANNINGS_N])
     return frictions
 
 
@@ -522,7 +505,7 @@ def lookup_boundary_tag(index, boundary_tags):
 
 
 def create_boundary_polygon_from_boundaries(boundaries_geojson):
-    geometry_collection = ogr.Geometry(ogr.wkbGeometryCollection)
+    from shapely.geometry import shape
     if boundaries_geojson.get('crs'):
         epsg_code = boundaries_geojson.get('crs').get('properties').get('name').split(':')[-1]
     else:
@@ -535,17 +518,11 @@ def create_boundary_polygon_from_boundaries(boundaries_geojson):
         if feature.get('properties').get('location') != "External":
             continue
         boundary_tag_labels[feature.get('properties').get('boundary')] = []
-        geometry = ogr.CreateGeometryFromJson(json.dumps(feature.get('geometry')))
-        geometry_collection.AddGeometry(geometry)
         # Collect a list of the coordinates associated with each boundary tag:
         feature_coordinates = feature.get('geometry').get('coordinates')
         for coordinate in feature_coordinates:
             all_x_coordinates.append(coordinate[0])
             all_y_coordinates.append(coordinate[1])
-    srs = ogr.osr.SpatialReference()
-    epsg_integer = int(epsg_code.split(':')[1] if ':' in epsg_code else epsg_code)
-    srs.ImportFromEPSG(epsg_integer)
-
     # Find the center of our project
     max_x = max(all_x_coordinates)
     max_y = max(all_y_coordinates)
@@ -560,12 +537,12 @@ def create_boundary_polygon_from_boundaries(boundaries_geojson):
         if feature.get('properties').get('location') != "External":
             # discard any internal boundaries from the boundary_polygon
             continue
-        geometry = ogr.CreateGeometryFromJson(json.dumps(feature.get('geometry')))
-        centroid = json.loads(geometry.Centroid().ExportToJson()).get('coordinates')
+        geometry = shape(feature.get('geometry'))
+        centroid = [geometry.centroid.x, geometry.centroid.y]
         base = centroid[0] - mid_x
         height = centroid[1] - mid_y
         # the angle in polar coordinates will sort our boundary lines into the correct order
-        angle = math.atan(height/base) + correction_for_polar_quadrants(base, height)
+        angle = math.atan2(height, base)
         line_list.append({
             "centroid": centroid,
             "boundary": feature.get('properties').get('boundary'),
@@ -595,7 +572,7 @@ def create_boundary_polygon_from_boundaries(boundaries_geojson):
     for index, point in enumerate(boundary_polygon):
         base = point[0] - mid_x
         height = point[1] - mid_y
-        angle = math.atan(height/base) + correction_for_polar_quadrants(base, height)
+        angle = math.atan2(height, base)
         boundary_polygon_with_angle_data.append({
             "point": point,
             "boundary": lookup_boundary_tag(index, boundary_tags),
@@ -654,12 +631,11 @@ def create_boundary_polygon_from_boundaries(boundaries_geojson):
 
 
 def post_process_sww(package_dir, run_args=None, output_raster_resolution=None):
+    anuga = import_optional("anuga")
+    util = anuga.utilities.plot_utils
     output_quantities = ['depth', 'velocity', 'depthIntegratedVelocity', 'stage']
     input_data = setup_input_data(package_dir)
     logger.critical(f'Generating output rasters on {anuga.myid}...')
-    raster = gdal.Open(input_data['elevation_filename'])
-    gt = raster.GetGeoTransform()
-    # resolution = 1 if math.floor(gt[1] / 4) == 0 else math.floor(gt[1] / 4)
     resolutions = list()
     if input_data.get('mesh_region'):
         for feature in input_data.get('mesh_region').get('features') or list():
@@ -685,12 +661,12 @@ def post_process_sww(package_dir, run_args=None, output_raster_resolution=None):
         EPSG_CODE=epsg_integer,
         proj4string=None,
         velocity_extrapolation=True,
-        min_allowed_height=1.0e-05,
+        min_allowed_height=defaults.MIN_ALLOWED_HEIGHT_M,
         output_dir=input_data['output_directory'],
         bounding_polygon=input_data['boundary_polygon'],
         internal_holes=interior_holes,
         verbose=False,
-        k_nearest_neighbours=3,
+        k_nearest_neighbours=defaults.K_NEAREST_NEIGHBOURS,
         creation_options=[]
     )
     util.Make_Geotif(
@@ -703,12 +679,12 @@ def post_process_sww(package_dir, run_args=None, output_raster_resolution=None):
         EPSG_CODE=epsg_integer,
         proj4string=None,
         velocity_extrapolation=True,
-        min_allowed_height=1.0e-05,
+        min_allowed_height=defaults.MIN_ALLOWED_HEIGHT_M,
         output_dir=input_data['output_directory'],
         bounding_polygon=input_data['boundary_polygon'],
         internal_holes=interior_holes,
         verbose=False,
-        k_nearest_neighbours=3,
+        k_nearest_neighbours=defaults.K_NEAREST_NEIGHBOURS,
         creation_options=[]
     )
     output_directory = input_data['output_directory']
@@ -725,6 +701,11 @@ def post_process_sww(package_dir, run_args=None, output_raster_resolution=None):
 
 
 def make_video(input_directory_1, result_type):
+    np = import_optional("numpy")
+    rasterio = import_optional("rasterio")
+    cv2 = import_optional("cv2")
+    plt = import_optional("matplotlib.pyplot")
+    pe = import_optional("matplotlib.patheffects")
     run_label_1 = os.path.basename(input_directory_1).replace('outputs', 'run')
     tif_files = glob.glob(f"{input_directory_1}/{run_label_1}_{result_type}_*.tif")
     tif_files = [tif_file for tif_file in tif_files if "_max" not in tif_file]
@@ -765,6 +746,11 @@ def make_video(input_directory_1, result_type):
 
 
 def make_comparison_video(input_directory_1, input_directory_2, result_type):
+    np = import_optional("numpy")
+    rasterio = import_optional("rasterio")
+    cv2 = import_optional("cv2")
+    plt = import_optional("matplotlib.pyplot")
+    pe = import_optional("matplotlib.patheffects")
     run_label_1 = os.path.basename(input_directory_1).replace('outputs', 'run')
     run_label_2 = os.path.basename(input_directory_2).replace('outputs', 'run')
 
@@ -852,12 +838,17 @@ def make_comparison_video(input_directory_1, input_directory_2, result_type):
 
 
 def setup_logger(input_data, username=None, password=None, batch_number=1):
-    if not username and password:
+    if not username or not password:
         username = os.environ.get('COMPUTE_USERNAME')
         password = os.environ.get('COMPUTE_PASSWORD')
     # Create handlers
     file_handler = logging.FileHandler(os.path.join(input_data['output_directory'], f'run_anuga_{batch_number}.log'))
     file_handler.setLevel(logging.DEBUG)
+
+    # Avoid duplicate handlers when run_sim() is called multiple times
+    for h in logger.handlers[:]:
+        if isinstance(h, logging.FileHandler) or isinstance(h, logging.handlers.HTTPHandler):
+            logger.removeHandler(h)
 
     # Add handlers to the logger
     logger.addHandler(file_handler)
@@ -884,39 +875,51 @@ def setup_logger(input_data, username=None, password=None, batch_number=1):
 
 
 def burn_structures_into_raster(structures_filename, raster_filename, backup=True):
+    """Burn structure geometries into a raster file (additive)."""
+    rasterio = import_optional("rasterio")
+    from rasterio.features import rasterize
+    import numpy as np
+
     if backup:
         shutil.copyfile(raster_filename, f"{raster_filename[:-4]}_original.tif")
-    building_height = 5
-    output = subprocess.run(["gdal_rasterize", "-burn", str(building_height), "-add", structures_filename, raster_filename], capture_output=True, universal_newlines=True)
-    print(output)
-    if output.returncode != 0:
-        raise output.stderr
+
+    with open(structures_filename) as f:
+        structures = json.load(f)
+
+    shapes = []
+    for feature in structures.get('features', []):
+        geom = feature.get('geometry')
+        if geom:
+            shapes.append((geom, defaults.BUILDING_BURN_HEIGHT_M))
+
+    if not shapes:
+        return True
+
+    with rasterio.open(raster_filename, 'r+') as src:
+        existing = src.read(1)
+        burn = rasterize(
+            shapes,
+            out_shape=src.shape,
+            transform=src.transform,
+            fill=0,
+            dtype=existing.dtype
+        )
+        src.write(existing + burn, 1)
+
     return True
 
 
 def make_shp_from_polygon(boundary_polygon, epsg_code, shapefilepath, buffer=0):
-    boundary_ring_geom = ogr.Geometry(ogr.wkbLinearRing)
-    for point in boundary_polygon:
-        boundary_ring_geom.AddPoint(point[0], point[1])
-    boundary_ring_geom.AddPoint(boundary_polygon[0][0], boundary_polygon[0][1])
-    boundary_polygon_geom = ogr.Geometry(ogr.wkbPolygon)
-    boundary_polygon_geom.AddGeometry(boundary_ring_geom)
-    logger.critical(f"{boundary_polygon_geom=}")
+    gpd = import_optional("geopandas")
+    from shapely.geometry import Polygon
 
-    driver = ogr.GetDriverByName("ESRI Shapefile")
-    ds = driver.CreateDataSource(shapefilepath)
-    srs = osr.SpatialReference()
-    srs.ImportFromEPSG(epsg_code)
-    layer = ds.CreateLayer("mesh_region", srs, ogr.wkbPolygon)
-    id_field = ogr.FieldDefn("id", ogr.OFTInteger)
-    layer.CreateField(id_field)
-    feature_defn = layer.GetLayerDefn()
-    feature = ogr.Feature(feature_defn)
-    feature.SetGeometry(boundary_polygon_geom)
-    feature.SetField("id", 1)
-    layer.CreateFeature(feature)
-    feature = None
-    ds = None
+    poly = Polygon(boundary_polygon)
+    if buffer > 0:
+        poly = poly.buffer(buffer)
+    logger.critical(f"make_shp_from_polygon: {poly}")
+
+    gdf = gpd.GeoDataFrame({'id': [1]}, geometry=[poly], crs=f"EPSG:{epsg_code}")
+    gdf.to_file(shapefilepath)
 
 
 def snap_links_to_nodes(package_dir):
@@ -925,6 +928,9 @@ def snap_links_to_nodes(package_dir):
 
 
 def calculate_hydrology(package_dir):
+    shapely_geometry = import_optional("shapely.geometry")
+    Point, Polygon = shapely_geometry.Point, shapely_geometry.Polygon
+    prep = import_optional("shapely.prepared").prep
     input_data = setup_input_data(package_dir)
 
     # prepare Nodes
@@ -1002,6 +1008,8 @@ def add_inflow_to_file(inflow_object, filepath):
 
 
 def check_coordinates_are_in_polygon(coordinates, polygon):
+    shapely_geometry = import_optional("shapely.geometry")
+    Point, Polygon = shapely_geometry.Point, shapely_geometry.Polygon
     shapely_polgyon = Polygon(polygon)
     if isinstance(coordinates[0], float):
         coordinates = [coordinates]
@@ -1012,12 +1020,59 @@ def check_coordinates_are_in_polygon(coordinates, polygon):
     return True
 
 
-def generate_stac(output_directory, run_label, output_quantities, initial_time_iso_string):
-    if isinstance(settings, dict):
-        return
-    if not settings.AWS_ACCESS_KEY_ID or not settings.AWS_SECRET_ACCESS_KEY or not settings.ANUGA_S3_STAC_BUCKET_NAME:
-        return
-    s3_bucket_name = settings.ANUGA_S3_STAC_BUCKET_NAME
+def generate_stac(output_directory, run_label, output_quantities, initial_time_iso_string,
+                  aws_access_key_id=None, aws_secret_access_key=None, s3_bucket_name=None):
+    _explicit_creds = aws_access_key_id is not None
+    # Fall back to Django settings if params not provided
+    if not _explicit_creds:
+        if isinstance(settings, dict):
+            return  # No Django settings and no explicit creds — silently skip
+        aws_access_key_id = getattr(settings, 'AWS_ACCESS_KEY_ID', None)
+        aws_secret_access_key = getattr(settings, 'AWS_SECRET_ACCESS_KEY', None)
+        s3_bucket_name = getattr(settings, 'ANUGA_S3_STAC_BUCKET_NAME', None)
+    if not aws_access_key_id or not aws_secret_access_key or not s3_bucket_name:
+        if not _explicit_creds:
+            return  # Django settings incomplete — silently skip (matches old behavior)
+        raise ValueError("AWS credentials required: pass aws_access_key_id, aws_secret_access_key, and s3_bucket_name")
+
+    boto3 = import_optional("boto3")
+    rasterio = import_optional("rasterio")
+    pystac = import_optional("pystac")
+    Item, Asset, Collection, MediaType = pystac.Item, pystac.Asset, pystac.Collection, pystac.MediaType
+    Extent, SpatialExtent, TemporalExtent = pystac.Extent, pystac.SpatialExtent, pystac.TemporalExtent
+    CatalogType, Catalog = pystac.CatalogType, pystac.Catalog
+    from pystac.stac_io import DefaultStacIO, StacIO
+
+    class S3StacIO(DefaultStacIO):
+        def __init__(self):
+            self.s3 = boto3.resource(
+                's3',
+                aws_access_key_id=aws_access_key_id,
+                aws_secret_access_key=aws_secret_access_key
+            )
+            super().__init__()
+
+        def read_text(self, source, *args, **kwargs) -> str:
+            parsed = urlparse(source)
+            if parsed.scheme == "s3":
+                bucket = parsed.netloc
+                key = parsed.path[1:]
+                obj = self.s3.Object(bucket, key)
+                return obj.get()["Body"].read().decode("utf-8")
+            else:
+                return super().read_text(source, *args, **kwargs)
+
+        def write_text(self, dest, txt, *args, **kwargs) -> None:
+            parsed = urlparse(dest)
+            if parsed.scheme == "s3":
+                bucket = parsed.netloc
+                key = parsed.path[1:]
+                self.s3.Object(bucket, key).put(Body=txt, ContentEncoding="utf-8")
+            else:
+                super().write_text(dest, txt, *args, **kwargs)
+
+    StacIO.set_default(S3StacIO)
+
     s3_catalog_uri = f"s3://{s3_bucket_name}/{run_label}"
     catalog = Catalog(id=run_label, description=f"{run_label} - {initial_time_iso_string}")
     min_left, min_bottom, max_right, max_top = None, None, None, None
@@ -1042,8 +1097,8 @@ def generate_stac(output_directory, run_label, output_quantities, initial_time_i
             item_name = os.path.basename(tif_file).split('.')[0]
             s3_resource = boto3.resource(
                 's3',
-                aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
-                aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY
+                aws_access_key_id=aws_access_key_id,
+                aws_secret_access_key=aws_secret_access_key
             )
             s3_bucket = s3_resource.Bucket(s3_bucket_name)
             key = f"{run_label}/{result_type}/{os.path.basename(tif_file)}"
