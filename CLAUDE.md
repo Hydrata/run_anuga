@@ -43,14 +43,19 @@ ruff check run_anuga/ tests/
 bash test-docker/test_readme.sh
 ```
 
-## Release Process
+## Release Process (Two-Step)
 
-1. Ensure CI green on both `Hydrata/anuga_core` and `Hydrata/run_anuga`
-2. Tag: `git tag v0.x.x -m "message" && git push origin v0.x.x`
-3. Release workflow builds single-file executables for Windows + Linux
-4. Smoke tests run full simulation on both platforms before creating release
-5. Release assets: `run-anuga-windows-amd64.zip` (exe + examples), `run-anuga-linux-amd64.tar.gz`
+### Step 1: Build anuga wheels (in `Hydrata/anuga_core`)
+1. Tag anuga_core: `git tag v3.x.x -m "message" && git push origin v3.x.x`
+2. `build-wheels.yml` builds Linux + Windows wheels (Python 3.12, conda + gcc_win-64)
+3. Creates a GitHub Release with wheels as assets
 
-## Current Blocker
+### Step 2: Build run_anuga executables (in `Hydrata/run_anuga`)
+1. Ensure anuga_core has a release with wheels
+2. Tag run_anuga: `git tag v0.x.x -m "message" && git push origin v0.x.x`
+3. `release.yml` downloads pre-built wheels from anuga_core's latest release
+4. Builds single-file executables for Windows + Linux
+5. Smoke tests run full simulation on both platforms
+6. Creates release with assets: `run-anuga-windows-amd64.zip`, `run-anuga-linux-amd64.tar.gz`
 
-Windows build fails because anuga (meson-python with Fortran extensions) won't compile on Windows CI. See `notes/v0.1.0-release-status.md` for details and options.
+To target a specific anuga_core release: trigger `release.yml` via `workflow_dispatch` with `anuga_core_tag` input.

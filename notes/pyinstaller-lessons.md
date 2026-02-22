@@ -49,3 +49,5 @@ All must be in `hiddenimports` in the spec AND explicitly `pip install`ed in CI.
 ## Building anuga on Windows
 
 anuga uses meson-python with C and Fortran extensions. On Linux, `apt-get install build-essential gfortran` provides everything. On Windows, this is much harder — needs MSVC or MinGW plus gfortran. The `windows-latest` GitHub runner doesn't have gfortran by default.
+
+**Resolution:** Don't compile on Windows CI at all. anuga_core's `build-wheels.yml` builds Windows wheels using conda + `gcc_win-64` (the same toolchain their PyPI workflow uses). run_anuga downloads the pre-built wheel via `gh release download`. See `notes/upstream-wheel-workflow.md`.
