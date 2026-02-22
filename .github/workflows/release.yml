@@ -18,6 +18,11 @@ jobs:
         with:
           python-version: '3.12'
 
+      - name: Install Microsoft MPI
+        uses: mpi4py/setup-mpi@v1
+        with:
+          mpi: msmpi
+
       - name: Install dependencies
         run: |
           pip install --upgrade pip
@@ -29,10 +34,26 @@ jobs:
       - name: Build executable
         run: pyinstaller run_anuga.spec
 
-      - name: Smoke test
+      - name: Smoke test — validate and info
         run: |
-          dist\run-anuga\run-anuga.exe validate examples\australian_floodplain\
-          dist\run-anuga\run-anuga.exe info examples\australian_floodplain\
+          dist\run-anuga\run-anuga.exe validate examples\australian_floodplain\scenario.json
+          dist\run-anuga\run-anuga.exe info examples\australian_floodplain\scenario.json
+
+      - name: Smoke test — run simulation
+        run: |
+          Copy-Item -Recurse examples\australian_floodplain $env:TEMP\floodplain
+          dist\run-anuga\run-anuga.exe run $env:TEMP\floodplain\scenario.json
+        shell: pwsh
+
+      - name: Verify output files
+        run: |
+          $outputs = "$env:TEMP\floodplain\outputs_1_1_1"
+          if (-not (Test-Path "$outputs\run_1_1_1.sww")) { Write-Error "Missing .sww"; exit 1 }
+          if (-not (Test-Path "$outputs\run_1_1_1_depth_max.tif")) { Write-Error "Missing depth_max.tif"; exit 1 }
+          if (-not (Test-Path "$outputs\run_1_1_1_velocity_max.tif")) { Write-Error "Missing velocity_max.tif"; exit 1 }
+          Write-Host "All expected output files present"
+          Get-ChildItem "$outputs\*_max.tif" | ForEach-Object { Write-Host "  $($_.Name) ($($_.Length) bytes)" }
+        shell: pwsh
 
       - name: Package zip
         run: Compress-Archive -Path dist\run-anuga\* -DestinationPath run-anuga-windows-amd64.zip
@@ -69,10 +90,23 @@ jobs:
       - name: Build executable
         run: pyinstaller run_anuga.spec
 
-      - name: Smoke test
+      - name: Smoke test — validate and info
         run: |
-          dist/run-anuga/run-anuga validate examples/australian_floodplain/
-          dist/run-anuga/run-anuga info examples/australian_floodplain/
+          dist/run-anuga/run-anuga validate examples/australian_floodplain/scenario.json
+          dist/run-anuga/run-anuga info examples/australian_floodplain/scenario.json
+
+      - name: Smoke test — run simulation
+        run: |
+          cp -r examples/australian_floodplain /tmp/floodplain
+          dist/run-anuga/run-anuga run /tmp/floodplain/scenario.json
+
+      - name: Verify output files
+        run: |
+          test -f /tmp/floodplain/outputs_1_1_1/run_1_1_1.sww || { echo "Missing .sww"; exit 1; }
+          test -f /tmp/floodplain/outputs_1_1_1/run_1_1_1_depth_max.tif || { echo "Missing depth_max.tif"; exit 1; }
+          test -f /tmp/floodplain/outputs_1_1_1/run_1_1_1_velocity_max.tif || { echo "Missing velocity_max.tif"; exit 1; }
+          echo "All expected output files present"
+          ls -la /tmp/floodplain/outputs_1_1_1/*_max.tif
 
       - name: Package tarball
         run: tar czf run-anuga-linux-amd64.tar.gz -C dist run-anuga

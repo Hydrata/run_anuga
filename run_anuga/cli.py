@@ -4,6 +4,20 @@ import os
 import sys
 
 
+def resolve_package_dir(path):
+    """Accept either a directory or a path to scenario.json, return the directory."""
+    path = os.path.abspath(path)
+    if os.path.isfile(path):
+        if os.path.basename(path) == "scenario.json":
+            return os.path.dirname(path)
+        raise argparse.ArgumentTypeError(
+            f"Expected scenario.json or a directory containing it, got: {path}"
+        )
+    if os.path.isdir(path):
+        return path
+    raise argparse.ArgumentTypeError(f"Path does not exist: {path}")
+
+
 def cmd_validate(args):
     """Validate a scenario package (core only, no heavy deps)."""
     from run_anuga.config import ScenarioConfig
@@ -110,7 +124,8 @@ def main():
     # --- run ---
     run_parser = subparsers.add_parser("run", help="Run an ANUGA flood simulation")
     run_parser.add_argument(
-        "package_dir", help="Path to scenario package directory"
+        "package_dir", type=resolve_package_dir,
+        help="Path to scenario.json or directory containing it",
     )
     run_parser.add_argument("--username", "-u", help="Hydrata username")
     run_parser.add_argument("--password", "-p", help="Hydrata password")
@@ -126,13 +141,15 @@ def main():
         "validate", help="Validate a scenario package"
     )
     val_parser.add_argument(
-        "package_dir", help="Path to scenario package directory"
+        "package_dir", type=resolve_package_dir,
+        help="Path to scenario.json or directory containing it",
     )
 
     # --- info ---
     info_parser = subparsers.add_parser("info", help="Show package summary")
     info_parser.add_argument(
-        "package_dir", help="Path to scenario package directory"
+        "package_dir", type=resolve_package_dir,
+        help="Path to scenario.json or directory containing it",
     )
 
     # --- post-process ---
@@ -140,7 +157,8 @@ def main():
         "post-process", help="Generate GeoTIFFs from SWW"
     )
     pp_parser.add_argument(
-        "package_dir", help="Path to scenario package directory"
+        "package_dir", type=resolve_package_dir,
+        help="Path to scenario.json or directory containing it",
     )
     pp_parser.add_argument(
         "--resolution", "-r", type=float, default=None
