@@ -323,6 +323,7 @@ simplify_tol = 10
         shutil.copy(f"{base_file_name}.shx", f"{base_combined_filename}_0.shx")
         shutil.copy(f"{base_file_name}.prj", f"{base_combined_filename}_0.prj")
         shutil.copy(f"{base_file_name}.dbf", f"{base_combined_filename}_0.dbf")
+        import pandas as pd
         for index, mesh_region in enumerate(mesh_region_shp_files):
             combined_layer_path = f"{base_combined_filename}_{index}.shp"
             combined = gpd.read_file(combined_layer_path)
@@ -348,7 +349,6 @@ simplify_tol = 10
             print(f"new_triangles feature count: {len(new_triangles)}")
 
             # Combine erased + new triangles (keep only geometry)
-            import pandas as pd
             final = gpd.GeoDataFrame(
                 pd.concat([erased[['geometry']], new_triangles[['geometry']]], ignore_index=True),
                 crs=combined.crs
@@ -518,7 +518,6 @@ def create_boundary_polygon_from_boundaries(boundaries_geojson):
         if feature.get('properties').get('location') != "External":
             continue
         boundary_tag_labels[feature.get('properties').get('boundary')] = []
-        geometry = shape(feature.get('geometry'))
         # Collect a list of the coordinates associated with each boundary tag:
         feature_coordinates = feature.get('geometry').get('coordinates')
         for coordinate in feature_coordinates:

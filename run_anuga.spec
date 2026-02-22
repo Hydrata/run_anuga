@@ -46,12 +46,15 @@ a = Analysis(
         'rasterio.warp',
         'rasterio.mask',
         'rasterio.transform',
+        'rasterio.enums',
         # fiona (used by geopandas)
         'fiona',
         'fiona.schema',
-        # geopandas
+        # geopandas + pandas
         'geopandas',
+        'pandas',
         'pyogrio',
+        'pyproj',
         # shapely
         'shapely',
         'shapely.geometry',
