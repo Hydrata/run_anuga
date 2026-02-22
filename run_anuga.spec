@@ -122,6 +122,7 @@ a = Analysis(
         # undeclared anuga runtime deps
         'six',
         'dill',
+        'pymetis',
         'mpi4py',
         'triangle',
         'matplotlib',
