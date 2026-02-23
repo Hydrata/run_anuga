@@ -264,9 +264,10 @@ subfolder alongside the JSON file.
 
 ### Inflow types
 
-| Type | `"data"` field | Effect |
-|------|---------------|--------|
-| `Rainfall` | Rate in mm/hr (as string) | Uniform rainfall applied over the polygon area for full duration |
+| Type | Geometry | `"data"` field | Effect |
+|------|----------|---------------|--------|
+| `Rainfall` | Polygon | Rate in mm/hr (string), or list of `{"timestamp", "value"}` | Areal rainfall over the polygon. Constant if scalar, time-varying if list. |
+| `Surface` | LineString | Flow rate (string), or list of `{"timestamp", "value"}` | Hydrograph inflow along a line (via ANUGA `Inlet_operator`). |
 
 ## 7. Current Limitations
 
@@ -275,14 +276,14 @@ that matter for production design work.
 
 ### Hydrology & loading
 
-- **No time-varying rainfall** — only constant-rate. No IFD hyetographs or temporal patterns.
-- **No hydrograph inflows** — can't apply a Q(t) at a boundary or point source.
-- **No time-varying boundary levels** — Dirichlet boundaries are fixed at 0 m. No tidal curves.
+- **Time-varying rainfall is supported** — pass `"data"` as a list of `{"timestamp", "value"}` objects in `inflow.geojson` instead of a scalar. IFD hyetographs can be expressed this way but require manual conversion to the list format. The test model only demonstrates constant-rate rainfall.
+- **Hydrograph inflows are supported** — use LineString features with `"type": "Surface"` in `inflow.geojson`. Time-varying Q(t) uses the same `{"timestamp", "value"}` list format. Not yet documented or demonstrated in the test model.
+- **No time-varying boundary levels** — Dirichlet boundaries are hardcoded to 0 m stage. No tidal curves or time-dependent water levels at boundaries.
 
 ### Domain & hydraulics
 
-- **No culverts, bridges or weirs** — ANUGA supports these but they're not yet exposed in the scenario format.
-- **Friction zones not tested** — the `friction` field exists in the schema but hasn't been validated. Everything currently gets n=0.04.
+- **No culverts, bridges or weirs** — ANUGA supports these natively but they're not yet exposed in the scenario format.
+- **Friction zones are implemented** — the `friction` GeoJSON is read and applied via a `mannings` property per polygon feature. Default is n=0.04 where no friction zone is defined. Functional but not yet documented or demonstrated in the test model.
 - **Buildings are crude** — footprints are raised 5 m in the DEM (effectively solid blocks). No flow-through or variable resistance.
 - **No GUI** — scenario packages must be assembled manually (JSON + GeoJSON files).
 
@@ -294,8 +295,8 @@ that matter for production design work.
 
 ### Performance
 
-- **Single-threaded only** — no parallel execution. ANUGA supports MPI but the Windows exe can't use it.
-- **No progress indicator** — ANUGA prints timestep output but no percentage or ETA.
+- **MPI parallel execution supported on Linux** — the code uses ANUGA's `distribute()` for domain decomposition. The Windows exe bundles mpi4py but requires a separate MPI runtime (MS-MPI) to be installed, which is rarely practical.
+- **Progress is reported** as percentage complete, elapsed time, and memory usage at each timestep. No ETA calculation.
 
 ## 8. Feedback
 

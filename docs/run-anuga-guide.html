@@ -550,15 +550,15 @@ that matter for production design work.</p>
 
 <h3>Hydrology &amp; loading</h3>
 <ul>
-  <li><strong>No time-varying rainfall</strong> &mdash; only constant-rate. No IFD hyetographs or temporal patterns.</li>
-  <li><strong>No hydrograph inflows</strong> &mdash; can't apply a Q(t) at a boundary or point source.</li>
-  <li><strong>No time-varying boundary levels</strong> &mdash; Dirichlet boundaries are fixed at 0 m. No tidal curves.</li>
+  <li><strong>Time-varying rainfall is supported</strong> &mdash; pass <code>"data"</code> as a list of <code>{"timestamp", "value"}</code> objects instead of a scalar. IFD hyetographs can be expressed this way but require manual conversion. The test model only demonstrates constant-rate.</li>
+  <li><strong>Hydrograph inflows are supported</strong> &mdash; use LineString features with <code>"type": "Surface"</code> in <code>inflow.geojson</code>. Time-varying Q(t) uses the same list format. Not yet documented or demonstrated.</li>
+  <li><strong>No time-varying boundary levels</strong> &mdash; Dirichlet boundaries are hardcoded to 0 m stage. No tidal curves or time-dependent water levels at boundaries.</li>
 </ul>
 
 <h3>Domain &amp; hydraulics</h3>
 <ul>
-  <li><strong>No culverts, bridges or weirs</strong> &mdash; ANUGA supports these but they're not yet exposed in the scenario format.</li>
-  <li><strong>Friction zones not tested</strong> &mdash; the <code>friction</code> field exists in the schema but hasn't been validated. Everything currently gets n=0.04.</li>
+  <li><strong>No culverts, bridges or weirs</strong> &mdash; ANUGA supports these natively but they're not yet exposed in the scenario format.</li>
+  <li><strong>Friction zones are implemented</strong> &mdash; the <code>friction</code> GeoJSON is read and applied via a <code>mannings</code> property per polygon. Default n=0.04 where no zone is defined. Functional but not yet documented or demonstrated.</li>
   <li><strong>Buildings are crude</strong> &mdash; footprints are raised 5 m in the DEM (effectively solid blocks). No flow-through or variable resistance.</li>
   <li><strong>No GUI</strong> &mdash; scenario packages must be assembled manually (JSON + GeoJSON files).</li>
 </ul>
@@ -572,8 +572,8 @@ that matter for production design work.</p>
 
 <h3>Performance</h3>
 <ul>
-  <li><strong>Single-threaded only</strong> &mdash; no parallel execution. ANUGA supports MPI but the Windows exe can't use it.</li>
-  <li><strong>No progress indicator</strong> &mdash; ANUGA prints timestep output but no percentage or ETA.</li>
+  <li><strong>MPI parallel execution supported on Linux</strong> &mdash; the code uses ANUGA's <code>distribute()</code> for domain decomposition. Windows exe bundles mpi4py but requires a separate MPI runtime (MS-MPI), which is rarely practical.</li>
+  <li><strong>Progress is reported</strong> as percentage complete, elapsed time, and memory usage at each timestep. No ETA calculation.</li>
 </ul>
 
 <!-- ============================================================ -->
