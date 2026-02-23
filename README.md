@@ -350,6 +350,35 @@ Send feedback to [david.kennewell@hydrata.com](mailto:david.kennewell@hydrata.co
 
 The sections below are for developers working with run_anuga as a Python package.
 
+### Running from Source
+
+If you want to modify the code or run without building an executable:
+
+```bash
+# 1. Clone the repo
+git clone https://github.com/Hydrata/run_anuga.git
+cd run_anuga
+
+# 2. Install system dependencies (Ubuntu/Debian)
+sudo apt-get install build-essential gfortran \
+    libopenmpi-dev openmpi-bin \
+    libhdf5-dev libnetcdf-dev
+
+# 3. Install run_anuga and simulation dependencies
+pip install -e ".[sim,dev]"
+
+# 4. Install ANUGA and its undeclared runtime dependencies
+pip install anuga mpi4py matplotlib scipy triangle netCDF4 pymetis
+
+# 5. Run the test scenario
+run-anuga validate examples/small_test/scenario.json
+run-anuga run examples/small_test/scenario.json
+```
+
+> **ANUGA source:** If you also need to modify ANUGA itself, clone
+> [anuga_core](https://github.com/anuga-community/anuga_core) separately and
+> `pip install -e .` from that directory instead of the PyPI package.
+
 ### Installation
 
 ```bash
