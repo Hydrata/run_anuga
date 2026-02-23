@@ -67,18 +67,18 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
             pickle_name = (os.path.join(checkpoint_directory, sub_domain_name) + "_" + str(checkpoint_time) + ".pickle")
             try:
                 domain = pickle.load(open(pickle_name, "rb"))
-                logger.info(f"{pickle_name=}")
+                logger.debug(f"{pickle_name=}")
                 success = True
             except Exception:
                 success = False
             for attempt in range(5):
-                logger.info(f"overall attempt: {attempt}")
+                logger.debug(f"overall attempt: {attempt}")
                 overall = success
                 for cpu in range(anuga.numprocs):
                     if cpu != anuga.myid:
                         anuga.send(success, cpu)
                         if attempt > 1:
-                            logger.info(f"cpu sent: {cpu}, {success}")
+                            logger.debug(f"cpu sent: {cpu}, {success}")
                 for cpu in range(anuga.numprocs):
                     if cpu != anuga.myid:
                         result = anuga.receive(cpu)
@@ -88,9 +88,9 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
                             buffer = result
                             rs = None  # Or some other default value, as per your requirement
                         if attempt > 1:
-                            logger.info(f"cpu receive: {cpu}: {buffer}, {rs}, attempt: {attempt}")
+                            logger.debug(f"cpu receive: {cpu}: {buffer}, {rs}, attempt: {attempt}")
                         overall = overall & buffer
-                logger.info(f"{overall=}")
+                logger.debug(f"{overall=}")
                 time.sleep(10)
                 if overall:
                     break
@@ -268,7 +268,6 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
                 memory_usage = psutil.virtual_memory().used
                 memory_usage_logs.append(memory_usage)
                 logger.info(f'{percentage_done}% | {minutes}m {seconds}s | mem: {memory_percent}% | disk: {psutil.disk_usage("/").percent}% | {domain.get_datetime().isoformat()}')
-                domain.write_time()
                 start = time.time()
         barrier()
         domain.sww_merge(verbose=True, delete_old=True)
@@ -278,6 +277,16 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
             callback.on_metric('memory_used', max_memory_usage)
             logger.info("Processing results...")
             post_process_sww(package_dir, run_args=run_args)
+
+            # Log output file paths
+            sww_path = os.path.join(input_data['output_directory'], f"{input_data['run_label']}.sww")
+            if os.path.isfile(sww_path):
+                sww_size_mb = os.path.getsize(sww_path) / (1024 * 1024)
+                logger.info(f"SWW output: {sww_path} ({sww_size_mb:.1f} MB)")
+            tif_files = [f for f in os.listdir(input_data['output_directory']) if f.endswith('.tif')]
+            logger.info(f"Output directory: {input_data['output_directory']} ({len(tif_files)} .tif files)")
+            log_path = os.path.join(input_data['output_directory'], f"run_anuga_{batch_number}.log")
+            logger.info(f"Log file: {log_path}")
         logger.info(f"finished run: {input_data['run_label']}")
     except Exception:
         callback.on_status('error')
@@ -304,7 +313,7 @@ def main():
     if not package_dir:
         package_dir = os.path.join(os.path.dirname(__file__), '..')
     try:
-        _module_logger.info(f"run.py main() running {batch_number=}")
+        _module_logger.debug(f"run.py main() running {batch_number=}")
         run_sim(package_dir, username, password, batch_number, checkpoint_time)
     except Exception as e:
         run_args = RunContext(package_dir, username, password)

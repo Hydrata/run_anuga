@@ -190,7 +190,7 @@ def create_mesher_mesh(input_data):
         mesh_size = len(mesh_dict['mesh']['elem'])
         return mesher_mesh_filepath, mesh_size
     # logger = setup_logger(input_data)
-    logger.critical("create_mesh running")
+    logger.info("create_mesh running")
     with rasterio.open(input_data['elevation_filename']) as src:
         elevation_raster_resolution = src.transform.a
     user_resolution = float(input_data.get('resolution'))
@@ -210,14 +210,14 @@ def create_mesher_mesh(input_data):
             tif_mesh_region_filepath = os.path.join(mesh_region_directory, f"{mesh_region_name}.tif")
             epsg_code = int(input_data.get('mesh_region').get('crs').get('properties').get('name').split(':')[-1])
             make_shp_from_polygon(feature.get('geometry').get('coordinates')[0], epsg_code, shp_boundary_filepath)
-            logger.critical(shp_boundary_filepath)
+            logger.debug(shp_boundary_filepath)
             _clip_and_resample(
                 input_data['elevation_filename'],
                 tif_mesh_region_filepath,
                 shp_boundary_filepath,
                 resolution
             )
-            logger.critical(f"Clipped and resampled to {tif_mesh_region_filepath}")
+            logger.debug(f"Clipped and resampled to {tif_mesh_region_filepath}")
             mesh_region_shp_triangles = os.path.join(mesh_region_directory, mesh_region_name, f"{mesh_region_name}_USM.shp")
             mesh_region_shp_extent = os.path.join(mesh_region_directory, mesh_region_name, f"line_{mesh_region_name}.shp")
             mesh_region_shp_files.append({
@@ -244,10 +244,10 @@ simplify_tol = 10
             mesher_config_filepath = f"{mesh_region_directory}/mesher_config.py"
             with open(mesher_config_filepath, "w+") as mesher_config:
                 mesher_config.write(text_blob)
-            logger.critical(f"{mesher_config_filepath=}")
+            logger.debug(f"{mesher_config_filepath=}")
             with open(mesher_config_filepath, "r") as config_file:
-                logger.critical(config_file.read())
-            logger.critical(f"python {mesher_bin}.py {mesher_config_filepath}")
+                logger.debug(config_file.read())
+            logger.debug(f"python {mesher_bin}.py {mesher_config_filepath}")
             mesher_out = subprocess.run([
                 sys.executable,
                 f'{mesher_bin}.py',
@@ -256,9 +256,9 @@ simplify_tol = 10
                 capture_output=True,
                 universal_newlines=True
             )
-            logger.critical(f"***{tif_mesh_region_filepath} mesher_out***")
-            logger.critical(mesher_out.stdout)
-            logger.critical(mesher_out.stderr)
+            logger.debug(f"***{tif_mesh_region_filepath} mesher_out***")
+            logger.debug(mesher_out.stdout)
+            logger.debug(mesher_out.stderr)
             if mesher_out.returncode != 0:
                 raise UserWarning(mesher_out.stderr)
 
@@ -284,7 +284,7 @@ simplify_tol = 10
 
     max_area = defaults.MAX_TRIANGLE_AREA
     mesher_config_filepath = f"{input_data['output_directory']}/mesher_config.py"
-    logger.critical(f"{mesher_config_filepath=}")
+    logger.debug(f"{mesher_config_filepath=}")
     max_rmse_tolerance = input_data['scenario_config'].get('max_rmse_tolerance', 1)
     text_blob = f"""mesher_path = '{mesher_bin}'
 dem_filename = '../inputs/{input_data["elevation_filename"].split("/")[-1]}'
@@ -367,10 +367,10 @@ constraints = {{
 """
     with open(mesher_config_filepath, "w+") as mesher_config:
         mesher_config.write(text_blob)
-    logger.critical(f"{mesher_config_filepath=}")
+    logger.debug(f"{mesher_config_filepath=}")
     with open(mesher_config_filepath, "r") as config_file:
-        logger.critical(config_file.read())
-    logger.critical(f"python {mesher_bin}.py {mesher_config_filepath}")
+        logger.debug(config_file.read())
+    logger.debug(f"python {mesher_bin}.py {mesher_config_filepath}")
     try:
         mesher_out = subprocess.run([
             sys.executable,
@@ -380,14 +380,14 @@ constraints = {{
             capture_output=True,
             universal_newlines=True
         )
-        logger.critical("***mesher_out***")
-        logger.critical(mesher_out.stdout)
-        logger.critical(mesher_out.stderr)
+        logger.debug("***mesher_out***")
+        logger.debug(mesher_out.stdout)
+        logger.debug(mesher_out.stderr)
         if mesher_out.returncode != 0:
             raise UserWarning(mesher_out.stderr)
     except ImportError:
         mesher_mesh_filepath = None
-    logger.critical(f"{mesher_mesh_filepath=}")
+    logger.debug(f"{mesher_mesh_filepath=}")
     with open(mesher_mesh_filepath, 'r') as mesh_file:
         mesh_dict = json.load(mesh_file)
     mesh_size = len(mesh_dict['mesh']['elem'])
@@ -403,7 +403,7 @@ def create_anuga_mesh(input_data):
     # interior_holes, hole_tags = make_interior_holes_and_tags(input_data)
     bounding_polygon = input_data['boundary_polygon']
     boundary_tags = input_data['boundary_tags']
-    logger.critical("creating anuga_mesh")
+    logger.info("creating anuga_mesh")
     if input_data.get('structure_filename'):
         burn_structures_into_raster(input_data['structure_filename'], input_data['elevation_filename'], backup=False)
     mesh_geo_reference = Geo_reference(zone=int(input_data['scenario_config'].get('epsg')[-2:]))
@@ -420,7 +420,7 @@ def create_anuga_mesh(input_data):
         verbose=False,
         fail_if_polygons_outside=False
     )
-    logger.critical(f"{anuga_mesh.tri_mesh.triangles.size=}")
+    logger.info(f"{anuga_mesh.tri_mesh.triangles.size=}")
     return mesh_filepath, anuga_mesh
 
 
@@ -633,17 +633,17 @@ def post_process_sww(package_dir, run_args=None, output_raster_resolution=None):
     util = anuga.utilities.plot_utils
     output_quantities = ['depth', 'velocity', 'depthIntegratedVelocity', 'stage']
     input_data = setup_input_data(package_dir)
-    logger.critical(f'Generating output rasters on {anuga.myid}...')
+    logger.info(f'Generating output rasters on {anuga.myid}...')
     resolutions = list()
     if input_data.get('mesh_region'):
         for feature in input_data.get('mesh_region').get('features') or list():
             # logger.critical(f'{feature=}')
             resolutions.append(feature.get('properties').get('resolution'))
-    logger.critical(f'{resolutions=}')
+    logger.debug(f'{resolutions=}')
     if len(resolutions) == 0:
         resolutions = [input_data.get('resolution') or 1000]
     finest_grid_resolution = min(resolutions)
-    logger.critical(f'raster output resolution: {finest_grid_resolution}m')
+    logger.info(f'raster output resolution: {finest_grid_resolution}m')
 
     epsg_integer = int(input_data['scenario_config'].get("epsg").split(":")[1]
                        if ":" in input_data['scenario_config'].get("epsg")
@@ -695,7 +695,7 @@ def post_process_sww(package_dir, run_args=None, output_raster_resolution=None):
     video_dir = f"{input_data['output_directory']}/videos/"
     if os.path.isdir(video_dir):
         shutil.rmtree(video_dir)
-    logger.critical('Successfully generated depth, velocity, momentum outputs')
+    logger.info('Successfully generated depth, velocity, momentum outputs')
 
 
 def make_video(input_directory_1, result_type):
@@ -887,7 +887,7 @@ def make_shp_from_polygon(boundary_polygon, epsg_code, shapefilepath, buffer=0):
     poly = Polygon(boundary_polygon)
     if buffer > 0:
         poly = poly.buffer(buffer)
-    logger.critical(f"make_shp_from_polygon: {poly}")
+    logger.debug(f"make_shp_from_polygon: {poly}")
 
     gdf = gpd.GeoDataFrame({'id': [1]}, geometry=[poly], crs=f"EPSG:{epsg_code}")
     gdf.to_file(shapefilepath)
@@ -915,7 +915,7 @@ def calculate_hydrology(package_dir):
         catchment_polygon = prep(Polygon(catchment.get('geometry').get('coordinates')[0]))
         node_candidate = list(filter(catchment_polygon.contains, node_points))
         if len(node_candidate) == 0:
-            logger.critical(f"Catchment {catchment.get('id')} has no internal node")
+            logger.warning(f"Catchment {catchment.get('id')} has no internal node")
             continue
         if len(node_candidate) > 1:
             raise IndexError(f"Catchment {catchment.get('id')} has more than one node")

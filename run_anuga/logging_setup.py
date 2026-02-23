@@ -40,7 +40,7 @@ def _is_django_configured() -> bool:
 def configure_simulation_logging(
     output_dir: str,
     batch_number: int = 1,
-    file_level: int = logging.DEBUG,
+    file_level: int = logging.INFO,
     console_level: int = logging.INFO,
 ) -> logging.Logger:
     """Add a FileHandler (and optional StreamHandler) to the root logger.
