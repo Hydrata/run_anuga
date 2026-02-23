@@ -9,16 +9,30 @@ Standalone [ANUGA](https://github.com/anuga-community/anuga_core) flood simulati
 
 Single standalone executable. No Python, no installers, no dependencies.
 
-**[Download for Windows (~165 MB .zip)](https://github.com/Hydrata/run_anuga/releases/latest/download/run-anuga-windows-amd64.zip)** | [All releases](https://github.com/Hydrata/run_anuga/releases)
+| Platform | Download |
+|----------|----------|
+| **Linux (Ubuntu 22.04+)** | [run-anuga-linux-amd64.tar.gz](https://github.com/Hydrata/run_anuga/releases/latest/download/run-anuga-linux-amd64.tar.gz) — glibc 2.35, broadest compatibility |
+| **Linux (Ubuntu 24.04)** | [run-anuga-linux-amd64-ubuntu2404.tar.gz](https://github.com/Hydrata/run_anuga/releases/latest/download/run-anuga-linux-amd64-ubuntu2404.tar.gz) — glibc 2.39 |
+| **Windows** | [run-anuga-windows-amd64.zip](https://github.com/Hydrata/run_anuga/releases/latest/download/run-anuga-windows-amd64.zip) |
 
-Linux tarballs are also available on the releases page:
-- `run-anuga-linux-amd64.tar.gz` — built on Ubuntu 22.04 (glibc 2.35, broadest compatibility)
-- `run-anuga-linux-amd64-ubuntu2404.tar.gz` — built on Ubuntu 24.04 (glibc 2.39)
+[All releases](https://github.com/Hydrata/run_anuga/releases)
 
-Extract the zip. You'll get:
+### Extract
+
+**Linux:**
+
+```bash
+tar xzf run-anuga-linux-amd64.tar.gz
+cd run-anuga-linux-amd64
+chmod +x run-anuga
+```
+
+**Windows:** Right-click the `.zip` and extract. The executable is `run-anuga.exe`.
+
+You'll get:
 
 ```
-run-anuga.exe
+run-anuga              # (run-anuga.exe on Windows)
 examples/
   small_test/
     scenario.json
@@ -33,16 +47,16 @@ examples/
 
 ## 2. Running the Test Simulation
 
-Open Command Prompt or PowerShell and `cd` to the folder where you extracted the files.
+Open a terminal (Linux/macOS) or Command Prompt / PowerShell (Windows) and `cd` to the extracted folder.
 
-> **PowerShell note:** PowerShell requires `.\` before the executable name (e.g. `.\run-anuga.exe`).
-> Command Prompt (`cmd.exe`) works with or without the prefix. The examples below use
-> the PowerShell-compatible form.
+> **Platform syntax:** Examples below use Linux (`./run-anuga`). On Windows use `.\run-anuga.exe`
+> and backslashes in paths — e.g. `.\run-anuga.exe validate examples\small_test\scenario.json`.
+> PowerShell requires the `.\` prefix; Command Prompt works with or without it.
 
 ### Validate the scenario
 
-```
-.\run-anuga.exe validate examples\small_test\scenario.json
+```bash
+./run-anuga validate examples/small_test/scenario.json
 ```
 
 Expected output:
@@ -55,18 +69,18 @@ Valid scenario: run_1_1_1
 
 ### View scenario info
 
-```
-.\run-anuga.exe info examples\small_test\scenario.json
+```bash
+./run-anuga info examples/small_test/scenario.json
 ```
 
 ### Run the simulation
 
-```
-.\run-anuga.exe run examples\small_test\scenario.json
+```bash
+./run-anuga run examples/small_test/scenario.json
 ```
 
 Takes roughly 1-3 minutes. ANUGA prints timestep output as it solves.
-When complete, results appear in `examples\small_test\outputs_1_1_1\`.
+When complete, results appear in `examples/small_test/outputs_1_1_1/`.
 
 ### Output files
 
