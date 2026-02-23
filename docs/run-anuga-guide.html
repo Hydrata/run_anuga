@@ -1,0 +1,638 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>run-anuga v0.1.0 &mdash; Getting Started</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({
+  startOnLoad: true,
+  theme: 'neutral',
+  themeVariables: { fontSize: '15px' },
+  flowchart: { nodeSpacing: 20, rankSpacing: 35, curve: 'basis', useMaxWidth: true }
+});</script>
+<style>
+  :root {
+    --blue: #1a56db;
+    --blue-light: #e8f0fe;
+    --green: #166534;
+    --green-light: #dcfce7;
+    --orange: #9a3412;
+    --orange-light: #fff7ed;
+    --gray-50: #f9fafb;
+    --gray-100: #f3f4f6;
+    --gray-200: #e5e7eb;
+    --gray-600: #4b5563;
+    --gray-800: #1f2937;
+    --gray-900: #111827;
+    --red: #991b1b;
+    --red-light: #fef2f2;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    line-height: 1.7;
+    color: var(--gray-800);
+    background: #fff;
+    max-width: 860px;
+    margin: 0 auto;
+    padding: 2rem 1.5rem 4rem;
+  }
+
+  h1 {
+    font-size: 2rem;
+    color: var(--gray-900);
+    border-bottom: 3px solid var(--blue);
+    padding-bottom: 0.5rem;
+    margin-bottom: 0.5rem;
+  }
+
+  .subtitle {
+    color: var(--gray-600);
+    font-size: 1.05rem;
+    margin-bottom: 2rem;
+  }
+
+  h2 {
+    font-size: 1.5rem;
+    color: var(--gray-900);
+    margin-top: 2.5rem;
+    margin-bottom: 1rem;
+    padding-bottom: 0.3rem;
+    border-bottom: 1px solid var(--gray-200);
+  }
+
+  h3 {
+    font-size: 1.15rem;
+    color: var(--gray-800);
+    margin-top: 1.5rem;
+    margin-bottom: 0.5rem;
+  }
+
+  p { margin-bottom: 1rem; }
+
+  a { color: var(--blue); }
+
+  code {
+    font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+    font-size: 0.9em;
+    background: var(--gray-100);
+    padding: 0.15em 0.4em;
+    border-radius: 3px;
+  }
+
+  pre {
+    background: var(--gray-900);
+    color: #e5e7eb;
+    padding: 1rem 1.25rem;
+    border-radius: 6px;
+    overflow-x: auto;
+    margin-bottom: 1.25rem;
+    font-size: 0.88rem;
+    line-height: 1.6;
+  }
+  pre code {
+    background: none;
+    padding: 0;
+    color: inherit;
+  }
+
+  .box {
+    border-radius: 6px;
+    padding: 1rem 1.25rem;
+    margin-bottom: 1.25rem;
+  }
+  .box-blue   { background: var(--blue-light);   border-left: 4px solid var(--blue); }
+  .box-green  { background: var(--green-light);  border-left: 4px solid var(--green); }
+  .box-orange { background: var(--orange-light); border-left: 4px solid var(--orange); }
+  .box-red    { background: var(--red-light);    border-left: 4px solid var(--red); }
+  .box strong { display: block; margin-bottom: 0.3rem; }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-bottom: 1.25rem;
+    font-size: 0.95rem;
+  }
+  th, td {
+    text-align: left;
+    padding: 0.5rem 0.75rem;
+    border-bottom: 1px solid var(--gray-200);
+  }
+  th {
+    background: var(--gray-50);
+    font-weight: 600;
+    color: var(--gray-900);
+  }
+  tr:last-child td { border-bottom: none; }
+
+  ol, ul {
+    margin-bottom: 1rem;
+    padding-left: 1.5rem;
+  }
+  li { margin-bottom: 0.4rem; }
+
+  .file-tree {
+    font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+    font-size: 0.88rem;
+    background: var(--gray-50);
+    border: 1px solid var(--gray-200);
+    border-radius: 6px;
+    padding: 1rem 1.25rem;
+    margin-bottom: 1.25rem;
+    white-space: pre;
+    line-height: 1.8;
+  }
+
+  .toc {
+    background: var(--gray-50);
+    border: 1px solid var(--gray-200);
+    border-radius: 6px;
+    padding: 1rem 1.5rem;
+    margin-bottom: 2rem;
+  }
+  .toc ol { margin-bottom: 0; }
+  .toc li { margin-bottom: 0.2rem; }
+  .toc a { text-decoration: none; }
+  .toc a:hover { text-decoration: underline; }
+
+  .download-btn {
+    display: inline-block;
+    background: var(--blue);
+    color: #fff;
+    text-decoration: none;
+    padding: 0.6rem 1.25rem;
+    border-radius: 6px;
+    font-weight: 600;
+    font-size: 0.95rem;
+    margin: 0.5rem 0.5rem 0.5rem 0;
+  }
+  .download-btn:hover { background: #1e40af; }
+  .download-btn small { font-weight: 400; opacity: 0.85; }
+
+  .feedback-card {
+    background: var(--gray-50);
+    border: 1px solid var(--gray-200);
+    border-radius: 6px;
+    padding: 1rem 1.25rem;
+    margin-bottom: 0.75rem;
+  }
+  .feedback-card h4 {
+    color: var(--blue);
+    margin-bottom: 0.3rem;
+  }
+
+  hr { border: none; border-top: 1px solid var(--gray-200); margin: 2rem 0; }
+
+  .diagram {
+    background: var(--gray-50);
+    border: 1px solid var(--gray-200);
+    border-radius: 6px;
+    padding: 1.25rem;
+    margin-bottom: 1.25rem;
+    font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+    font-size: 0.82rem;
+    line-height: 1.5;
+    white-space: pre;
+    overflow-x: auto;
+  }
+
+  .mermaid-container {
+    background: var(--gray-50);
+    border: 1px solid var(--gray-200);
+    border-radius: 6px;
+    padding: 1.25rem;
+    margin-bottom: 1.25rem;
+    overflow-x: auto;
+  }
+</style>
+</head>
+<body>
+
+<h1>run-anuga v0.1.0</h1>
+<p class="subtitle">Standalone ANUGA flood simulation on Windows. No Python install required.</p>
+
+<div class="toc">
+  <strong>Contents</strong>
+  <ol>
+    <li><a href="#download">Download</a></li>
+    <li><a href="#running">Running the Test Simulation</a></li>
+    <li><a href="#pipeline">How It Works</a></li>
+    <li><a href="#model">Test Model Details</a></li>
+    <li><a href="#outputs">Output Files</a></li>
+    <li><a href="#scenario">Scenario Configuration Reference</a></li>
+    <li><a href="#missing">Current Limitations</a></li>
+    <li><a href="#feedback">Feedback</a></li>
+  </ol>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="download">1. Download</h2>
+
+<p>Single standalone executable. No Python, no installers, no dependencies.</p>
+
+<a class="download-btn" href="https://github.com/Hydrata/run_anuga/releases/download/v0.1.0/run-anuga-windows-amd64.zip">
+  Download for Windows <small>(~165 MB .zip)</small>
+</a>
+
+<p style="margin-top:1rem; font-size:0.9rem; color:var(--gray-600);">
+  Or get it from the
+  <a href="https://github.com/Hydrata/run_anuga/releases/tag/v0.1.0">GitHub Releases page</a>:
+  <code>run-anuga-windows-amd64.zip</code>
+</p>
+
+<p>Extract the zip. You'll get:</p>
+
+<div class="file-tree">run-anuga-windows-amd64.exe
+examples/
+  small_test/
+    scenario.json
+    inputs/
+      dem.tif
+      boundary.geojson
+      inflow.geojson</div>
+
+<div class="box box-blue">
+  <strong>Windows SmartScreen</strong>
+  You'll likely get a "Windows protected your PC" warning on first run.
+  Click <strong>More info</strong> &rarr; <strong>Run anyway</strong>. This is normal for unsigned executables.
+</div>
+
+<!-- ============================================================ -->
+<h2 id="running">2. Running the Test Simulation</h2>
+
+<p>Open Command Prompt or PowerShell and <code>cd</code> to the folder where you extracted the files.</p>
+
+<h3>Validate the scenario</h3>
+<pre><code>run-anuga-windows-amd64.exe validate examples\small_test\scenario.json</code></pre>
+
+<p>Expected output:</p>
+<pre><code>Valid scenario: run_1_1_1
+  Duration: 1800s, EPSG: EPSG:28356
+  Resolution: 5.0m</code></pre>
+
+<h3>View scenario info</h3>
+<pre><code>run-anuga-windows-amd64.exe info examples\small_test\scenario.json</code></pre>
+
+<p>Lists the package contents and input file sizes.</p>
+
+<h3>Run the simulation</h3>
+<pre><code>run-anuga-windows-amd64.exe run examples\small_test\scenario.json</code></pre>
+
+<p>Takes roughly 1&ndash;3 minutes. ANUGA prints timestep output as it solves.
+When complete, results appear in <code>examples\small_test\outputs_1_1_1\</code>.</p>
+
+<h3>Output files</h3>
+
+<div class="file-tree">outputs_1_1_1/
+  run_1_1_1.sww                                  Full time-series (NetCDF)
+  run_1_1_1_depth_max.tif                        Max water depth
+  run_1_1_1_velocity_max.tif                     Max flow velocity
+  run_1_1_1_depthIntegratedVelocity_max.tif      Max depth x velocity
+  run_1_1_1_stage_max.tif                        Max water surface elevation
+  run_1_1_1_depth_000000.tif                     Depth at t=0s
+  run_1_1_1_depth_000060.tif                     Depth at t=60s
+  run_1_1_1_depth_000120.tif                     Depth at t=120s
+  ...                                            (one per 60s timestep)
+  checkpoints/                                   Restart files</div>
+
+<p>The <code>*_max.tif</code> files are the main outputs for design work. They're standard GeoTIFFs
+that load directly into QGIS, ArcGIS, or any GIS software.</p>
+
+<!-- ============================================================ -->
+<h2 id="pipeline">3. How It Works</h2>
+
+<p>The simulation pipeline reads a scenario package (a folder with <code>scenario.json</code> and input files),
+runs ANUGA's shallow water equation solver, then post-processes the results to GeoTIFF rasters.</p>
+
+<div class="mermaid-container">
+<pre class="mermaid">
+flowchart TD
+    DEM["dem.tif<br/><i>elevation</i>"]
+    BDY["boundary.geojson<br/><i>domain edges + BCs</i>"]
+    INF["inflow.geojson<br/><i>rainfall</i>"]
+    SJ["scenario.json<br/><i>duration, resolution, EPSG</i>"]
+
+    MESH["Build triangular mesh"]
+    SOLVE["Solve shallow water eqns"]
+    POST["Post-process to GeoTIFF"]
+
+    SWW["run_1_1_1.sww<br/><i>full time-series</i>"]
+    TMAX["*_max.tif<br/><i>peak depth, velocity, stage</i>"]
+    TSTEP["*_000060.tif ...<br/><i>per-timestep rasters</i>"]
+
+    DEM --> MESH
+    BDY --> MESH
+    SJ --> MESH
+    INF --> SOLVE
+    MESH --> SOLVE
+    SOLVE --> SWW
+    SWW --> POST
+    POST --> TMAX
+    POST --> TSTEP
+</pre>
+</div>
+
+<p>The <code>scenario.json</code> file ties everything together. It references the input filenames
+and sets the simulation parameters (duration, resolution, coordinate system).
+Here's how each field feeds into the processing pipeline:</p>
+
+<div class="mermaid-container">
+<pre class="mermaid">
+flowchart TD
+    E1["elevation"]
+    E2["boundary"]
+    E3["resolution"]
+    E4["inflow"]
+    E5["friction"]
+    E6["duration"]
+
+    P1["Read DEM, clip to boundary"]
+    P2["Build mesh at resolution"]
+    P3["Assign BCs per edge"]
+    P4["Apply rainfall"]
+    P5["Set Manning's n"]
+    P6["Solve SWE"]
+    P7["Interpolate to GeoTIFF"]
+
+    E1 --> P1
+    E2 --> P1
+    P1 --> P2
+    E3 --> P2
+    P2 --> P3
+    E2 --> P3
+    P3 --> P4
+    E4 --> P4
+    P4 --> P5
+    E5 --> P5
+    P5 --> P6
+    E6 --> P6
+    P6 --> P7
+</pre>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="model">4. Test Model Details</h2>
+
+<h3>Domain</h3>
+
+<table>
+  <tr><th>Property</th><th>Value</th></tr>
+  <tr><td>Coordinate system</td><td>EPSG:28356 (GDA94 / MGA Zone 56)</td></tr>
+  <tr><td>Domain size</td><td>200 m &times; 200 m</td></tr>
+  <tr><td>Elevation</td><td>1 m LiDAR DEM (Geoscience Australia ELVIS, CC BY 4.0)</td></tr>
+  <tr><td>Mesh resolution</td><td>5 m (max triangle area 12.5 m&sup2;)</td></tr>
+  <tr><td>Duration</td><td>1800 s (30 min)</td></tr>
+  <tr><td>Manning's n</td><td>0.04 (default, no friction zones defined)</td></tr>
+  <tr><td>Rainfall</td><td>50 mm/hr uniform over entire domain, constant for full duration</td></tr>
+</table>
+
+<h3>Boundary conditions</h3>
+
+<div class="diagram">              North (Transmissive)
+        +-------------------------------------+
+        |                                     |
+  West  |           200 m x 200 m             | East
+(Refl.) |                                     | (Refl.)
+        |          50 mm/hr rainfall          |
+        |           over full domain          |
+        |                                     |
+        +-------------------------------------+
+              South (Transmissive)</div>
+
+<table>
+  <tr><th>Edge</th><th>Type</th><th>Effect</th></tr>
+  <tr><td>North</td><td>Transmissive</td><td>Open &mdash; water exits freely</td></tr>
+  <tr><td>South</td><td>Transmissive</td><td>Open &mdash; water exits freely</td></tr>
+  <tr><td>East</td><td>Reflective</td><td>Wall &mdash; no flow through</td></tr>
+  <tr><td>West</td><td>Reflective</td><td>Wall &mdash; no flow through</td></tr>
+</table>
+
+<p>Boundaries are defined as LineString features in <code>boundary.geojson</code>. Each feature has
+a <code>"boundary"</code> property (<code>"Transmissive"</code> or <code>"Reflective"</code>) and
+a <code>"location": "External"</code> property. The lines must connect end-to-end to form
+a closed polygon (the solver requires a watertight domain boundary).</p>
+
+<h3>Rainfall</h3>
+
+<p>Defined in <code>inflow.geojson</code> as a single Polygon feature covering the full domain.
+Properties: <code>"type": "Rainfall"</code>, <code>"data": "50.0"</code> (mm/hr).
+Applied as a uniform source term for the full simulation duration.</p>
+
+<h3>Input file formats</h3>
+
+<table>
+  <tr><th>File</th><th>Format</th><th>Notes</th></tr>
+  <tr>
+    <td><code>scenario.json</code></td>
+    <td>JSON</td>
+    <td>References all other files, sets simulation parameters. See <a href="#scenario">section 6</a>.</td>
+  </tr>
+  <tr>
+    <td><code>inputs/dem.tif</code></td>
+    <td>GeoTIFF</td>
+    <td>Ground elevation raster. Must match the scenario's EPSG.</td>
+  </tr>
+  <tr>
+    <td><code>inputs/boundary.geojson</code></td>
+    <td>GeoJSON (LineStrings)</td>
+    <td>Domain edges. Each feature needs <code>"boundary"</code> property. Must form closed polygon.</td>
+  </tr>
+  <tr>
+    <td><code>inputs/inflow.geojson</code></td>
+    <td>GeoJSON (Polygons)</td>
+    <td>Rainfall/inflow zones. <code>"type": "Rainfall"</code>, <code>"data"</code> = rate in mm/hr.</td>
+  </tr>
+</table>
+
+<h3>Viewing in QGIS</h3>
+
+<ol>
+  <li>Set project CRS to <strong>EPSG:28356</strong> (Project &rarr; Properties &rarr; CRS).</li>
+  <li>Drag <code>inputs/dem.tif</code> onto the map to see the elevation surface.</li>
+  <li>Drag <code>inputs/boundary.geojson</code> and <code>inputs/inflow.geojson</code> to see the domain outline and rainfall zone.</li>
+  <li>After running, drag the <code>*_max.tif</code> files from <code>outputs_1_1_1/</code>:
+    <ul>
+      <li><code>depth_max.tif</code> &mdash; blue colour ramp works well</li>
+      <li><code>velocity_max.tif</code> &mdash; red/yellow ramp</li>
+    </ul>
+  </li>
+  <li>The timestep TIFFs (<code>*_000060.tif</code>, <code>*_000120.tif</code>, ...) can be loaded as a time series.</li>
+</ol>
+
+<div class="box box-blue">
+  <strong>Nodata</strong>
+  Output GeoTIFFs use <strong>-9999</strong> as nodata. In QGIS: right-click layer &rarr; Properties &rarr;
+  Transparency &rarr; add -9999 as "No data value" so dry cells render as transparent.
+</div>
+
+<!-- ============================================================ -->
+<h2 id="outputs">5. Output Quantities</h2>
+
+<table>
+  <tr><th>Quantity</th><th>Units</th><th>Description</th></tr>
+  <tr>
+    <td><code>depth</code></td>
+    <td>m</td>
+    <td>Water depth above ground surface.</td>
+  </tr>
+  <tr>
+    <td><code>velocity</code></td>
+    <td>m/s</td>
+    <td>Flow speed (magnitude of velocity vector).</td>
+  </tr>
+  <tr>
+    <td><code>depthIntegratedVelocity</code></td>
+    <td>m&sup2;/s</td>
+    <td>Depth &times; velocity. Relevant for flood hazard assessment (VxD).</td>
+  </tr>
+  <tr>
+    <td><code>stage</code></td>
+    <td>m AHD</td>
+    <td>Water surface elevation (ground + depth). For checking levels against survey.</td>
+  </tr>
+</table>
+
+<p>For each quantity:</p>
+<ul>
+  <li><strong>Timestep rasters</strong> &mdash; <code>*_000060.tif</code>, <code>*_000120.tif</code>, ... (one per 60 s output interval)</li>
+  <li><strong>Maximum envelope</strong> &mdash; <code>*_max.tif</code> (peak value at each cell across all timesteps)</li>
+</ul>
+
+<p>The <code>.sww</code> file is ANUGA's native NetCDF format &mdash; the full unstructured mesh time-series
+at higher temporal resolution than the raster snapshots. Useful if you need to query specific
+points or do further post-processing with ANUGA's Python API.</p>
+
+<!-- ============================================================ -->
+<h2 id="scenario">6. Scenario Configuration Reference</h2>
+
+<p><code>scenario.json</code> controls the simulation. All file paths are relative to an <code>inputs/</code>
+subfolder alongside the JSON file.</p>
+
+<table>
+  <tr><th>Field</th><th>Required</th><th>Description</th></tr>
+  <tr><td><code>format_version</code></td><td>Yes</td><td>Must be <code>"1.0"</code></td></tr>
+  <tr><td><code>epsg</code></td><td>Yes</td><td>Projected CRS for all inputs, e.g. <code>"EPSG:28356"</code></td></tr>
+  <tr><td><code>boundary</code></td><td>Yes</td><td>Boundary GeoJSON filename</td></tr>
+  <tr><td><code>duration</code></td><td>Yes</td><td>Simulation length in seconds</td></tr>
+  <tr><td><code>resolution</code></td><td>No</td><td>Base mesh resolution in metres</td></tr>
+  <tr><td><code>elevation</code></td><td>No</td><td>DEM GeoTIFF filename</td></tr>
+  <tr><td><code>inflow</code></td><td>No</td><td>Rainfall/inflow GeoJSON filename</td></tr>
+  <tr><td><code>friction</code></td><td>No</td><td>Manning's roughness zones GeoJSON</td></tr>
+  <tr><td><code>structure</code></td><td>No</td><td>Building footprints GeoJSON (raised 5 m in the DEM)</td></tr>
+  <tr><td><code>mesh_region</code></td><td>No</td><td>Mesh refinement zones (finer mesh in areas of interest)</td></tr>
+  <tr><td><code>name</code>, <code>description</code></td><td>No</td><td>Human-readable labels</td></tr>
+  <tr><td><code>id</code>, <code>run_id</code>, <code>project</code></td><td>No</td><td>Numeric IDs &mdash; used to name the output folder (<code>outputs_{project}_{id}_{run_id}</code>)</td></tr>
+  <tr><td><code>model_start</code></td><td>No</td><td>ISO 8601 start time (for reference only, doesn't affect solver)</td></tr>
+</table>
+
+<h3>Boundary types</h3>
+<table>
+  <tr><th>Type</th><th>Effect</th><th>Use case</th></tr>
+  <tr><td><code>Transmissive</code></td><td>Water passes through freely</td><td>Open downstream boundary, tidal boundary</td></tr>
+  <tr><td><code>Reflective</code></td><td>Solid wall, no flow</td><td>Ridgeline, embankment, domain edge with no outflow</td></tr>
+  <tr><td><code>Dirichlet</code></td><td>Fixed water level (0 m)</td><td>Known tailwater level</td></tr>
+</table>
+
+<h3>Inflow types</h3>
+<table>
+  <tr><th>Type</th><th><code>"data"</code> field</th><th>Effect</th></tr>
+  <tr><td><code>Rainfall</code></td><td>Rate in mm/hr (as string)</td><td>Uniform rainfall applied over the polygon area for full duration</td></tr>
+</table>
+
+<!-- ============================================================ -->
+<h2 id="missing">7. Current Limitations</h2>
+
+<p>This is a v0.1.0 &mdash; the core simulation pipeline works, but there are gaps
+that matter for production design work.</p>
+
+<h3>Hydrology &amp; loading</h3>
+<ul>
+  <li><strong>No time-varying rainfall</strong> &mdash; only constant-rate. No IFD hyetographs or temporal patterns.</li>
+  <li><strong>No hydrograph inflows</strong> &mdash; can't apply a Q(t) at a boundary or point source.</li>
+  <li><strong>No time-varying boundary levels</strong> &mdash; Dirichlet boundaries are fixed at 0 m. No tidal curves.</li>
+</ul>
+
+<h3>Domain &amp; hydraulics</h3>
+<ul>
+  <li><strong>No culverts, bridges or weirs</strong> &mdash; ANUGA supports these but they're not yet exposed in the scenario format.</li>
+  <li><strong>Friction zones not tested</strong> &mdash; the <code>friction</code> field exists in the schema but hasn't been validated. Everything currently gets n=0.04.</li>
+  <li><strong>Buildings are crude</strong> &mdash; footprints are raised 5 m in the DEM (effectively solid blocks). No flow-through or variable resistance.</li>
+  <li><strong>No GUI</strong> &mdash; scenario packages must be assembled manually (JSON + GeoJSON files).</li>
+</ul>
+
+<h3>Outputs</h3>
+<ul>
+  <li><strong>No hazard classification</strong> &mdash; raw depth/velocity only. No H1-H6 categories per ARR.</li>
+  <li><strong>No flood extent polygons</strong> &mdash; no shapefile/GeoJSON of the flood boundary at a given depth threshold.</li>
+  <li><strong>No reporting</strong> &mdash; no PDF summary, no peak level table at specified points.</li>
+</ul>
+
+<h3>Performance</h3>
+<ul>
+  <li><strong>Single-threaded only</strong> &mdash; no parallel execution. ANUGA supports MPI but the Windows exe can't use it.</li>
+  <li><strong>No progress indicator</strong> &mdash; ANUGA prints timestep output but no percentage or ETA.</li>
+</ul>
+
+<!-- ============================================================ -->
+<h2 id="feedback">8. Feedback</h2>
+
+<p>This is an early version and we're deciding what to build next based on what's
+actually useful in practice. Specific feedback is more valuable than general impressions.</p>
+
+<div class="feedback-card">
+  <h4>Try it with your own data</h4>
+  <p>Copy the <code>small_test</code> folder structure, swap in your own DEM and boundary files,
+  update <code>scenario.json</code>. What goes wrong? What error messages don't make sense?
+  What's tedious about setting up the inputs?</p>
+</div>
+
+<div class="feedback-card">
+  <h4>What does your current workflow look like?</h4>
+  <ul>
+    <li>Do you use ARR Data Hub design storms? Which durations and AEPs?</li>
+    <li>Do you need hydrograph inflows from RORB / WBNM / RAFTS / XP-RAFTS?</li>
+    <li>Do you model culverts, bridges, or levees?</li>
+    <li>Do you need to compare pre- vs post-development scenarios?</li>
+    <li>What outputs do you actually deliver? (flood extents, hazard maps, peak level tables, report PDFs?)</li>
+  </ul>
+</div>
+
+<div class="feedback-card">
+  <h4>What output formats matter?</h4>
+  <ul>
+    <li>GeoTIFF (current) sufficient, or do you need MapInfo TAB, shapefile, etc.?</li>
+    <li>Flood extent polygons at a threshold depth?</li>
+    <li>Peak level / peak velocity at nominated survey points?</li>
+    <li>Time-to-peak maps?</li>
+    <li>Flood hazard categories (VxD classification)?</li>
+  </ul>
+</div>
+
+<div class="feedback-card">
+  <h4>What breaks?</h4>
+  <p>If anything crashes or produces unexpected results:</p>
+  <ul>
+    <li>The exact command you ran</li>
+    <li>The error output (copy-paste from the terminal)</li>
+    <li>What you expected to happen</li>
+  </ul>
+</div>
+
+<hr>
+
+<p>Send feedback to
+<a href="mailto:david.kennewell@hydrata.com">david.kennewell@hydrata.com</a> or open an issue at
+<a href="https://github.com/Hydrata/run_anuga/issues">github.com/Hydrata/run_anuga/issues</a>.</p>
+
+<hr>
+<p style="color:var(--gray-600); font-size:0.85rem; margin-top:2rem;">
+  run-anuga v0.1.0. Built on <a href="https://en.wikipedia.org/wiki/ANUGA_Hydro">ANUGA Hydro</a>
+  (Geoscience Australia / ANU).
+  Test model elevation data: &copy; Commonwealth of Australia (Geoscience Australia), CC BY 4.0.
+</p>
+
+</body>
+</html>
