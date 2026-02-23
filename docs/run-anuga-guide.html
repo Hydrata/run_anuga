@@ -240,12 +240,14 @@
 <p style="margin-top:1rem; font-size:0.9rem; color:var(--gray-600);">
   Or get it from the
   <a href="https://github.com/Hydrata/run_anuga/releases/tag/v0.1.0">GitHub Releases page</a>:
-  <code>run-anuga-windows-amd64.zip</code>
+  <code>run-anuga-windows-amd64.zip</code>.
+  Linux tarballs are also available: <code>run-anuga-linux-amd64.tar.gz</code> (Ubuntu 22.04, broadest
+  compatibility) and <code>run-anuga-linux-amd64-ubuntu2404.tar.gz</code> (Ubuntu 24.04).
 </p>
 
 <p>Extract the zip. You'll get:</p>
 
-<div class="file-tree">run-anuga-windows-amd64.exe
+<div class="file-tree">run-anuga.exe
 examples/
   small_test/
     scenario.json
@@ -265,8 +267,15 @@ examples/
 
 <p>Open Command Prompt or PowerShell and <code>cd</code> to the folder where you extracted the files.</p>
 
+<div class="box box-blue">
+  <strong>PowerShell note</strong>
+  PowerShell requires <code>.\</code> before the executable name (e.g. <code>.\run-anuga.exe</code>).
+  Command Prompt (<code>cmd.exe</code>) works with or without the prefix. The examples below use
+  the PowerShell-compatible form.
+</div>
+
 <h3>Validate the scenario</h3>
-<pre><code>run-anuga-windows-amd64.exe validate examples\small_test\scenario.json</code></pre>
+<pre><code>.\run-anuga.exe validate examples\small_test\scenario.json</code></pre>
 
 <p>Expected output:</p>
 <pre><code>Valid scenario: run_1_1_1
@@ -274,12 +283,12 @@ examples/
   Resolution: 5.0m</code></pre>
 
 <h3>View scenario info</h3>
-<pre><code>run-anuga-windows-amd64.exe info examples\small_test\scenario.json</code></pre>
+<pre><code>.\run-anuga.exe info examples\small_test\scenario.json</code></pre>
 
 <p>Lists the package contents and input file sizes.</p>
 
 <h3>Run the simulation</h3>
-<pre><code>run-anuga-windows-amd64.exe run examples\small_test\scenario.json</code></pre>
+<pre><code>.\run-anuga.exe run examples\small_test\scenario.json</code></pre>
 
 <p>Takes roughly 1&ndash;3 minutes. ANUGA prints timestep output as it solves.
 When complete, results appear in <code>examples\small_test\outputs_1_1_1\</code>.</p>

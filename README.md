@@ -11,12 +11,14 @@ Single standalone executable. No Python, no installers, no dependencies.
 
 **[Download for Windows (~165 MB .zip)](https://github.com/Hydrata/run_anuga/releases/latest/download/run-anuga-windows-amd64.zip)** | [All releases](https://github.com/Hydrata/run_anuga/releases)
 
-A Linux tarball (`run-anuga-linux-amd64.tar.gz`) is also available on the releases page.
+Linux tarballs are also available on the releases page:
+- `run-anuga-linux-amd64.tar.gz` — built on Ubuntu 22.04 (glibc 2.35, broadest compatibility)
+- `run-anuga-linux-amd64-ubuntu2404.tar.gz` — built on Ubuntu 24.04 (glibc 2.39)
 
 Extract the zip. You'll get:
 
 ```
-run-anuga-windows-amd64.exe
+run-anuga.exe
 examples/
   small_test/
     scenario.json
@@ -33,10 +35,14 @@ examples/
 
 Open Command Prompt or PowerShell and `cd` to the folder where you extracted the files.
 
+> **PowerShell note:** PowerShell requires `.\` before the executable name (e.g. `.\run-anuga.exe`).
+> Command Prompt (`cmd.exe`) works with or without the prefix. The examples below use
+> the PowerShell-compatible form.
+
 ### Validate the scenario
 
 ```
-run-anuga-windows-amd64.exe validate examples\small_test\scenario.json
+.\run-anuga.exe validate examples\small_test\scenario.json
 ```
 
 Expected output:
@@ -50,13 +56,13 @@ Valid scenario: run_1_1_1
 ### View scenario info
 
 ```
-run-anuga-windows-amd64.exe info examples\small_test\scenario.json
+.\run-anuga.exe info examples\small_test\scenario.json
 ```
 
 ### Run the simulation
 
 ```
-run-anuga-windows-amd64.exe run examples\small_test\scenario.json
+.\run-anuga.exe run examples\small_test\scenario.json
 ```
 
 Takes roughly 1-3 minutes. ANUGA prints timestep output as it solves.
