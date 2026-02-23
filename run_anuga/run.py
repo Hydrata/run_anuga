@@ -8,19 +8,27 @@ import traceback
 
 from run_anuga._imports import import_optional
 from run_anuga.run_utils import is_dir_check, setup_input_data, update_web_interface, create_mesher_mesh, create_anuga_mesh, \
-    make_frictions, post_process_sww, setup_logger, check_coordinates_are_in_polygon, RunContext
+    make_frictions, post_process_sww, check_coordinates_are_in_polygon, RunContext
 from run_anuga import defaults
 from run_anuga.callbacks import NullCallback, HydrataCallback
+from run_anuga.logging_setup import configure_simulation_logging, neutralize_anuga_logging, teardown_simulation_logging
 
-try:
-    from celery.utils.log import get_task_logger
-    logger = get_task_logger(__name__)
-except ImportError:
-    logger = logging.getLogger(__name__)
+_module_logger = logging.getLogger(__name__)
 
 
 def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoint_time=None, callback=None):
-    # Lazy imports — these are only needed when actually running a simulation.
+    # Early check: fail fast with a friendly message if ANUGA isn't installed.
+    import_optional("anuga")
+
+    # --- Phase 1: parse scenario (needs shapely but not ANUGA domain objects) ---
+    run_args = RunContext(package_dir, username, password)
+    input_data = setup_input_data(package_dir)
+    batch_number = int(batch_number)
+
+    # --- Phase 2: configure logging ---
+    logger = configure_simulation_logging(input_data['output_directory'], batch_number)
+
+    # --- Phase 3: lazy-import ANUGA ---
     anuga = import_optional("anuga")
     pickle = import_optional("dill")
     numpy = import_optional("numpy")
@@ -30,9 +38,8 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
     from anuga.utilities import quantity_setting_functions as qs
     from anuga.operators.rate_operators import Polygonal_rate_operator
 
-    # Keep run_args for backward compat with update_web_interface in main() error handler.
-    run_args = RunContext(package_dir, username, password)
-    input_data = setup_input_data(package_dir)
+    # --- Phase 4: neutralize ANUGA's logging before any log.*() call ---
+    neutralize_anuga_logging(input_data['output_directory'])
 
     # Backward compat: auto-construct callback from username/password if not provided.
     if callback is None and username:
@@ -40,7 +47,6 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
             username, password, input_data['scenario_config']
         )
     callback = callback or NullCallback()
-    logger = setup_logger(input_data, username, password, batch_number)
     logger.info(f"run_sim started with {batch_number=}")
     domain = None
     overall = None
@@ -48,7 +54,6 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
     memory_usage_logs = list()
     duration = input_data['scenario_config'].get('duration')
     start = '1/1/1970'
-    batch_number = int(batch_number)
     if input_data['scenario_config'].get('model_start'):
         start = input_data['scenario_config'].get('model_start')
     try:
@@ -263,6 +268,7 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
                 memory_usage = psutil.virtual_memory().used
                 memory_usage_logs.append(memory_usage)
                 logger.info(f'{percentage_done}% | {minutes}m {seconds}s | mem: {memory_percent}% | disk: {psutil.disk_usage("/").percent}% | {domain.get_datetime().isoformat()}')
+                domain.write_time()
                 start = time.time()
         barrier()
         domain.sww_merge(verbose=True, delete_old=True)
@@ -272,13 +278,14 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
             callback.on_metric('memory_used', max_memory_usage)
             logger.info("Processing results...")
             post_process_sww(package_dir, run_args=run_args)
+        logger.info(f"finished run: {input_data['run_label']}")
     except Exception:
         callback.on_status('error')
         logger.error(f"{traceback.format_exc()}")
         raise
     finally:
+        teardown_simulation_logging()
         finalize()
-    logger.info(f"finished run: {input_data['run_label']}")
 
 
 def main():
@@ -297,11 +304,11 @@ def main():
     if not package_dir:
         package_dir = os.path.join(os.path.dirname(__file__), '..')
     try:
-        logger.info(f"run.py main() running {batch_number=}")
+        _module_logger.info(f"run.py main() running {batch_number=}")
         run_sim(package_dir, username, password, batch_number, checkpoint_time)
     except Exception as e:
         run_args = RunContext(package_dir, username, password)
-        logger.exception(e, exc_info=True)
+        _module_logger.exception(e, exc_info=True)
         update_web_interface(run_args, data={'status': 'error'})
         raise e
 

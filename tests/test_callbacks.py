@@ -1,12 +1,17 @@
 """Tests for run_anuga.callbacks — callback protocol and implementations."""
 
 import logging
+import warnings
 
 from run_anuga.callbacks import (
     HydrataCallback,
     LoggingCallback,
     NullCallback,
     SimulationCallback,
+)
+from run_anuga.logging_setup import (
+    configure_simulation_logging,
+    teardown_simulation_logging,
 )
 
 
@@ -93,3 +98,36 @@ class TestHydrataCallback:
         assert cb.scenario == 0
         assert cb.run_id == 0
         assert cb.control_server == ""
+
+
+class TestLoggingCallbackIntegration:
+    """LoggingCallback + configure_simulation_logging integration."""
+
+    def test_callback_messages_appear_in_log_file(self, tmp_path):
+        sim_logger = configure_simulation_logging(str(tmp_path))
+        try:
+            cb = LoggingCallback(logger_instance=sim_logger)
+            cb.on_status("45.2%")
+            cb.on_metric("memory_used", 1024)
+
+            log_file = tmp_path / "run_anuga_1.log"
+            contents = log_file.read_text()
+            assert "45.2%" in contents
+            assert "memory_used" in contents
+            assert "1024" in contents
+        finally:
+            teardown_simulation_logging()
+
+
+class TestSetupLoggerDeprecation:
+    def test_warns_deprecated(self, tmp_path):
+        from run_anuga.run_utils import setup_logger
+
+        input_data = {"output_directory": str(tmp_path), "scenario_config": {}}
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            setup_logger(input_data)
+            assert len(w) == 1
+            assert issubclass(w[0].category, DeprecationWarning)
+            assert "deprecated" in str(w[0].message).lower()
+        teardown_simulation_logging()

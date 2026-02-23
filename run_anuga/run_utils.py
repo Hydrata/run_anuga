@@ -9,6 +9,7 @@ import os
 import shutil
 import subprocess
 import sys
+import warnings
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
@@ -19,12 +20,11 @@ from run_anuga._imports import import_optional
 from run_anuga import defaults
 from run_anuga.config import ScenarioConfig
 
+logger = logging.getLogger(__name__)
+
 try:
-    from celery.utils.log import get_task_logger
-    logger = get_task_logger(__name__)
     from django.conf import settings
 except ImportError:
-    logger = logging.getLogger(__name__)
     settings = dict()
 
 
@@ -836,40 +836,14 @@ def make_comparison_video(input_directory_1, input_directory_2, result_type):
 
 
 def setup_logger(input_data, username=None, password=None, batch_number=1):
-    if not username or not password:
-        username = os.environ.get('COMPUTE_USERNAME')
-        password = os.environ.get('COMPUTE_PASSWORD')
-    # Create handlers
-    file_handler = logging.FileHandler(os.path.join(input_data['output_directory'], f'run_anuga_{batch_number}.log'))
-    file_handler.setLevel(logging.DEBUG)
-
-    # Avoid duplicate handlers when run_sim() is called multiple times
-    for h in logger.handlers[:]:
-        if isinstance(h, logging.FileHandler) or isinstance(h, logging.handlers.HTTPHandler):
-            logger.removeHandler(h)
-
-    # Add handlers to the logger
-    logger.addHandler(file_handler)
-
-    if username and password:
-        control_server = input_data['scenario_config'].get('control_server')
-        parsed_control_server = urlparse(control_server)
-        host = parsed_control_server.netloc
-        if "localhost" in control_server:
-            secure = False  # means we're running locally, no need for web logging
-        else:
-            secure = True
-        web_handler = logging.handlers.HTTPHandler(
-            host=host,
-            url=f"/anuga/api/{input_data['scenario_config'].get('project')}/{input_data['scenario_config'].get('id')}/run/{input_data['scenario_config'].get('run_id')}/log/",
-            method='POST',
-            secure=secure,
-            credentials=(username, password,)
-        )
-        web_handler.setLevel(logging.DEBUG)
-        logger.addHandler(web_handler)
-    logger.setLevel(logging.DEBUG)
-    return logger
+    """Deprecated — use :func:`run_anuga.logging_setup.configure_simulation_logging` instead."""
+    warnings.warn(
+        "setup_logger() is deprecated. Use configure_simulation_logging() from run_anuga.logging_setup instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    from run_anuga.logging_setup import configure_simulation_logging
+    return configure_simulation_logging(input_data['output_directory'], batch_number)
 
 
 def burn_structures_into_raster(structures_filename, raster_filename, backup=True):
