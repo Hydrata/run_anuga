@@ -56,6 +56,6 @@ bash test-docker/test_readme.sh
 3. `release.yml` downloads pre-built wheels from anuga_core's latest release
 4. Builds single-file executables for Windows + Linux
 5. Smoke tests run full simulation on both platforms
-6. Creates release with assets: `run-anuga-windows-amd64.zip`, `run-anuga-linux-amd64-ubuntu2204.tar.gz`, `run-anuga-linux-amd64-ubuntu2404.tar.gz`
+6. Creates release with assets: `run-anuga-windows.zip`, `run-anuga-ubuntu2204.tar.gz`, `run-anuga-ubuntu2404.tar.gz`
 
 To target a specific anuga_core release: trigger `release.yml` via `workflow_dispatch` with `anuga_core_tag` input.

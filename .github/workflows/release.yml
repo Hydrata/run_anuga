@@ -179,24 +179,24 @@ jobs:
       - name: Package release assets
         run: |
           # Windows — run-anuga.exe stays as-is inside the zip
-          zip run-anuga-windows-amd64.zip run-anuga.exe examples/small_test -r
+          zip run-anuga-windows.zip run-anuga.exe examples/small_test -r
 
           # Linux (ubuntu-22.04)
           cp linux-2204/run-anuga run-anuga
           chmod +x run-anuga
-          tar czf run-anuga-linux-amd64-ubuntu2204.tar.gz run-anuga examples/small_test
+          tar czf run-anuga-ubuntu2204.tar.gz run-anuga examples/small_test
           rm run-anuga
 
           # Linux (ubuntu-24.04)
           cp linux-2404/run-anuga run-anuga
           chmod +x run-anuga
-          tar czf run-anuga-linux-amd64-ubuntu2404.tar.gz run-anuga examples/small_test
+          tar czf run-anuga-ubuntu2404.tar.gz run-anuga examples/small_test
 
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
           files: |
-            run-anuga-windows-amd64.zip
-            run-anuga-linux-amd64-ubuntu2204.tar.gz
-            run-anuga-linux-amd64-ubuntu2404.tar.gz
+            run-anuga-windows.zip
+            run-anuga-ubuntu2204.tar.gz
+            run-anuga-ubuntu2404.tar.gz
