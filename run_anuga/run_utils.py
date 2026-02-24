@@ -487,6 +487,17 @@ def make_frictions(input_data):
     return frictions
 
 
+def compute_yieldstep(duration):
+    """Calculate yield step interval for the simulation evolve loop.
+
+    Returns an integer number of seconds, clamped to
+    [MIN_YIELDSTEP_S, MAX_YIELDSTEP_S].
+    """
+    base_step = math.floor(duration / defaults.MAX_YIELDSTEPS)
+    yieldstep = max(base_step, defaults.MIN_YIELDSTEP_S)
+    return min(yieldstep, defaults.MAX_YIELDSTEP_S)
+
+
 def correction_for_polar_quadrants(base, height):
     result = 0
     result = 0 if base > 0 and height > 0 else result

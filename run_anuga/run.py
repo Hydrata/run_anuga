@@ -8,7 +8,7 @@ import traceback
 
 from run_anuga._imports import import_optional
 from run_anuga.run_utils import is_dir_check, setup_input_data, update_web_interface, create_mesher_mesh, create_anuga_mesh, \
-    make_frictions, post_process_sww, check_coordinates_are_in_polygon, RunContext
+    make_frictions, post_process_sww, check_coordinates_are_in_polygon, compute_yieldstep, RunContext
 from run_anuga import defaults
 from run_anuga.callbacks import NullCallback, HydrataCallback
 from run_anuga.logging_setup import configure_simulation_logging, neutralize_anuga_logging, teardown_simulation_logging
@@ -241,14 +241,7 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
         for tag in domain.boundary.values():
             boundaries[tag] = default_boundary_maps[tag]
         domain.set_boundary(boundaries)
-        max_yieldsteps = defaults.MAX_YIELDSTEPS
-        temporal_resolution_seconds = defaults.MIN_YIELDSTEP_S
-        base_temporal_resolution_seconds = math.floor(duration/max_yieldsteps)
-        yieldstep = base_temporal_resolution_seconds
-        if base_temporal_resolution_seconds < temporal_resolution_seconds:
-            yieldstep = temporal_resolution_seconds
-        if yieldstep > defaults.MAX_YIELDSTEP_S:
-            yieldstep = defaults.MAX_YIELDSTEP_S
+        yieldstep = compute_yieldstep(duration)
         checkpoint_directory = input_data['checkpoint_directory']
         domain.set_checkpointing(
             checkpoint=True,

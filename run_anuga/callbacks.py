@@ -102,7 +102,8 @@ class HydrataCallback:
 
     @property
     def _url(self) -> str:
-        return f"{self.control_server}anuga/api/{self.project}/{self.scenario}/run/{self.run_id}/"
+        base = self.control_server.rstrip("/") + "/"
+        return f"{base}anuga/api/{self.project}/{self.scenario}/run/{self.run_id}/"
 
     def _patch(self, data: dict, files: dict | None = None) -> None:
         from run_anuga._imports import import_optional

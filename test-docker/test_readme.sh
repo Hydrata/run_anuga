@@ -101,6 +101,30 @@ test_phase_3() {
 }
 
 
+# ─── Phase 4: MPI Parallel Run ──────────────────────────────────────
+
+test_phase_4() {
+    log_phase 4 "MPI Parallel Run (2 processes)"
+
+    local output
+    output=$(run_in_container "phase4" "phase4.sh") || true
+    echo "$output"
+    parse_results "$output"
+}
+
+
+# ─── Phase 5: Visualization ─────────────────────────────────────────
+
+test_phase_5() {
+    log_phase 5 "Visualization (video from TIFFs)"
+
+    local output
+    output=$(run_in_container "phase5" "phase5.sh") || true
+    echo "$output"
+    parse_results "$output"
+}
+
+
 # ─── Main ─────────────────────────────────────────────────────────────
 
 main() {
@@ -113,6 +137,8 @@ main() {
     test_phase_1
     test_phase_2
     test_phase_3
+    test_phase_4
+    test_phase_5
 
     # ─── Final Report ─────────────────────────────────────────────────
     echo ""
@@ -135,6 +161,8 @@ main() {
     echo "  phase1.log  — Core install + CLI"
     echo "  phase2.log  — Sim install + run"
     echo "  phase3.log  — Post-process"
+    echo "  phase4.log  — MPI parallel run"
+    echo "  phase5.log  — Visualization"
 }
 
 main "$@"
