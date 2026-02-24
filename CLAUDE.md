@@ -24,7 +24,7 @@ notes/              # Session notes and lessons learned
 
 ## Session Notes
 
-- `notes/v0.1.0-release-status.md` — Current release status, what works, what's broken, next steps
+- `notes/v0.1.0-release-status.md` — Release history and current status
 - `notes/pyinstaller-lessons.md` — PyInstaller gotchas (meson-python, PROJ data, onefile vs onedir)
 
 ## Development

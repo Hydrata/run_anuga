@@ -11,9 +11,9 @@ Single standalone executable. No Python, no installers, no dependencies.
 
 | Platform | Download |
 |----------|----------|
-| **Linux (Ubuntu 22.04+)** | [run-anuga-linux-amd64.tar.gz](https://github.com/Hydrata/run_anuga/releases/latest/download/run-anuga-linux-amd64.tar.gz) — glibc 2.35, broadest compatibility |
-| **Linux (Ubuntu 24.04)** | [run-anuga-linux-amd64-ubuntu2404.tar.gz](https://github.com/Hydrata/run_anuga/releases/latest/download/run-anuga-linux-amd64-ubuntu2404.tar.gz) — glibc 2.39 |
-| **Windows** | [run-anuga-windows-amd64.zip](https://github.com/Hydrata/run_anuga/releases/latest/download/run-anuga-windows-amd64.zip) |
+| **Ubuntu 22.04** | [run-anuga-ubuntu2204.tar.gz](https://github.com/Hydrata/run_anuga/releases/latest/download/run-anuga-ubuntu2204.tar.gz) — glibc 2.35, broadest compatibility |
+| **Ubuntu 24.04** | [run-anuga-ubuntu2404.tar.gz](https://github.com/Hydrata/run_anuga/releases/latest/download/run-anuga-ubuntu2404.tar.gz) — glibc 2.39 |
+| **Windows** | [run-anuga-windows.zip](https://github.com/Hydrata/run_anuga/releases/latest/download/run-anuga-windows.zip) |
 
 [All releases](https://github.com/Hydrata/run_anuga/releases)
 
@@ -22,8 +22,7 @@ Single standalone executable. No Python, no installers, no dependencies.
 **Linux:**
 
 ```bash
-tar xzf run-anuga-linux-amd64.tar.gz
-cd run-anuga-linux-amd64
+tar xzf run-anuga-ubuntu2404.tar.gz
 chmod +x run-anuga
 ```
 
@@ -79,7 +78,7 @@ Valid scenario: run_1_1_1
 ./run-anuga run examples/small_test/scenario.json
 ```
 
-Takes roughly 1-3 minutes. ANUGA prints timestep output as it solves.
+Takes roughly 1-3 minutes. Progress is logged as percentage complete with elapsed time.
 When complete, results appear in `examples/small_test/outputs_1_1_1/`.
 
 ### Output files
@@ -95,6 +94,7 @@ outputs_1_1_1/
   run_1_1_1_depth_000060.tif                     Depth at t=60s
   run_1_1_1_depth_000120.tif                     Depth at t=120s
   ...                                            (one per 60s timestep)
+  run_anuga_1.log                                Simulation log
   checkpoints/                                   Restart files
 ```
 
@@ -291,8 +291,8 @@ subfolder alongside the JSON file.
 
 ## 7. Current Limitations
 
-This is a v0.1.0 — the core simulation pipeline works, but there are gaps
-that matter for production design work.
+The core simulation pipeline works, but there are gaps that matter for
+production design work.
 
 ### Hydrology & loading
 
