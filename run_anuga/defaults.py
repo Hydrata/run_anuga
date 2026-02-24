@@ -16,8 +16,12 @@ DEFAULT_MANNINGS_N = 0.04
 """Default Manning's roughness applied to all areas not covered by friction polygons."""
 
 # Rainfall conversion
-RAINFALL_FACTOR = 1.0e-6
-"""Conversion factor from mm/hr rainfall intensity to m/s for ANUGA rate operators."""
+RAINFALL_FACTOR = 1.0 / (1000.0 * 3600.0)  # = 2.7778e-7
+"""Conversion factor from mm/hr rainfall intensity to m/s for ANUGA rate operators.
+
+Derivation: 1 mm/hr = 1/1000 m/hr = 1/1000 / 3600 m/s = 2.7778e-7 m/s.
+Used as the `factor` argument to Polygonal_rate_operator when input data is in mm/hr.
+"""
 
 # Domain evolution
 MINIMUM_STORABLE_HEIGHT_M = 0.005

@@ -19,9 +19,10 @@ def test_default_mannings_n():
 
 
 def test_rainfall_factor():
-    assert isinstance(defaults.RAINFALL_FACTOR, float)
-    assert defaults.RAINFALL_FACTOR > 0
-    assert defaults.RAINFALL_FACTOR < 1
+    # 1 mm/hr = 1/1000 m/hr = 1/1000/3600 m/s = 2.7778e-7 m/s
+    import math
+    expected = 1.0 / (1000.0 * 3600.0)
+    assert math.isclose(defaults.RAINFALL_FACTOR, expected, rel_tol=1e-9)
 
 
 def test_minimum_storable_height():
