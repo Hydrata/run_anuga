@@ -108,18 +108,18 @@ runs ANUGA's shallow water equation solver, then post-processes the results to G
 
 ```mermaid
 flowchart TD
-    DEM["dem.tif\nelevation"]
-    BDY["boundary.geojson\ndomain edges + BCs"]
-    INF["inflow.geojson\nrainfall"]
-    SJ["scenario.json\nduration, resolution, EPSG"]
+    DEM["dem.tif<br/>elevation"]
+    BDY["boundary.geojson<br/>domain edges + BCs"]
+    INF["inflow.geojson<br/>rainfall"]
+    SJ["scenario.json<br/>duration, resolution, EPSG"]
 
     MESH["Build triangular mesh"]
     SOLVE["Solve shallow water eqns"]
     POST["Post-process to GeoTIFF"]
 
-    SWW["run_1_1_1.sww\nfull time-series"]
-    TMAX["*_max.tif\npeak depth, velocity, stage"]
-    TSTEP["*_000060.tif ...\nper-timestep rasters"]
+    SWW["run_1_1_1.sww<br/>full time-series"]
+    TMAX["*_max.tif<br/>peak depth, velocity, stage"]
+    TSTEP["*_000060.tif ...<br/>per-timestep rasters"]
 
     DEM --> MESH
     BDY --> MESH
