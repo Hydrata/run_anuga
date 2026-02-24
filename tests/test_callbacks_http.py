@@ -24,6 +24,8 @@ class TestHydrataCallbackPatch:
         with caplog.at_level(logging.ERROR):
             cb.on_status("running")
         assert "500" in caplog.text
+        assert "Error updating web interface" in caplog.text
+        assert "Internal Server Error" in caplog.text
 
     @patch("run_anuga._imports.import_optional")
     def test_http_success_no_error_log(self, mock_import, caplog):
@@ -59,6 +61,9 @@ class TestHydrataCallbackPatch:
         call_args = mock_session.patch.call_args
         data = call_args.kwargs.get("data", {})
         assert data["memory_used"] == 1024
+        # _patch() always injects project and scenario into every request
+        assert data["project"] == 1
+        assert data["scenario"] == 2
 
 
 class TestHydrataCallbackOnFile:
@@ -86,7 +91,9 @@ class TestHydrataCallbackOnFile:
         cb.on_file("result", str(test_file))
 
         call_args = mock_session.patch.call_args
-        assert call_args.kwargs.get("files") is not None
+        files = call_args.kwargs.get("files")
+        assert files is not None
+        assert "result" in files
 
 
 class TestHydrataCallbackURLEdgeCases:

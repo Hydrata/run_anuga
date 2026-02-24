@@ -203,6 +203,10 @@ class TestMakeFrictions:
         }
         frictions = make_frictions(input_data)
         assert len(frictions) == 3  # building + friction polygon + All
+        # Verify ordering and exact values
+        assert frictions[0][1] == defaults.BUILDING_MANNINGS_N  # 10.0
+        assert frictions[1][1] == 0.06                           # custom friction
+        assert frictions[2] == ["All", defaults.DEFAULT_MANNINGS_N]
 
 
 class TestMakeInteriorHolesAndTags:
@@ -256,7 +260,8 @@ class TestMakeInteriorHolesAndTags:
         holes, tags = make_interior_holes_and_tags(input_data)
         assert holes is not None
         assert len(holes) == 1
-        assert "reflective" in tags[0]
+        # Reflective tag is exactly {"reflective": [0, 1, 2, 3]} — one index per vertex
+        assert tags[0] == {"reflective": [0, 1, 2, 3]}
 
     def test_mixed_structures(self):
         input_data = {
@@ -278,7 +283,8 @@ class TestMakeInteriorHolesAndTags:
             }
         }
         holes, tags = make_interior_holes_and_tags(input_data)
-        # Mannings skipped, 2 holes remain
+        # Mannings skipped, 2 holes remain; tags list length must match holes list length
         assert len(holes) == 2
-        assert tags[0] is None  # Holes
-        assert "reflective" in tags[1]  # Reflective
+        assert len(tags) == 2
+        assert tags[0] is None  # Holes → None tag
+        assert tags[1] == {"reflective": [0, 1, 2, 3]}  # Reflective → exact tag

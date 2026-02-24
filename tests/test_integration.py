@@ -15,6 +15,7 @@ from shutil import unpack_archive
 from pathlib import Path
 
 
+@pytest.mark.requires_anuga
 @pytest.mark.parametrize(
     "zip_filename, package_dir_length, output_dir_name, result_directory_length", [
         ("package_fourthreextwo_halves_checkpoint_173.zip", 4, "outputs_18_17_173", 10),

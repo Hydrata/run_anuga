@@ -36,11 +36,10 @@ class TestCheckCoordinatesAreInPolygon:
         assert check_coordinates_are_in_polygon(coords, polygon) is False
 
     def test_point_on_edge(self):
-        """Points exactly on the boundary are typically not 'contained'."""
+        """Points exactly on the boundary return False per Shapely contains() semantics."""
         polygon = [[0, 0], [10, 0], [10, 10], [0, 10]]
-        # Shapely's contains() typically returns False for boundary points
-        result = check_coordinates_are_in_polygon([[0, 0]], polygon)
-        assert isinstance(result, bool)
+        # Shapely's contains() returns False for boundary points (interior test only)
+        assert check_coordinates_are_in_polygon([[0, 0]], polygon) is False
 
     def test_point_near_center(self):
         polygon = [[0, 0], [10, 0], [10, 10], [0, 10]]

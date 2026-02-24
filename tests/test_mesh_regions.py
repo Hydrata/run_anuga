@@ -90,13 +90,14 @@ class TestMakeFrictionsGeo:
                 "features": [
                     {
                         "geometry": {"coordinates": [_polygon_coords(321000, 5812000, 100)]},
-                        "properties": {"mannings": 0.035}
+                        "properties": {"mannings": 0.08}  # distinct from DEFAULT (0.04)
                     }
                 ]
             }
         }
         frictions = make_frictions(input_data)
-        assert frictions[0][1] == 0.035
+        assert frictions[0][1] == 0.08
+        assert frictions[0][1] != defaults.DEFAULT_MANNINGS_N
 
     def test_all_default_always_present(self):
         """The 'All' default friction is always the last entry."""
@@ -122,9 +123,63 @@ class TestMakeInteriorHolesGeo:
         holes, tags = make_interior_holes_and_tags(input_data)
         assert holes is not None
         assert len(holes) == 1
-        assert "reflective" in tags[0]
-        # Reflective tag should have indices for each vertex
-        assert len(tags[0]["reflective"]) == len(coords)
+        # Reflective tag is exactly {"reflective": [0, 1, ..., n-1]}
+        expected_tag = {"reflective": list(range(len(coords)))}
+        assert tags[0] == expected_tag
+
+    def test_holes_structure_has_none_tag(self):
+        """Holes method produces a None tag (simple hole, no boundary condition)."""
+        coords = _polygon_coords(321040, 5812040, 20)
+        input_data = {
+            "structure": {
+                "features": [
+                    {
+                        "geometry": {"coordinates": [coords]},
+                        "properties": {"method": "Holes"}
+                    }
+                ]
+            }
+        }
+        holes, tags = make_interior_holes_and_tags(input_data)
+        assert holes is not None
+        assert len(holes) == 1
+        assert tags[0] is None
+
+    def test_mannings_not_in_holes(self):
+        """Mannings structures are friction polygons, not interior holes."""
+        coords = _polygon_coords(321040, 5812040, 20)
+        input_data = {
+            "structure": {
+                "features": [
+                    {
+                        "geometry": {"coordinates": [coords]},
+                        "properties": {"method": "Mannings"}
+                    }
+                ]
+            }
+        }
+        holes, tags = make_interior_holes_and_tags(input_data)
+        assert holes is None  # Mannings structures filtered out
+        assert tags is None
+
+    def test_holes_and_tags_same_length(self):
+        """holes and tags lists must always be the same length."""
+        input_data = {
+            "structure": {
+                "features": [
+                    {
+                        "geometry": {"coordinates": [_polygon_coords(321000, 5812000, 20)]},
+                        "properties": {"method": "Holes"}
+                    },
+                    {
+                        "geometry": {"coordinates": [_polygon_coords(321050, 5812050, 20)]},
+                        "properties": {"method": "Reflective"}
+                    },
+                ]
+            }
+        }
+        holes, tags = make_interior_holes_and_tags(input_data)
+        assert len(holes) == len(tags)
 
     def test_empty_features_returns_none(self):
         input_data = {"structure": {"features": []}}

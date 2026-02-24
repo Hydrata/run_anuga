@@ -37,7 +37,7 @@ class TestSimLifecycle:
         log_files = list(small_test_copy.glob("outputs_*/run_anuga_*.log"))
         assert len(log_files) == 1
         content = log_files[0].read_text()
-        assert "100" in content  # 100% completion
+        assert "finished run:" in content  # run.py logs this at completion
 
     def test_run_sim_with_callback(self, small_test_copy):
         """Callback receives status updates during simulation."""

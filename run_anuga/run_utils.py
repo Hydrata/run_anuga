@@ -465,6 +465,7 @@ def make_interior_holes_and_tags(input_data):
                 hole_tags.append({'reflective': [i for i in range(len(structure_polygon))]})
             else:
                 logger.error(f"Unknown interior hole type found: {structure.get('properties').get('method')}")
+                hole_tags.append(None)  # Maintain holes/tags length parity
     if len(interior_holes) == 0:
         interior_holes = None
         hole_tags = None
@@ -992,12 +993,12 @@ def add_inflow_to_file(inflow_object, filepath):
 def check_coordinates_are_in_polygon(coordinates, polygon):
     shapely_geometry = import_optional("shapely.geometry")
     Point, Polygon = shapely_geometry.Point, shapely_geometry.Polygon
-    shapely_polgyon = Polygon(polygon)
+    shapely_polygon = Polygon(polygon)
     if isinstance(coordinates[0], float):
         coordinates = [coordinates]
     for point in coordinates:
         shapely_point = Point(point)
-        if not shapely_polgyon.contains(shapely_point):
+        if not shapely_polygon.contains(shapely_point):
             return False
     return True
 

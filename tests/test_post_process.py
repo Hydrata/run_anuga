@@ -41,9 +41,11 @@ class TestPostProcess:
         post_process_sww(str(self.package_dir))
         tifs = list(self.package_dir.glob("outputs_*/*_max.tif"))
         stems = {f.stem for f in tifs}
-        # Check at least depth and velocity max tiffs
+        # All 4 output quantities must produce max TIFFs
         assert any("depth" in s for s in stems)
         assert any("velocity" in s for s in stems)
+        assert any("depthIntegratedVelocity" in s for s in stems)
+        assert any("stage" in s for s in stems)
 
     def test_post_process_idempotent(self):
         """Running post-process twice doesn't error."""

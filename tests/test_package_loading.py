@@ -27,6 +27,7 @@ class TestLoadPackageData:
     def test_creates_checkpoint_directory(self, scenario_package):
         data = _load_package_data(str(scenario_package))
         assert os.path.isdir(data["checkpoint_directory"])
+        assert data["checkpoint_directory"].rstrip("/\\").endswith("checkpoints")
 
     def test_output_directory_path(self, scenario_package):
         data = _load_package_data(str(scenario_package))
@@ -35,7 +36,8 @@ class TestLoadPackageData:
 
     def test_mesh_filepath_extension(self, scenario_package):
         data = _load_package_data(str(scenario_package))
-        assert data["mesh_filepath"].endswith(".msh")
+        # Mesh file is named after the run label: run_<project>_<id>_<run_id>.msh
+        assert data["mesh_filepath"].endswith("run_1_1_1.msh")
 
     def test_missing_scenario_json(self, tmp_path):
         with pytest.raises(FileNotFoundError, match="scenario.json"):
@@ -48,7 +50,8 @@ class TestLoadPackageData:
 
     def test_boundary_filename_set(self, scenario_package):
         data = _load_package_data(str(scenario_package))
-        assert data["boundary_filename"].endswith("boundary.geojson")
+        # Boundary file is always under the inputs/ subdirectory
+        assert data["boundary_filename"].endswith(os.path.join("inputs", "boundary.geojson"))
 
     def test_optional_inputs_absent(self, scenario_package):
         data = _load_package_data(str(scenario_package))

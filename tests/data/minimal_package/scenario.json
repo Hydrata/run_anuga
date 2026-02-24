@@ -9,7 +9,7 @@
     "elevation": "dem.tif",
     "boundary": "boundary.geojson",
     "friction": null,
-    "inflow": "inflow.geojson",
+    "inflow": null,
     "structure": null,
     "mesh_region": null,
     "hydrology_status": null,
