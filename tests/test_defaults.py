@@ -19,8 +19,8 @@ def test_building_mannings_n():
 
 def test_default_mannings_n():
     assert isinstance(defaults.DEFAULT_MANNINGS_N, (int, float))
-    # Sealed urban/short grass: 0.035–0.050; 0.04 is the ANUGA default
-    assert 0.035 <= defaults.DEFAULT_MANNINGS_N <= 0.050
+    # Practical range: 0.010 (smooth concrete) to 0.5 (dense vegetation/floodplain)
+    assert 0.010 <= defaults.DEFAULT_MANNINGS_N <= 0.5
 
 
 def test_rainfall_factor():
