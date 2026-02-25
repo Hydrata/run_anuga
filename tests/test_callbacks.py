@@ -36,11 +36,17 @@ class TestLoggingCallback:
     def test_implements_protocol(self):
         assert isinstance(LoggingCallback(), SimulationCallback)
 
-    def test_on_status_logs(self, caplog):
+    def test_on_status_logs_non_percentage(self, caplog):
+        cb = LoggingCallback()
+        with caplog.at_level(logging.INFO):
+            cb.on_status("building mesh")
+        assert "building mesh" in caplog.text
+
+    def test_on_status_suppresses_percentage(self, caplog):
         cb = LoggingCallback()
         with caplog.at_level(logging.INFO):
             cb.on_status("45.2%")
-        assert "45.2%" in caplog.text
+        assert "45.2%" not in caplog.text
 
     def test_on_metric_logs(self, caplog):
         cb = LoggingCallback()
@@ -107,12 +113,14 @@ class TestLoggingCallbackIntegration:
         sim_logger = configure_simulation_logging(str(tmp_path))
         try:
             cb = LoggingCallback(logger_instance=sim_logger)
-            cb.on_status("45.2%")
+            cb.on_status("45.2%")    # percentage — suppressed
+            cb.on_status("building mesh")  # non-percentage — logged
             cb.on_metric("memory_used", 1024)
 
             log_file = tmp_path / "run_anuga_1.log"
             contents = log_file.read_text()
-            assert "45.2%" in contents
+            assert "45.2%" not in contents        # percentage suppressed
+            assert "building mesh" in contents    # non-percentage logged
             assert "memory_used" in contents
             assert "1024" in contents
         finally:

@@ -55,6 +55,10 @@ class LoggingCallback:
         self._logger = logger_instance or logger
 
     def on_status(self, status: str, **kwargs: Any) -> None:
+        # Skip percentage updates — they are immediately followed by a more
+        # detailed logger.info line in the evolve loop.
+        if status.endswith("%"):
+            return
         self._logger.info("status: %s %s", status, kwargs if kwargs else "")
 
     def on_metric(self, key: str, value: Any) -> None:

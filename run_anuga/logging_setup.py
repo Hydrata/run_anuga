@@ -76,7 +76,7 @@ def configure_simulation_logging(
 
     # --- File handler ---
     log_path = os.path.join(output_dir, f"run_anuga_{batch_number}.log")
-    file_handler = logging.FileHandler(log_path)
+    file_handler = logging.FileHandler(log_path, mode='w')
     file_handler.setLevel(file_level)
     file_handler.setFormatter(
         logging.Formatter("%(asctime)s %(name)s %(levelname)s %(message)s")

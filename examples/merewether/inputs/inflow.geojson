@@ -1,0 +1,32 @@
+{
+  "type": "FeatureCollection",
+  "crs": {
+    "type": "name",
+    "properties": {
+      "name": "EPSG:32756"
+    }
+  },
+  "features": [
+    {
+      "type": "Feature",
+      "id": "inlet",
+      "properties": {
+        "type": "Surface",
+        "data": "19.7"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            382255.0,
+            6354280.0
+          ],
+          [
+            382275.0,
+            6354280.0
+          ]
+        ]
+      }
+    }
+  ]
+}

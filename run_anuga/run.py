@@ -11,6 +11,7 @@ from run_anuga.run_utils import is_dir_check, setup_input_data, update_web_inter
     make_frictions, post_process_sww, check_coordinates_are_in_polygon, compute_yieldstep, RunContext
 from run_anuga import defaults
 from run_anuga.callbacks import NullCallback, HydrataCallback
+from run_anuga.diagnostics import SimulationMonitor
 from run_anuga.logging_setup import configure_simulation_logging, neutralize_anuga_logging, teardown_simulation_logging
 
 _module_logger = logging.getLogger(__name__)
@@ -159,6 +160,10 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
             domain.set_name(input_data['run_label'])
             domain.set_datadir(input_data['output_directory'])
             domain.set_minimum_storable_height(defaults.MINIMUM_STORABLE_HEIGHT_M)
+            if start != '1/1/1970':
+                from datetime import datetime
+                dt = datetime.fromisoformat(start.replace('Z', '+00:00'))
+                domain.set_starttime(dt)
             callback.on_status('created mesh')
             logger.info(domain.mesh.statistics())
         else:
@@ -166,6 +171,7 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
         if batch_number == 1:
             barrier()
             domain = distribute(domain, verbose=True)
+            domain.optimise_dry_cells = True  # Skip reconstruction for dry cells — free speedup, no accuracy impact
 
             # setup rainfall
             def create_inflow_function(dataframe, name):
@@ -249,27 +255,50 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
             checkpoint_step=1
         )
         barrier()
+        monitor = None
+        if anuga.myid == 0:
+            monitor = SimulationMonitor(
+                domain,
+                input_data['output_directory'],
+                batch_number,
+                yieldstep,
+                duration_s=duration,
+                run_label=input_data['run_label'],
+                scenario_config=input_data['scenario_config'],
+            )
         start = time.time()
         for t in domain.evolve(yieldstep=yieldstep, finaltime=duration, skip_initial_step=skip_initial_step):
             if anuga.myid == 0:
                 stop = time.time()
+                wall_time_s = stop - start
                 percentage_done = round(t * 100 / duration, 1)
                 callback.on_status(f"{percentage_done}%")
-                duration_seconds = round(stop - start)
+                duration_seconds = round(wall_time_s)
                 minutes, seconds = divmod(duration_seconds, 60)
                 memory_percent = psutil.virtual_memory().percent
                 memory_usage = psutil.virtual_memory().used
+                mem_mb = memory_usage / (1024 * 1024)
                 memory_usage_logs.append(memory_usage)
-                logger.info(f'{percentage_done}% | {minutes}m {seconds}s | mem: {memory_percent}% | disk: {psutil.disk_usage("/").percent}% | {domain.get_datetime().isoformat()}')
+                diag = monitor.record(t, wall_time_s=wall_time_s, mem_mb=mem_mb)
+                logger.info(
+                    f'{percentage_done}% | {minutes}m {seconds}s | '
+                    f'mem: {memory_percent}% | disk: {psutil.disk_usage("/").percent}% | '
+                    f'{domain.get_datetime().isoformat()} | '
+                    + monitor.format_log_suffix(diag)
+                )
                 start = time.time()
         barrier()
         domain.sww_merge(verbose=True, delete_old=True)
         barrier()
         if anuga.myid == 0:
+            monitor.finalize()
             max_memory_usage = int(round(max(memory_usage_logs)))
             callback.on_metric('memory_used', max_memory_usage)
             logger.info("Processing results...")
-            post_process_sww(package_dir, run_args=run_args)
+            try:
+                post_process_sww(package_dir, run_args=run_args)
+            except Exception:
+                logger.warning("post_process_sww failed (TIF output skipped):\n%s", traceback.format_exc())
 
             # Log output file paths
             sww_path = os.path.join(input_data['output_directory'], f"{input_data['run_label']}.sww")
