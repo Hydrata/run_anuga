@@ -128,3 +128,15 @@ dmypy.json
 # Pyre type checker
 .pyre/
 test-docker/logs/
+
+# Simulation outputs (generated at runtime)
+outputs_*/
+*.sww
+*.msh
+run_anuga_*.log
+run_diagnostics_*.csv
+run_summary_*.json
+
+# Release artifacts
+*.tar.gz
+u2204/
