@@ -57,6 +57,13 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
     start = '1/1/1970'
     if input_data['scenario_config'].get('model_start'):
         start = input_data['scenario_config'].get('model_start')
+    # Absolute domain starttime in seconds (Unix epoch). Used to compute finaltime
+    # and normalise progress/diagnostics to simulation-relative time (0…duration).
+    if start != '1/1/1970':
+        from datetime import datetime
+        starttime_s = int(datetime.fromisoformat(start.replace('Z', '+00:00')).timestamp())
+    else:
+        starttime_s = 0
     try:
         domain_name = input_data['run_label']
         checkpoint_directory = input_data['checkpoint_directory']
@@ -161,9 +168,7 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
             domain.set_datadir(input_data['output_directory'])
             domain.set_minimum_storable_height(defaults.MINIMUM_STORABLE_HEIGHT_M)
             if start != '1/1/1970':
-                from datetime import datetime
-                dt = datetime.fromisoformat(start.replace('Z', '+00:00'))
-                domain.set_starttime(dt)
+                domain.set_starttime(starttime_s)
             callback.on_status('created mesh')
             logger.info(domain.mesh.statistics())
         else:
@@ -176,8 +181,11 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
             # setup rainfall
             def create_inflow_function(dataframe, name):
                 def rain(time_in_seconds):
-                    t_sec = int(math.floor(time_in_seconds))
-                    return dataframe[name][t_sec]
+                    # Normalise to simulation-relative seconds (0…duration).
+                    # starttime_s=0 when model_start is unset; equals Unix epoch otherwise.
+                    # Clamped so ANUGA's function-type probe (called with t=0) stays in bounds.
+                    t_sec = max(0, min(int(math.floor(time_in_seconds - starttime_s)), duration))
+                    return dataframe[name].iloc[t_sec]
 
                 rain.__name__ = name
                 return rain
@@ -267,11 +275,11 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
                 scenario_config=input_data['scenario_config'],
             )
         start = time.time()
-        for t in domain.evolve(yieldstep=yieldstep, finaltime=duration, skip_initial_step=skip_initial_step):
+        for t in domain.evolve(yieldstep=yieldstep, finaltime=starttime_s + duration, skip_initial_step=skip_initial_step):
             if anuga.myid == 0:
                 stop = time.time()
                 wall_time_s = stop - start
-                percentage_done = round(t * 100 / duration, 1)
+                percentage_done = round((t - starttime_s) * 100 / duration, 1)
                 callback.on_status(f"{percentage_done}%")
                 duration_seconds = round(wall_time_s)
                 minutes, seconds = divmod(duration_seconds, 60)
@@ -279,7 +287,7 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
                 memory_usage = psutil.virtual_memory().used
                 mem_mb = memory_usage / (1024 * 1024)
                 memory_usage_logs.append(memory_usage)
-                diag = monitor.record(t, wall_time_s=wall_time_s, mem_mb=mem_mb)
+                diag = monitor.record(t - starttime_s, wall_time_s=wall_time_s, mem_mb=mem_mb)
                 logger.info(
                     f'{percentage_done}% | {minutes}m {seconds}s | '
                     f'mem: {memory_percent}% | disk: {psutil.disk_usage("/").percent}% | '
