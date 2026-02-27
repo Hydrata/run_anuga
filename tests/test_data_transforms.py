@@ -244,7 +244,8 @@ class TestMakeInteriorHolesAndTags:
         holes, tags = make_interior_holes_and_tags(input_data)
         assert holes is not None
         assert len(holes) == 1
-        assert tags[0] is None  # Holes have None tag
+        # Holes → reflective boundary (water cannot enter the void)
+        assert tags[0] == {"reflective": [0, 1, 2, 3, 4]}
 
     def test_reflective_structure(self):
         input_data = {
@@ -258,10 +259,9 @@ class TestMakeInteriorHolesAndTags:
             }
         }
         holes, tags = make_interior_holes_and_tags(input_data)
-        assert holes is not None
-        assert len(holes) == 1
-        # Reflective tag is exactly {"reflective": [0, 1, 2, 3]} — one index per vertex
-        assert tags[0] == {"reflective": [0, 1, 2, 3]}
+        # Reflective → DEM-burned elevation, NOT a mesh hole
+        assert holes is None
+        assert tags is None
 
     def test_mixed_structures(self):
         input_data = {
@@ -283,8 +283,7 @@ class TestMakeInteriorHolesAndTags:
             }
         }
         holes, tags = make_interior_holes_and_tags(input_data)
-        # Mannings skipped, 2 holes remain; tags list length must match holes list length
-        assert len(holes) == 2
-        assert len(tags) == 2
-        assert tags[0] is None  # Holes → None tag
-        assert tags[1] == {"reflective": [0, 1, 2, 3]}  # Reflective → exact tag
+        # Only Holes → 1 mesh hole (Mannings and Reflective are not mesh holes)
+        assert len(holes) == 1
+        assert len(tags) == 1
+        assert tags[0] == {"reflective": [0, 1, 2, 3]}  # Holes → reflective tag

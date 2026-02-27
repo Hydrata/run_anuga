@@ -108,7 +108,8 @@ class TestMakeFrictionsGeo:
 
 @pytest.mark.requires_geo
 class TestMakeInteriorHolesGeo:
-    def test_reflective_hole_has_indices(self):
+    def test_reflective_structure_not_a_hole(self):
+        """Reflective structures are DEM-burned, not mesh holes."""
         coords = _polygon_coords(321040, 5812040, 20)
         input_data = {
             "structure": {
@@ -121,14 +122,11 @@ class TestMakeInteriorHolesGeo:
             }
         }
         holes, tags = make_interior_holes_and_tags(input_data)
-        assert holes is not None
-        assert len(holes) == 1
-        # Reflective tag is exactly {"reflective": [0, 1, ..., n-1]}
-        expected_tag = {"reflective": list(range(len(coords)))}
-        assert tags[0] == expected_tag
+        assert holes is None
+        assert tags is None
 
-    def test_holes_structure_has_none_tag(self):
-        """Holes method produces a None tag (simple hole, no boundary condition)."""
+    def test_holes_structure_has_reflective_tag(self):
+        """Holes method produces a reflective boundary tag (water cannot enter void)."""
         coords = _polygon_coords(321040, 5812040, 20)
         input_data = {
             "structure": {
@@ -143,7 +141,9 @@ class TestMakeInteriorHolesGeo:
         holes, tags = make_interior_holes_and_tags(input_data)
         assert holes is not None
         assert len(holes) == 1
-        assert tags[0] is None
+        # Holes tag is exactly {"reflective": [0, 1, ..., n-1]}
+        expected_tag = {"reflective": list(range(len(coords)))}
+        assert tags[0] == expected_tag
 
     def test_mannings_not_in_holes(self):
         """Mannings structures are friction polygons, not interior holes."""
@@ -163,7 +163,10 @@ class TestMakeInteriorHolesGeo:
         assert tags is None
 
     def test_holes_and_tags_same_length(self):
-        """holes and tags lists must always be the same length."""
+        """holes and tags lists must always be the same length.
+
+        Only 'Holes' structures become mesh holes; Reflective and Mannings do not.
+        """
         input_data = {
             "structure": {
                 "features": [
@@ -173,12 +176,18 @@ class TestMakeInteriorHolesGeo:
                     },
                     {
                         "geometry": {"coordinates": [_polygon_coords(321050, 5812050, 20)]},
+                        "properties": {"method": "Holes"}
+                    },
+                    {
+                        "geometry": {"coordinates": [_polygon_coords(321100, 5812100, 20)]},
                         "properties": {"method": "Reflective"}
                     },
                 ]
             }
         }
         holes, tags = make_interior_holes_and_tags(input_data)
+        # Only the 2 Holes structures become mesh holes; Reflective is DEM-burned
+        assert len(holes) == 2
         assert len(holes) == len(tags)
 
     def test_empty_features_returns_none(self):

@@ -46,6 +46,7 @@ class ScenarioConfig(BaseModel):
     resolution: Optional[float] = None
     max_rmse_tolerance: Optional[float] = None
     model_start: Optional[str] = None
+    flow_algorithm: Optional[str] = None
 
     model_config = {"extra": "allow"}
 

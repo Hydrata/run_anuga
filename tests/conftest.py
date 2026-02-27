@@ -180,7 +180,7 @@ def small_geotiff(tmp_path):
     import numpy as np
     from rasterio.transform import from_bounds
 
-    path = tmp_path / "dem.tif"
+    path = tmp_path / "source_dem.tif"
     data = np.full((10, 10), 50.0, dtype=np.float32)
     transform = from_bounds(321000, 5812000, 321100, 5812100, 10, 10)
 

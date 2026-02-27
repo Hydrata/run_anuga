@@ -62,7 +62,7 @@ class TestBurnStructuresIntoRaster:
                          [321020, 5812020]]
                     ]
                 },
-                "properties": {}
+                "properties": {"method": "Reflective"}
             }]
         }))
 
@@ -96,7 +96,7 @@ class TestBurnStructuresIntoRaster:
                          [321020, 5812020]]
                     ]
                 },
-                "properties": {}
+                "properties": {"method": "Reflective"}
             }]
         }))
 

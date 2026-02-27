@@ -169,6 +169,13 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
             domain.set_minimum_storable_height(defaults.MINIMUM_STORABLE_HEIGHT_M)
             if start != '1/1/1970':
                 domain.set_starttime(starttime_s)
+            flow_algorithm = input_data['scenario_config'].get('flow_algorithm')
+            if flow_algorithm:
+                logger.info(f"Setting flow algorithm: {flow_algorithm}")
+                domain.set_flow_algorithm(flow_algorithm)
+                if flow_algorithm.endswith('_SG') and input_data.get('elevation_filename'):
+                    logger.info(f"Building sub-grid tables from {input_data['elevation_filename']}")
+                    domain.set_subgrid_dem(input_data['elevation_filename'], verbose=True)
             callback.on_status('created mesh')
             logger.info(domain.mesh.statistics())
         else:

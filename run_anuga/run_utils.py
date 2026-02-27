@@ -194,7 +194,8 @@ def create_mesher_mesh(input_data):
     with rasterio.open(input_data['elevation_filename']) as src:
         elevation_raster_resolution = src.transform.a
     user_resolution = float(input_data.get('resolution'))
-    if input_data.get('structure_filename'):
+    if input_data.get('structure_filename') and \
+            _has_reflective_structures(input_data['structure_filename']):
         burn_structures_into_raster(input_data['structure_filename'], input_data['elevation_filename'], backup=False)
     mesh_region_shp_files = None
     minimum_triangle_area = max((user_resolution ** 2) / 2, (elevation_raster_resolution ** 2) / 2)
@@ -400,11 +401,12 @@ def create_anuga_mesh(input_data):
     mesh_filepath = input_data['mesh_filepath']
     triangle_resolution = (input_data['scenario_config'].get('resolution') ** 2) / 2
     interior_regions = make_interior_regions(input_data)
-    # interior_holes, hole_tags = make_interior_holes_and_tags(input_data)
+    interior_holes, hole_tags = make_interior_holes_and_tags(input_data)
     bounding_polygon = input_data['boundary_polygon']
     boundary_tags = input_data['boundary_tags']
     logger.info("creating anuga_mesh")
-    if input_data.get('structure_filename'):
+    if input_data.get('structure_filename') and \
+            _has_reflective_structures(input_data['structure_filename']):
         burn_structures_into_raster(input_data['structure_filename'], input_data['elevation_filename'], backup=False)
     mesh_geo_reference = Geo_reference(zone=int(input_data['scenario_config'].get('epsg')[-2:]))
     anuga_mesh = anuga.pmesh.mesh_interface.create_mesh_from_regions(
@@ -412,9 +414,9 @@ def create_anuga_mesh(input_data):
         boundary_tags=boundary_tags,
         maximum_triangle_area=triangle_resolution,
         interior_regions=interior_regions,
-        # interior_holes=interior_holes,
+        interior_holes=interior_holes,
         mesh_geo_reference=mesh_geo_reference,
-        # hole_tags=hole_tags,
+        hole_tags=hole_tags,
         filename=mesh_filepath,
         use_cache=False,
         verbose=False,
@@ -455,20 +457,15 @@ def make_interior_holes_and_tags(input_data):
     hole_tags = list()
     if input_data.get('structure'):
         for structure in input_data['structure']['features']:
-            if structure.get('properties').get('method') == 'Mannings':
-                continue
-            structure_polygon = structure.get('geometry').get('coordinates')[0]
-            interior_holes.append(structure_polygon)
-            if structure.get('properties').get('method') == 'Holes':
-                hole_tags.append(None)
-            elif structure.get('properties').get('method') == 'Reflective':
-                hole_tags.append({'reflective': [i for i in range(len(structure_polygon))]})
-            else:
-                logger.error(f"Unknown interior hole type found: {structure.get('properties').get('method')}")
-                hole_tags.append(None)  # Maintain holes/tags length parity
-    if len(interior_holes) == 0:
-        interior_holes = None
-        hole_tags = None
+            method = structure.get('properties', {}).get('method')
+            if method == 'Holes':
+                structure_polygon = structure['geometry']['coordinates'][0]
+                interior_holes.append(structure_polygon)
+                hole_tags.append({'reflective': list(range(len(structure_polygon)))})
+            # Reflective → DEM-burned, not a mesh hole
+            # Mannings → friction zone, not a mesh hole
+    if not interior_holes:
+        return None, None
     return interior_holes, hole_tags
 
 
@@ -858,8 +855,22 @@ def setup_logger(input_data, username=None, password=None, batch_number=1):
     return configure_simulation_logging(input_data['output_directory'], batch_number)
 
 
+def _has_reflective_structures(structures_filename):
+    """Return True if any structure feature has method='Reflective'."""
+    with open(structures_filename) as f:
+        data = json.load(f)
+    return any(
+        feat.get('properties', {}).get('method') == 'Reflective'
+        for feat in data.get('features', [])
+    )
+
+
 def burn_structures_into_raster(structures_filename, raster_filename, backup=True):
-    """Burn structure geometries into a raster file (additive)."""
+    """Burn Reflective structure geometries into a raster file (additive).
+
+    Only features with method='Reflective' are burned; Mannings and Holes
+    buildings are handled separately and must not alter the DEM.
+    """
     rasterio = import_optional("rasterio")
     from rasterio.features import rasterize
 
@@ -871,6 +882,8 @@ def burn_structures_into_raster(structures_filename, raster_filename, backup=Tru
 
     shapes = []
     for feature in structures.get('features', []):
+        if feature.get('properties', {}).get('method') != 'Reflective':
+            continue   # only burn Reflective buildings
         geom = feature.get('geometry')
         if geom:
             shapes.append((geom, defaults.BUILDING_BURN_HEIGHT_M))
