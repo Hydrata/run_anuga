@@ -244,8 +244,8 @@ class TestMakeInteriorHolesAndTags:
         holes, tags = make_interior_holes_and_tags(input_data)
         assert holes is not None
         assert len(holes) == 1
-        # Holes → reflective boundary (water cannot enter the void)
-        assert tags[0] == {"reflective": [0, 1, 2, 3, 4]}
+        # Holes → Reflective boundary (water cannot enter the void)
+        assert tags[0] == {"Reflective": [0, 1, 2, 3, 4]}
 
     def test_reflective_structure(self):
         input_data = {
@@ -286,4 +286,4 @@ class TestMakeInteriorHolesAndTags:
         # Only Holes → 1 mesh hole (Mannings and Reflective are not mesh holes)
         assert len(holes) == 1
         assert len(tags) == 1
-        assert tags[0] == {"reflective": [0, 1, 2, 3]}  # Holes → reflective tag
+        assert tags[0] == {"Reflective": [0, 1, 2, 3]}  # Holes → Reflective tag

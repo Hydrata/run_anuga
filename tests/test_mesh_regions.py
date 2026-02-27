@@ -141,8 +141,8 @@ class TestMakeInteriorHolesGeo:
         holes, tags = make_interior_holes_and_tags(input_data)
         assert holes is not None
         assert len(holes) == 1
-        # Holes tag is exactly {"reflective": [0, 1, ..., n-1]}
-        expected_tag = {"reflective": list(range(len(coords)))}
+        # Holes tag is exactly {"Reflective": [0, 1, ..., n-1]}
+        expected_tag = {"Reflective": list(range(len(coords)))}
         assert tags[0] == expected_tag
 
     def test_mannings_not_in_holes(self):

@@ -462,7 +462,7 @@ def make_interior_holes_and_tags(input_data):
             if method == 'Holes':
                 structure_polygon = structure['geometry']['coordinates'][0]
                 interior_holes.append(structure_polygon)
-                hole_tags.append({'reflective': list(range(len(structure_polygon)))})
+                hole_tags.append({'Reflective': list(range(len(structure_polygon)))})
             # Reflective → DEM-burned, not a mesh hole
             # Mannings → friction zone, not a mesh hole
     if not interior_holes:
