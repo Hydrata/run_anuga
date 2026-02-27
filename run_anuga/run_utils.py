@@ -397,7 +397,6 @@ constraints = {{
 
 def create_anuga_mesh(input_data):
     anuga = import_optional("anuga")
-    Geo_reference = anuga.Geo_reference
     mesh_filepath = input_data['mesh_filepath']
     triangle_resolution = (input_data['scenario_config'].get('resolution') ** 2) / 2
     interior_regions = make_interior_regions(input_data)
@@ -408,14 +407,16 @@ def create_anuga_mesh(input_data):
     if input_data.get('structure_filename') and \
             _has_reflective_structures(input_data['structure_filename']):
         burn_structures_into_raster(input_data['structure_filename'], input_data['elevation_filename'], backup=False)
-    mesh_geo_reference = Geo_reference(zone=int(input_data['scenario_config'].get('epsg')[-2:]))
+    # Do NOT pass mesh_geo_reference: ANUGA computes the offset from bounding polygon's
+    # lower-left corner, keeping coordinates small. Passing Geo_reference(zone=N,xll=0,yll=0)
+    # leaves absolute UTM values (~380000, ~6350000) which causes Triangle's float32
+    # arithmetic to produce degenerate zero-area triangles near hole boundaries.
     anuga_mesh = anuga.pmesh.mesh_interface.create_mesh_from_regions(
         bounding_polygon=bounding_polygon,
         boundary_tags=boundary_tags,
         maximum_triangle_area=triangle_resolution,
         interior_regions=interior_regions,
         interior_holes=interior_holes,
-        mesh_geo_reference=mesh_geo_reference,
         hole_tags=hole_tags,
         filename=mesh_filepath,
         use_cache=False,
