@@ -454,19 +454,40 @@ def make_interior_regions(input_data):
 
 
 def make_interior_holes_and_tags(input_data):
-    interior_holes = list()
-    hole_tags = list()
+    raw_polys = []
     if input_data.get('structure'):
         for structure in input_data['structure']['features']:
             method = structure.get('properties', {}).get('method')
             if method == 'Holes':
-                structure_polygon = structure['geometry']['coordinates'][0]
-                interior_holes.append(structure_polygon)
-                hole_tags.append({'Reflective': list(range(len(structure_polygon)))})
+                raw_polys.append(structure['geometry']['coordinates'][0])
             # Reflective → DEM-burned, not a mesh hole
             # Mannings → friction zone, not a mesh hole
-    if not interior_holes:
+
+    if not raw_polys:
         return None, None
+
+    # Merge touching/overlapping building polygons so Triangle doesn't see
+    # shared vertices or coincident edges that cause near-zero-area triangles.
+    try:
+        from shapely.geometry import Polygon as _ShapelyPolygon
+        from shapely.ops import unary_union as _unary_union
+        shapely_polys = [_ShapelyPolygon(c) for c in raw_polys]
+        merged = _unary_union(shapely_polys)
+        geoms = list(merged.geoms) if merged.geom_type == 'MultiPolygon' else [merged]
+        merged_polys = []
+        for geom in geoms:
+            # simplify(0.01) removes sub-centimetre artefacts introduced by
+            # the union operation at shared boundary vertices
+            simplified = geom.simplify(0.01, preserve_topology=True)
+            merged_polys.append(list(simplified.exterior.coords))
+    except ImportError:
+        merged_polys = raw_polys
+
+    interior_holes = []
+    hole_tags = []
+    for coords in merged_polys:
+        interior_holes.append(coords)
+        hole_tags.append({'Reflective': list(range(len(coords)))})
     return interior_holes, hole_tags
 
 
