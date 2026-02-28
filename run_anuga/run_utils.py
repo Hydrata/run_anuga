@@ -3,7 +3,6 @@ import datetime
 import glob
 import json
 import logging
-import logging.handlers
 import math
 import os
 import shutil
@@ -98,12 +97,12 @@ def setup_input_data(package_dir):
     input_data = _load_package_data(package_dir)
 
     if len(input_data['boundary'].get('features')) == 0:
-        raise AttributeError('No boundary features found')
+        raise ValueError('No boundary features found')
     boundary_polygon, boundary_tags = create_boundary_polygon_from_boundaries(
         input_data['boundary']
     )
     if len(boundary_polygon) == 0 or len(boundary_tags) == 0:
-        raise AttributeError('No boundary data found')
+        raise ValueError('No boundary data found')
     input_data['boundary_polygon'] = boundary_polygon
     input_data['boundary_tags'] = boundary_tags
     return input_data
@@ -120,7 +119,6 @@ def update_web_interface(run_args, data, files=None):
         control_server = input_data['scenario_config'].get('control_server')
         client = requests.Session()
         client.auth = requests.auth.HTTPBasicAuth(username, password)
-        # logger.critical(f"hydrata.com post:{data}")
         response = client.patch(
             f"{control_server}anuga/api/{data['project']}/{data['scenario']}/run/{run_id}/",
             data=data,
@@ -189,7 +187,6 @@ def create_mesher_mesh(input_data):
             mesh_dict = json.load(mesh_file)
         mesh_size = len(mesh_dict['mesh']['elem'])
         return mesher_mesh_filepath, mesh_size
-    # logger = setup_logger(input_data)
     logger.info("create_mesh running")
     with rasterio.open(input_data['elevation_filename']) as src:
         elevation_raster_resolution = src.transform.a
@@ -261,26 +258,8 @@ simplify_tol = 10
             logger.debug(mesher_out.stdout)
             logger.debug(mesher_out.stderr)
             if mesher_out.returncode != 0:
-                raise UserWarning(mesher_out.stderr)
+                raise RuntimeError(f"mesher failed: {mesher_out.stderr}")
 
-
-        # mesh_regions_tif_mask_filename = f"{input_data['mesh_region_filename'][:-5]}.tif"
-        # mesh_regions_tif_mask = subprocess.run([
-        #     "gdal_rasterize",
-        #     "-a", "resolution",
-        #     "-te", str(xmin), str(ymin), str(xmax), str(ymax),
-        #     "-tr", str(xres), str(yres),
-        #     input_data['mesh_region_filename'],
-        #     mesh_regions_tif_mask_filename
-        # ],
-        #     capture_output=True,
-        #     universal_newlines=True
-        # )
-        # logger.critical(mesh_regions_tif_mask)
-        # logger.critical(mesh_regions_tif_mask.stdout)
-        # if mesh_regions_tif_mask.returncode != 0:
-        #     logger.critical(mesh_regions_tif_mask.stderr)
-        #     raise UserWarning(mesh_regions_tif_mask.stderr)
     # the lowest triangle area we can have is 5m2 or the grid resolution squared
 
     max_area = defaults.MAX_TRIANGLE_AREA
@@ -301,17 +280,6 @@ simplify = True
 simplify_buffer = -1
 simplify_tol = 10
 """
-#
-#     if mesh_region_tif_files:
-#         text_blob += f"""
-# parameter_files = {{
-#    'mesh_regions': {{
-#        'file': '{mesh_region_tif_files[0][0]}',
-#        'method': 'mean',
-#        'tolerance': -1
-#        }},
-# }}
-# """
 
     if mesh_region_shp_files:
         mesh_region_shp_files.sort(key=lambda mesh_region: mesh_region.get('resolution'), reverse=True)
@@ -327,12 +295,7 @@ simplify_tol = 10
             combined_layer_path = f"{base_combined_filename}_{index}.shp"
             combined = gpd.read_file(combined_layer_path)
             eraser = gpd.read_file(mesh_region.get('mesh_region_shp_extent'))
-            print(70*'*')
-            print(f"resolution: {mesh_region.get('resolution')}")
-            print(f"combined_layer_path: {combined_layer_path}")
-            print(f"eraser_layer: {mesh_region.get('mesh_region_shp_extent')}")
-            print(f"combined_layer feature count: {len(combined)}")
-            print(f"eraser_layer feature count: {len(eraser)}")
+            logger.debug(f"resolution: {mesh_region.get('resolution')}, combined: {len(combined)} features, eraser: {len(eraser)} features")
 
             # Erase eraser extent from combined triangles
             if len(combined) > 0 and len(eraser) > 0:
@@ -340,12 +303,11 @@ simplify_tol = 10
             else:
                 erased = combined
 
-            print(f"after erase feature count: {len(erased)}")
+            logger.debug(f"after erase: {len(erased)} features")
 
             # Add new triangles from this mesh region
             new_triangles = gpd.read_file(mesh_region.get('mesh_region_shp_triangles'))
-            print(f"new_triangles_layer: {mesh_region.get('mesh_region_shp_triangles')}")
-            print(f"new_triangles feature count: {len(new_triangles)}")
+            logger.debug(f"new_triangles ({mesh_region.get('mesh_region_shp_triangles')}): {len(new_triangles)} features")
 
             # Combine erased + new triangles (keep only geometry)
             final = gpd.GeoDataFrame(
@@ -355,8 +317,7 @@ simplify_tol = 10
             new_combined_shp_name = f"{base_combined_filename}_{index + 1}.shp"
             final.to_file(new_combined_shp_name)
 
-            print(f"final combined feature count: {len(final)}")
-            print(70*'*')
+            logger.debug(f"final combined: {len(final)} features")
 
         text_blob += f"""
 constraints = {{
@@ -425,22 +386,6 @@ def create_anuga_mesh(input_data):
     )
     logger.info(f"{anuga_mesh.tri_mesh.triangles.size=}")
     return mesh_filepath, anuga_mesh
-
-
-def get_sql_triangles_from_anuga_mesh(anuga_mesh):
-    vertices = anuga_mesh.tri_mesh.vertices
-    triangles = anuga_mesh.tri_mesh.triangles
-    output = "MULTIPOLYGON ("
-    for triangle in triangles:
-        # get coordinates:
-        one = str(vertices[triangle[0]])[2:-1]
-        two = str(vertices[triangle[1]])[2:-1]
-        three = str(vertices[triangle[2]])[2:-1]
-        four = str(vertices[triangle[0]])[2:-1]
-        triangle_string = f"(({one},{two},{three},{four})),"
-        output += str(triangle_string)
-    output = output[:-1] + ")"
-    return output
 
 
 def make_interior_regions(input_data):
@@ -612,54 +557,10 @@ def create_boundary_polygon_from_boundaries(boundaries_geojson):
         sorted_boundary_polygon.append(point_blob.get('point'))
         sorted_boundary_tags[point_blob.get('boundary')].append(index)
 
-    # # Make a dump of the centroids geometry (for debugging only - not returned anywhere).
-    # output_driver_centroids = ogr.GetDriverByName('GeoJSON')
-    # filepath_geojson_driver_centroids = os.path.join(package_dir, f'outputs_{run_label.split("run_")[1]}', f'{run_label}_boundary_centroids.geojson')
-    # output_data_source_centroids = output_driver_centroids.CreateDataSource(filepath_geojson_driver_centroids)
-    # output_layer_centroids = output_data_source_centroids.CreateLayer(filepath_geojson_driver_centroids, srs, geom_type=ogr.wkbPolygon)
-    # feature_definition_centroids = output_layer_centroids.GetLayerDefn()
-    # field_definition_centroids_1 = ogr.FieldDefn('index', ogr.OFTReal)
-    # output_layer_centroids.CreateField(field_definition_centroids_1)
-    # field_definition_centroids_2 = ogr.FieldDefn('angle', ogr.OFTReal)
-    # output_layer_centroids.CreateField(field_definition_centroids_2)
-    # field_definition_centroids_3 = ogr.FieldDefn('id', ogr.OFTString)
-    # field_definition_centroids_3.SetWidth(1000)
-    # output_layer_centroids.CreateField(field_definition_centroids_3)
-    # for index, line in enumerate(line_list):
-    #     output_feature_centroids = ogr.Feature(feature_definition_centroids)
-    #     centroid = line.get('centroid')
-    #     point = ogr.Geometry(ogr.wkbPoint)
-    #     point.AddPoint(centroid[0], centroid[1])
-    #     output_feature_centroids.SetGeometry(point)
-    #     output_feature_centroids.SetField('index', index)
-    #     output_feature_centroids.SetField('angle', line.get('angle'))
-    #     output_feature_centroids.SetField('id', line.get('id'))
-    #     output_layer_centroids.CreateFeature(output_feature_centroids)
-    #
-    # # Make a dump of the boundary polygon geometry (for debugging only - not returned anywhere).
-    # output_driver = ogr.GetDriverByName('GeoJSON')
-    # filepath_geojson_driver = os.path.join(package_dir, f'outputs_{run_label.split("run_")[1]}', f'{run_label}_boundary_polygon.geojson')
-    # output_data_source = output_driver.CreateDataSource(filepath_geojson_driver)
-    # output_layer = output_data_source.CreateLayer(filepath_geojson_driver, srs, geom_type=ogr.wkbPolygon)
-    # feature_definition = output_layer.GetLayerDefn()
-    # field_definition_1 = ogr.FieldDefn('index', ogr.OFTReal)
-    # output_layer.CreateField(field_definition_1)
-    # field_definition_2 = ogr.FieldDefn('boundary', ogr.OFTString)
-    # field_definition_2.SetWidth(1000)
-    # output_layer_centroids.CreateField(field_definition_2)
-    # for index, coordinate in enumerate(boundary_polygon):
-    #     output_feature = ogr.Feature(feature_definition)
-    #     point = ogr.Geometry(ogr.wkbPoint)
-    #     point.AddPoint(coordinate[0], coordinate[1])
-    #     output_feature.SetGeometry(point)
-    #     output_feature.SetField('index', index)
-    #     output_feature.SetField('boundary', boundary_tags_list[index])
-    #     output_layer.CreateFeature(output_feature)
-
     return sorted_boundary_polygon, sorted_boundary_tags
 
 
-def post_process_sww(package_dir, run_args=None, output_raster_resolution=None):
+def post_process_sww(package_dir, output_raster_resolution=None):
     anuga = import_optional("anuga")
     util = anuga.utilities.plot_utils
     output_quantities = ['depth', 'velocity', 'depthIntegratedVelocity', 'stage']
@@ -668,7 +569,6 @@ def post_process_sww(package_dir, run_args=None, output_raster_resolution=None):
     resolutions = list()
     if input_data.get('mesh_region'):
         for feature in input_data.get('mesh_region').get('features') or list():
-            # logger.critical(f'{feature=}')
             resolutions.append(feature.get('properties').get('resolution'))
     logger.debug(f'{resolutions=}')
     if len(resolutions) == 0:
@@ -716,13 +616,6 @@ def post_process_sww(package_dir, run_args=None, output_raster_resolution=None):
         k_nearest_neighbours=defaults.K_NEAREST_NEIGHBOURS,
         creation_options=[]
     )
-    _output_directory = input_data['output_directory']
-    _run_label = input_data['run_label']
-    _initial_time_iso_string = input_data['scenario_config'].get('model_start', "1970-01-01T00:00:00+00:00")
-    # generate_stac(output_directory, run_label, output_quantities, initial_time_iso_string)
-    # for result_type in output_quantities:
-        # make_video(output_directory, run_label, result_type)
-
     video_dir = f"{input_data['output_directory']}/videos/"
     if os.path.isdir(video_dir):
         shutil.rmtree(video_dir)
@@ -941,7 +834,6 @@ def make_shp_from_polygon(boundary_polygon, epsg_code, shapefilepath, buffer=0):
 
 
 def snap_links_to_nodes(package_dir):
-    print('snap_links_to_nodes')
     raise NotImplementedError
 
 
@@ -966,7 +858,7 @@ def calculate_hydrology(package_dir):
             continue
         if len(node_candidate) > 1:
             raise IndexError(f"Catchment {catchment.get('id')} has more than one node")
-        print('find', node_candidate)
+        logger.debug(f"find node: {node_candidate}")
         node_index = node_points.index(node_candidate[0])
         input_data['catchment']['features'][index]['node_id'] = input_data.get('nodes').get('features')[node_index].get('id')
 

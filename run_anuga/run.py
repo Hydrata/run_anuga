@@ -3,8 +3,10 @@ import json
 import logging
 import math
 import os
+import signal
 import time
 import traceback
+from datetime import datetime
 
 from run_anuga._imports import import_optional
 from run_anuga.run_utils import is_dir_check, setup_input_data, update_web_interface, create_mesher_mesh, create_anuga_mesh, \
@@ -22,7 +24,6 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
     import_optional("anuga")
 
     # --- Phase 1: parse scenario (needs shapely but not ANUGA domain objects) ---
-    run_args = RunContext(package_dir, username, password)
     input_data = setup_input_data(package_dir)
     batch_number = int(batch_number)
 
@@ -50,24 +51,20 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
     callback = callback or NullCallback()
     logger.info(f"run_sim started with {batch_number=}")
     domain = None
-    overall = None
-    skip_initial_step = False
     memory_usage_logs = list()
     duration = input_data['scenario_config'].get('duration')
-    start = '1/1/1970'
-    if input_data['scenario_config'].get('model_start'):
-        start = input_data['scenario_config'].get('model_start')
+    model_start = input_data['scenario_config'].get('model_start')
     # Absolute domain starttime in seconds (Unix epoch). Used to compute finaltime
     # and normalise progress/diagnostics to simulation-relative time (0…duration).
-    if start != '1/1/1970':
-        from datetime import datetime
-        starttime_s = int(datetime.fromisoformat(start.replace('Z', '+00:00')).timestamp())
+    if model_start:
+        starttime_s = int(datetime.fromisoformat(model_start.replace('Z', '+00:00')).timestamp())
     else:
         starttime_s = 0
     try:
         domain_name = input_data['run_label']
         checkpoint_directory = input_data['checkpoint_directory']
         if batch_number > 1:
+            overall = None
             logger.info("Building domain...")
             sub_domain_name = None
             if anuga.numprocs > 1:
@@ -99,15 +96,14 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
                             logger.debug(f"cpu receive: {cpu}: {buffer}, {rs}, attempt: {attempt}")
                         overall = overall & buffer
                 logger.debug(f"{overall=}")
-                time.sleep(10)
                 if overall:
                     break
+                time.sleep(10)
             domain.set_evolve_starttime(checkpoint_time)
             barrier()
             if not overall:
                 raise Exception(f"Unable to open checkpoint file: {pickle_name}")
             domain.last_walltime = time.time()
-            # skip_initial_step = True
             domain.communication_time = 0.0
             domain.communication_reduce_time = 0.0
             domain.communication_broadcast_time = 0.0
@@ -167,7 +163,7 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
             domain.set_name(input_data['run_label'])
             domain.set_datadir(input_data['output_directory'])
             domain.set_minimum_storable_height(defaults.MINIMUM_STORABLE_HEIGHT_M)
-            if start != '1/1/1970':
+            if model_start:
                 domain.set_starttime(starttime_s)
             flow_algorithm = input_data['scenario_config'].get('flow_algorithm')
             if flow_algorithm:
@@ -197,16 +193,14 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
                 rain.__name__ = name
                 return rain
 
-            rainfall_inflow_polygons = [feature for feature in input_data.get('inflow').get('features') if
-                                        feature.get('properties').get('type') == 'Rainfall']
-            surface_inflow_lines = [feature for feature in input_data.get('inflow').get('features') if
-                                    feature.get('properties').get('type') == 'Surface']
+            inflow_features = (input_data.get('inflow') or {}).get('features') or []
+            rainfall_inflow_polygons = [f for f in inflow_features if f.get('properties').get('type') == 'Rainfall']
+            surface_inflow_lines = [f for f in inflow_features if f.get('properties').get('type') == 'Surface']
             catchment_polygons = [feature for feature in input_data.get('catchment').get('features')] if input_data.get(
                 'catchment') else []
             boundary_polygon = input_data.get('boundary_polygon')
-            datetime_range = pd.date_range(start=start, periods=duration + 1, freq='s')
+            datetime_range = pd.date_range(start=model_start or '1/1/1970', periods=duration + 1, freq='s')
             inflow_dataframe = pd.DataFrame(datetime_range, columns=['timestamp'])
-            inflow_functions = dict()
             for inflow_polygon in rainfall_inflow_polygons:
                 polygon_name = inflow_polygon.get('id')
                 data = inflow_polygon.get('properties').get('data')
@@ -223,7 +217,6 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
                 else:
                     inflow_dataframe[polygon_name] = float(data)
                 inflow_function = create_inflow_function(inflow_dataframe, polygon_name)
-                inflow_functions[polygon_name] = inflow_function
                 geometry = inflow_polygon.get('geometry').get('coordinates')[0]
                 Polygonal_rate_operator(domain, rate=inflow_function, factor=defaults.RAINFALL_FACTOR, polygon=geometry,
                                         default_rate=0.00)
@@ -245,7 +238,6 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
                 polyline_name = inflow_line.get('id')
                 inflow_dataframe[polyline_name] = float(inflow_line.get('properties').get('data'))
                 inflow_function = create_inflow_function(inflow_dataframe, polyline_name)
-                inflow_functions[polyline_name] = inflow_function
                 geometry = inflow_line.get('geometry').get('coordinates')
                 # check that inflow line is actually in the domain:
                 if check_coordinates_are_in_polygon(geometry, boundary_polygon):
@@ -281,11 +273,35 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
                 run_label=input_data['run_label'],
                 scenario_config=input_data['scenario_config'],
             )
-        start = time.time()
-        for t in domain.evolve(yieldstep=yieldstep, finaltime=starttime_s + duration, skip_initial_step=skip_initial_step):
+
+        # --- Graceful bail-out mechanism ---
+        # Send SIGUSR1 to rank-0 PID to request a clean stop at the next yieldstep.
+        # The checkpoint written at the previous yieldstep can be used to resume:
+        #   run-anuga run <dir> --batch_number 2 --checkpoint_time <t>
+        _bail_out = False
+        _bail_flag_path = os.path.join(input_data['output_directory'], 'bail.flag')
+
+        def _handle_sigusr1(sig, frame):
+            nonlocal _bail_out
+            _bail_out = True
+            try:
+                with open(_bail_flag_path, 'w') as _f:
+                    _f.write(f"bail requested at {time.time()}\n")
+            except Exception:
+                pass
+
+        if anuga.myid == 0 and hasattr(signal, 'SIGUSR1'):
+            signal.signal(signal.SIGUSR1, _handle_sigusr1)
+
+        percentage_done = 0.0
+        _yieldstep_start = time.time()
+        for t in domain.evolve(yieldstep=yieldstep, finaltime=starttime_s + duration):
+            # All ranks check the bail flag file (written by rank-0 signal handler)
+            if os.path.exists(_bail_flag_path):
+                _bail_out = True
+
             if anuga.myid == 0:
-                stop = time.time()
-                wall_time_s = stop - start
+                wall_time_s = time.time() - _yieldstep_start
                 percentage_done = round((t - starttime_s) * 100 / duration, 1)
                 callback.on_status(f"{percentage_done}%")
                 duration_seconds = round(wall_time_s)
@@ -295,23 +311,51 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
                 mem_mb = memory_usage / (1024 * 1024)
                 memory_usage_logs.append(memory_usage)
                 diag = monitor.record(t - starttime_s, wall_time_s=wall_time_s, mem_mb=mem_mb)
-                logger.info(
+                log_fn = logger.info
+                mem_note = ''
+                if memory_percent >= 92:
+                    log_fn = logger.critical
+                    mem_note = ' *** MEMORY CRITICALLY LOW — send SIGUSR1 to rank-0 for graceful checkpoint+exit ***'
+                elif memory_percent >= 85:
+                    log_fn = logger.warning
+                    mem_note = ' *** memory pressure high ***'
+                log_fn(
                     f'{percentage_done}% | {minutes}m {seconds}s | '
-                    f'mem: {memory_percent}% | disk: {psutil.disk_usage("/").percent}% | '
+                    f'mem: {memory_percent}% ({mem_mb:.0f} MB) | disk: {psutil.disk_usage("/").percent}% | '
                     f'{domain.get_datetime().isoformat()} | '
                     + monitor.format_log_suffix(diag)
+                    + mem_note
                 )
-                start = time.time()
+                _yieldstep_start = time.time()
+
+            if _bail_out:
+                if anuga.myid == 0:
+                    logger.warning(
+                        f"Bail signal received at t={t - starttime_s:.1f}s "
+                        f"({percentage_done}% complete) — "
+                        f"checkpoint saved, exiting cleanly. "
+                        f"Resume: --batch_number {batch_number + 1} --checkpoint_time {int(t)}"
+                    )
+                break
+
+        bail_note = ' (bailed early)' if _bail_out else ''
         barrier()
-        domain.sww_merge(verbose=True, delete_old=True)
+        domain.sww_merge(verbose=not _bail_out, delete_old=True)
         barrier()
         if anuga.myid == 0:
             monitor.finalize()
-            max_memory_usage = int(round(max(memory_usage_logs)))
+            max_memory_usage = int(round(max(memory_usage_logs))) if memory_usage_logs else 0
             callback.on_metric('memory_used', max_memory_usage)
+            if _bail_out:
+                logger.warning(f"Simulation stopped early{bail_note}. SWW files merged. "
+                                f"Restart with --batch_number {batch_number + 1} --checkpoint_time {int(t)}")
+                # Clean up bail flag so a fresh restart doesn't immediately bail again
+                if os.path.exists(_bail_flag_path):
+                    os.remove(_bail_flag_path)
+                return
             logger.info("Processing results...")
             try:
-                post_process_sww(package_dir, run_args=run_args)
+                post_process_sww(package_dir)
             except Exception:
                 logger.warning("post_process_sww failed (TIF output skipped):\n%s", traceback.format_exc())
 
