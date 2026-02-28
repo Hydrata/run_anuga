@@ -180,7 +180,7 @@ Could reduce pickle size by 30–50%.
 
 ---
 
-## OpenMPI Buffer Pool Fix (MCA Tuning, 2026-02-28)
+## OpenMPI Buffer Pool Analysis (MCA Tuning, 2026-02-28)
 
 ### The Problem
 
@@ -200,22 +200,25 @@ ANUGA's ghost cell exchange (`Isend/Irecv/Waitall` per mesh neighbor) runs every
 (thousands per second). Any momentary congestion spike causes the free list to allocate more
 fragments (in bursts of 64) which are cached permanently.
 
-Secondary: `btl_vader_free_list_max = 512` allows the vader shared-memory BTL to cache up to
-512 fragments per free list.
+The `btl_vader` shared-memory BTL (used for all same-node communication) has a similar
+free list that caches FIFO fragments.
 
 ### Evidence
 
-| Ranks | Peer connections | Per-rank growth | Python-level growth |
-|-------|-----------------|-----------------|---------------------|
-| 4     | 6               | 0 MB/min        | < 1 MB total        |
-| 8     | 28              | 3 MB/min        | < 1 MB total        |
-| 24    | 276             | 62.5 MB/min     | < 1 MB total        |
+| Ranks | Peer connections | Per-rank RSS growth | System memory growth |
+|-------|-----------------|---------------------|----------------------|
+| 4     | 6               | 0 MB/min            | ~0                   |
+| 8     | 28              | 3 MB/min            | ~11 MB/s total       |
+| 12    | 66              | ~3.5 MB/min         | ~14 MB/s total       |
+| 16    | 120             | ~5 MB/min           | ~20 MB/s total       |
+| 24    | 276             | ~9 MB/min           | ~36 MB/s total       |
 
-### The Fix
+### MCA Tuning Attempt — DOES NOT WORK on Same-Node Runs
 
-Cap the free lists with MCA parameters:
+**Attempted fix:** Cap the free lists with MCA parameters:
 
 ```bash
+# DO NOT USE — causes 10-100x performance degradation on same-node runs
 mpirun -np 24 \
   --mca pml_ob1_free_list_max 256 \
   --mca btl_vader_free_list_max 128 \
@@ -223,38 +226,52 @@ mpirun -np 24 \
   ...
 ```
 
-| Parameter | Default | Tuned | Effect |
-|-----------|---------|-------|--------|
-| `pml_ob1_free_list_max` | **-1 (unlimited)** | 256 | Caps PML request fragment cache — the main fix |
-| `btl_vader_free_list_max` | 512 | 128 | Caps vader BTL fragment cache |
-| `btl_vader_eager_limit` | 4096 | 32768 | Keeps ANUGA's small ghost messages on fast eager path |
+### Benchmark Results (2026-02-28)
 
-### Test Results
+Full benchmark report: `/home/dave/towradgi_sgs_tests/benchmark_mca_report.html`
 
-| Metric | Before (no tuning) | After (MCA tuning) |
-|--------|--------------------|--------------------|
-| Per-rank growth rate | 62.5 MB/min | ~2 MB/min |
-| System memory at t+15 min | +46 GB | +1 GB |
-| System memory at t+34 min | Swapping/stuck | +3 GB (stable) |
-| **Reduction** | — | **97%** |
+**MCA tuning causes catastrophic performance degradation:**
 
-### ANUGA Communication Pattern
+| Configuration | Ranks | Wall Time | Yieldsteps | Status |
+|---------------|-------|-----------|------------|--------|
+| No MCA        | 24    | 323s      | 61/61      | COMPLETED |
+| MCA (256/128) | 24    | 4415s     | 0/61       | KILLED (no progress) |
+| MCA (2048/1024)| 24   | >1200s    | 5/61       | TIMED OUT |
+| MCA (8192/4096)| 24   | >1200s    | 8/61       | TIMED OUT |
 
-ANUGA communicates only with **mesh neighbours** (not all-to-all):
-- `communicate_flux_timestep()`: 1× `Allreduce` (8 bytes, MIN) per internal timestep
-- `communicate_ghosts_non_blocking()`: `Isend/Irecv` to each mesh neighbour per timestep
-  - Message size: ~500–2500 bytes per neighbour (ghost centroids × 3 conserved quantities)
-  - Typically 2–8 neighbours per rank
+**Why it fails:** The `btl_vader_free_list_max` parameter caps the shared-memory FIFO fragment
+pool. ANUGA's ghost-cell exchanges generate hundreds of concurrent messages per timestep across
+23 peer connections. Capping the fragment pool causes inter-rank contention where ranks block
+waiting for fragments to become available, creating cascading stalls. The initial dry timesteps
+complete quickly (no ghost exchanges needed), but once wet cells appear the simulation stalls.
+
+MCA tuning may work on **multi-node clusters** where inter-node communication uses TCP/InfiniBand
+(not vader), but it is impractical on same-node configurations.
+
+### MPI Rank Scaling (No MCA, 50K triangles, 1h finaltime)
+
+| Ranks | Wall Time | Tri/Rank | Per-Rank RSS Growth | Notes |
+|-------|-----------|----------|---------------------|-------|
+| 8     | **280s**  | 6,399    | +266 MB             | **FASTEST — 1:1 physical cores** |
+| 12    | 387s      | 4,254    | +270 MB             | 38% slower — oversubscription |
+| 16    | 365s      | 2,969    | +269 MB             | 30% slower — HT threads used |
+| 24    | 323s      | 2,002    | +421 MB             | 15% slower — HT helps hide latency |
+
+### Actual Fix: Use 8 MPI Ranks
+
+For this 62 GB / 16-core system, **8 MPI ranks is the optimal configuration**:
+
+1. **Fastest wall time** (280s) — 1:1 mapping to physical cores minimises communication overhead
+2. **Lowest memory growth** (~3 MB/min/rank, ~11 MB/s system total)
+3. **24h runs fit in memory** — projected peak ~35 GB (well under 62 GB)
 
 ### Recommended Production Command
 
 ```bash
 PYTHONMALLOC=malloc MALLOC_MMAP_THRESHOLD_=65536 MALLOC_TRIM_THRESHOLD_=65536 \
-  mpirun -np 24 \
+  mpirun -np 8 \
   -x PYTHONMALLOC -x MALLOC_MMAP_THRESHOLD_ -x MALLOC_TRIM_THRESHOLD_ \
-  --mca pml_ob1_free_list_max 256 \
-  --mca btl_vader_free_list_max 128 \
-  --mca btl_vader_eager_limit 32768 \
+  -x OMP_NUM_THREADS=1 \
   python3 your_script.py
 ```
 
@@ -263,6 +280,7 @@ PYTHONMALLOC=malloc MALLOC_MMAP_THRESHOLD_=65536 MALLOC_TRIM_THRESHOLD_=65536 \
 - `PYTHONMALLOC=malloc`: Bypasses pymalloc, uses glibc for all allocations
 - `MALLOC_MMAP_THRESHOLD_=65536`: Force mmap for > 64 KB allocs (immediate OS release on free)
 - `MALLOC_TRIM_THRESHOLD_=65536`: Aggressive glibc heap trimming
+- `gc.collect() + malloc_trim(0)` after each yieldstep — helps return freed pages to OS
 
 ---
 
