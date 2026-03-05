@@ -116,7 +116,22 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
             logger.info("Building domain...")
             logger.info('No checkpoint file found. Starting new Simulation')
             callback.on_status('building mesh')
-            if input_data['scenario_config'].get('simplify_mesh'):
+            mesher_name = input_data['scenario_config'].get('mesher')
+            if mesher_name:
+                # External mesher path (Gmsh, JIGSAW, etc.)
+                from run_anuga.meshers import get_mesher
+                generate_mesh = get_mesher(mesher_name)
+                mesh_result = generate_mesh(input_data)
+                domain = anuga.Domain(
+                    mesh_result.points,
+                    mesh_result.triangles,
+                    boundary=mesh_result.boundary_tags,
+                    use_cache=False,
+                    verbose=False,
+                )
+                domain.set_quantity('elevation', mesh_result.elevation, location='vertices')
+                callback.on_metric('mesh_triangle_count', len(mesh_result.triangles))
+            elif input_data['scenario_config'].get('simplify_mesh'):
                 mesher_mesh_filepath, mesh_size = create_mesher_mesh(input_data)
                 with open(mesher_mesh_filepath, 'r') as mesh_file:
                     mesh_dict = json.load(mesh_file)
@@ -177,6 +192,10 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
             barrier()
             domain = distribute(domain, verbose=True)
             domain.optimise_dry_cells = True  # Skip reconstruction for dry cells — free speedup, no accuracy impact
+
+            flow_algo = input_data['scenario_config'].get('flow_algorithm')
+            if flow_algo is not None:
+                domain.set_flow_algorithm(flow_algo)
 
             # setup rainfall
             def create_inflow_function(dataframe, name):

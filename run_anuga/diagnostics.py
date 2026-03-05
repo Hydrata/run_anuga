@@ -61,6 +61,19 @@ logger = logging.getLogger(__name__)
 #: Depth below which a cell is treated as dry for velocity/volume calculations.
 WET_THRESHOLD = 1e-3  # 1 mm
 
+
+def _json_default(obj):
+    """Handle numpy types when serializing to JSON."""
+    if isinstance(obj, (np.bool_,)):
+        return bool(obj)
+    if isinstance(obj, (np.integer,)):
+        return int(obj)
+    if isinstance(obj, (np.floating,)):
+        return float(obj)
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+    raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
+
 #: Implied max speed above this (m/s) flags a run as numerically unstable.
 #: Urban floods peak at ~5 m/s; 20 m/s is physically impossible for shallow water.
 INSTABILITY_SPEED_THRESHOLD_MS = 20.0
@@ -515,7 +528,7 @@ class SimulationMonitor:
         finished_at = datetime.now(tz=timezone.utc)
         summary = self._build_summary(finished_at)
         with open(self._json_path, "w") as f:
-            json.dump(summary, f, indent=2)
+            json.dump(summary, f, indent=2, default=_json_default)
         logger.info("Run summary written to: %s", self._json_path)
 
     # ------------------------------------------------------------------

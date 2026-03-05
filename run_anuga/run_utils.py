@@ -400,26 +400,38 @@ def create_anuga_mesh(input_data):
     mesh_filepath = input_data['mesh_filepath']
     triangle_resolution = (input_data['scenario_config'].get('resolution') ** 2) / 2
     interior_regions = make_interior_regions(input_data)
-    # interior_holes, hole_tags = make_interior_holes_and_tags(input_data)
+    interior_holes, hole_tags = make_interior_holes_and_tags(input_data)
     bounding_polygon = input_data['boundary_polygon']
     boundary_tags = input_data['boundary_tags']
     logger.info("creating anuga_mesh")
     if input_data.get('structure_filename'):
-        burn_structures_into_raster(input_data['structure_filename'], input_data['elevation_filename'], backup=False)
+        structure_data = input_data.get('structure', {})
+        features = structure_data.get('features', [])
+        has_burn_features = not features or any(
+            f.get('properties', {}).get('method') not in ('Holes', 'Reflective', 'Mannings')
+            for f in features
+        )
+        if has_burn_features:
+            burn_structures_into_raster(input_data['structure_filename'], input_data['elevation_filename'], backup=False)
     mesh_geo_reference = Geo_reference(zone=int(input_data['scenario_config'].get('epsg')[-2:]))
-    anuga_mesh = anuga.pmesh.mesh_interface.create_mesh_from_regions(
+    mesh_kwargs = dict(
         bounding_polygon=bounding_polygon,
         boundary_tags=boundary_tags,
         maximum_triangle_area=triangle_resolution,
         interior_regions=interior_regions,
-        # interior_holes=interior_holes,
         mesh_geo_reference=mesh_geo_reference,
-        # hole_tags=hole_tags,
         filename=mesh_filepath,
         use_cache=False,
         verbose=False,
-        fail_if_polygons_outside=False
+        fail_if_polygons_outside=False,
     )
+    if interior_holes is not None:
+        mesh_kwargs['interior_holes'] = interior_holes
+        mesh_kwargs['hole_tags'] = hole_tags
+    min_angle = input_data['scenario_config'].get('minimum_triangle_angle')
+    if min_angle is not None:
+        mesh_kwargs['minimum_triangle_angle'] = min_angle
+    anuga_mesh = anuga.pmesh.mesh_interface.create_mesh_from_regions(**mesh_kwargs)
     logger.info(f"{anuga_mesh.tri_mesh.triangles.size=}")
     return mesh_filepath, anuga_mesh
 

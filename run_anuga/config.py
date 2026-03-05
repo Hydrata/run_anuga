@@ -44,6 +44,8 @@ class ScenarioConfig(BaseModel):
     simplify_mesh: bool = False
     store_mesh: bool = False
     resolution: Optional[float] = None
+    minimum_triangle_angle: Optional[float] = None  # degrees; ANUGA default ~28°
+    flow_algorithm: Optional[str] = None  # "DE0" (default), "DE1", etc.
     max_rmse_tolerance: Optional[float] = None
     model_start: Optional[str] = None
 

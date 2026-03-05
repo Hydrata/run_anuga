@@ -1,0 +1,12 @@
+{
+    "name": "Merewether Mesh Library Comparison",
+    "fixed_params": {
+        "resolution_m": 2.0,
+        "duration_s": 1000,
+        "flow_algorithm": "DE0",
+        "minimum_triangle_angle": 28.0,
+        "mpi_ranks": 8
+    },
+    "building_methods": ["burn", "holes", "mannings"],
+    "meshers": ["triangle", "gmsh", "jigsaw"]
+}
