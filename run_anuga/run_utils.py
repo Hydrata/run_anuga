@@ -633,6 +633,107 @@ def create_boundary_polygon_from_boundaries(boundaries_geojson):
     return sorted_boundary_polygon, sorted_boundary_tags
 
 
+def build_time_boundary_function(time_boundary_features, defaults=None):
+    """Build the function passed to ``anuga.Time_boundary(domain, function=...)``.
+
+    The Anuga Time boundary expects a callable ``f(t_seconds) -> [stage,
+    xmom, ymom]`` returning conserved-quantity values for the model time t.
+
+    Inputs:
+        time_boundary_features: a list of GeoJSON Feature dicts with
+            ``properties.boundary == 'Time'`` and a ``properties.data``
+            value that has already been resolved server-side to either:
+              * a numeric stage value (constant case), or
+              * a list of ``{timestamp: ISO8601, value: number}`` dicts
+                (timeseries case).
+
+        defaults: the run_anuga.defaults module (or any object exposing
+            float-coercible attributes). Currently unused but accepted for
+            forward-compat — leaves room for momentum or factor defaults.
+
+    Anuga's tag system collapses multiple Time-boundary features under a
+    single 'Time' tag. We use the first feature's data and log a warning
+    if there are multiple distinct Time boundaries — this is an authoring
+    issue rather than a code limitation, and it surfaces clearly in logs.
+    """
+    if not time_boundary_features:
+        raise ValueError(
+            'build_time_boundary_function() called with no features'
+        )
+    if len(time_boundary_features) > 1:
+        logger.warning(
+            'Multiple Time boundary features supplied (%d); only the first '
+            "will be applied (Anuga collapses them all under one 'Time' tag)",
+            len(time_boundary_features),
+        )
+
+    first = time_boundary_features[0]
+    data = (first.get('properties') or {}).get('data')
+
+    # Constant case: a single numeric stage value applied for all t.
+    if data is None:
+        # Don't blow up at parse time — let Anuga surface the failure when
+        # it tries to evaluate the function. Constant 0 is the safest default.
+        logger.error(
+            "Time boundary feature %s has no resolved data; defaulting to 0.0",
+            first.get('id'),
+        )
+        return lambda t: [0.0, 0.0, 0.0]
+    if isinstance(data, (int, float)):
+        constant = float(data)
+        return lambda t: [constant, 0.0, 0.0]
+    if isinstance(data, str):
+        # Shouldn't happen if Boundary.make_file did its job, but tolerate
+        # a numeric string just in case.
+        try:
+            constant = float(data)
+            return lambda t: [constant, 0.0, 0.0]
+        except (TypeError, ValueError):
+            raise ValueError(
+                f'Time boundary data must be numeric or a list of '
+                f'{{timestamp, value}} dicts, got string {data!r} that '
+                f'could not be float-coerced'
+            )
+
+    # TimeSeries case: a list of {timestamp, value} dicts.
+    if not isinstance(data, list) or not data:
+        raise ValueError(
+            f'Time boundary data must be numeric or a non-empty list of '
+            f'{{timestamp, value}} dicts, got: {type(data).__name__}'
+        )
+
+    numpy = import_optional("numpy")
+    pd = import_optional("pandas")
+
+    timestamps = []
+    values = []
+    for row in data:
+        ts = row.get('timestamp') if isinstance(row, dict) else None
+        val = row.get('value') if isinstance(row, dict) else None
+        if ts is None or val is None:
+            raise ValueError(
+                f'Time boundary data row missing timestamp or value: {row!r}'
+            )
+        timestamps.append(pd.to_datetime(ts, utc=True))
+        values.append(float(val))
+
+    # Convert timestamps → seconds since the first sample. The Anuga function
+    # is called with model-time-in-seconds (starting at 0).
+    timestamps_sec = numpy.array(
+        [(t - timestamps[0]).total_seconds() for t in timestamps],
+        dtype=float,
+    )
+    values_arr = numpy.array(values, dtype=float)
+
+    def _time_function(t):
+        # numpy.interp clamps below[0]→values[0] and above[-1]→values[-1],
+        # which matches the Inflow timeseries semantics (forward-fill at edges).
+        stage = float(numpy.interp(float(t), timestamps_sec, values_arr))
+        return [stage, 0.0, 0.0]
+
+    return _time_function
+
+
 def post_process_sww(package_dir, run_args=None, output_raster_resolution=None):
     anuga = import_optional("anuga")
     util = anuga.utilities.plot_utils

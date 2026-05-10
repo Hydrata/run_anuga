@@ -8,7 +8,8 @@ import traceback
 
 from run_anuga._imports import import_optional
 from run_anuga.run_utils import is_dir_check, setup_input_data, update_web_interface, create_mesher_mesh, create_anuga_mesh, \
-    make_frictions, post_process_sww, setup_logger, check_coordinates_are_in_polygon, RunContext
+    make_frictions, post_process_sww, setup_logger, check_coordinates_are_in_polygon, RunContext, \
+    build_time_boundary_function
 from run_anuga import defaults
 from run_anuga.callbacks import NullCallback, HydrataCallback
 
@@ -232,6 +233,23 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
             'Transmissive': anuga.Transmissive_boundary(domain),
             'ghost': None
         }
+        # Build a 'Time' boundary entry only when at least one external
+        # boundary feature carries boundary='Time'. The per-feature `data`
+        # has already been resolved server-side by Boundary.make_file —
+        # it arrives here as either a numeric stage value (constant case)
+        # or a list of {timestamp, value} dicts (TimeSeries case).
+        time_boundary_features = [
+            f for f in (input_data.get('boundary', {}).get('features') or [])
+            if (f.get('properties') or {}).get('location') == 'External'
+            and (f.get('properties') or {}).get('boundary') == 'Time'
+        ]
+        if time_boundary_features:
+            time_function = build_time_boundary_function(
+                time_boundary_features, defaults
+            )
+            default_boundary_maps['Time'] = anuga.Time_boundary(
+                domain=domain, function=time_function,
+            )
         boundaries = dict()
         for tag in domain.boundary.values():
             boundaries[tag] = default_boundary_maps[tag]
