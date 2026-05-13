@@ -842,8 +842,23 @@ def apply_inflows_to_domain(
             default_rate=0.00,
         )
 
+    if len(rainfall_inflow_polygons) > 1 and len(catchment_polygons) > 0:
+        # Fail-fast BEFORE the catchment loop so no Polygonal_rate_operator
+        # side effects are registered on a configuration we cannot honour.
+        raise NotImplementedError(
+            'Cannot handle multiple rainfall polygons together with catchment '
+            'hydrology.'
+        )
+
     if len(rainfall_inflow_polygons) >= 1 and len(catchment_polygons) > 0:
         first_rainfall_data = rainfall_inflow_polygons[0].get('properties').get('data')
+        if first_rainfall_data is None:
+            raise NotImplementedError(
+                'Catchment hydrology requires the first rainfall inflow to '
+                'have a resolved data value, got None. Set a data_constant '
+                'or data_timeseries_id on the first rainfall, or remove the '
+                'catchment.'
+            )
         if isinstance(first_rainfall_data, list):
             # Catchments use a SINGLE uniform rate, which is undefined for a
             # time-varying input. Surface the limitation clearly.
@@ -867,12 +882,6 @@ def apply_inflows_to_domain(
                     polygon=geometry,
                     default_rate=0.00,
                 )
-
-    if len(rainfall_inflow_polygons) > 1 and len(catchment_polygons) > 0:
-        raise NotImplementedError(
-            'Cannot handle multiple rainfall polygons together with catchment '
-            'hydrology.'
-        )
 
     for inflow_line in surface_inflow_lines:
         polyline_name = inflow_line.get('id')
