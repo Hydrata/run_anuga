@@ -8,8 +8,8 @@ import traceback
 
 from run_anuga._imports import import_optional
 from run_anuga.run_utils import is_dir_check, setup_input_data, update_web_interface, create_mesher_mesh, create_anuga_mesh, \
-    make_frictions, post_process_sww, setup_logger, check_coordinates_are_in_polygon, RunContext, \
-    build_time_boundary_function
+    make_frictions, post_process_sww, setup_logger, RunContext, \
+    build_time_boundary_function, apply_inflows_to_domain
 from run_anuga import defaults
 from run_anuga.callbacks import NullCallback, HydrataCallback
 
@@ -26,7 +26,6 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
     pickle = import_optional("dill")
     numpy = import_optional("numpy")
     psutil = import_optional("psutil")
-    pd = import_optional("pandas")
     from anuga import distribute, finalize, barrier, Inlet_operator
     from anuga.utilities import quantity_setting_functions as qs
     from anuga.operators.rate_operators import Polygonal_rate_operator
@@ -163,68 +162,19 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
             barrier()
             domain = distribute(domain, verbose=True)
 
-            # setup rainfall
-            def create_inflow_function(dataframe, name):
-                def rain(time_in_seconds):
-                    t_sec = int(math.floor(time_in_seconds))
-                    return dataframe[name][t_sec]
-
-                rain.__name__ = name
-                return rain
-
-            rainfall_inflow_polygons = [feature for feature in input_data.get('inflow').get('features') if
-                                        feature.get('properties').get('type') == 'Rainfall']
-            surface_inflow_lines = [feature for feature in input_data.get('inflow').get('features') if
-                                    feature.get('properties').get('type') == 'Surface']
-            catchment_polygons = [feature for feature in input_data.get('catchment').get('features')] if input_data.get(
-                'catchment') else []
-            boundary_polygon = input_data.get('boundary_polygon')
-            datetime_range = pd.date_range(start=start, periods=duration + 1, freq='s')
-            inflow_dataframe = pd.DataFrame(datetime_range, columns=['timestamp'])
-            inflow_functions = dict()
-            for inflow_polygon in rainfall_inflow_polygons:
-                polygon_name = inflow_polygon.get('id')
-                data = inflow_polygon.get('properties').get('data')
-                if isinstance(data, list):
-                    new_dataframe = pd.DataFrame(data)
-                    new_dataframe['timestamp'] = pd.to_datetime(new_dataframe['timestamp'])
-                    new_dataframe[polygon_name] = pd.to_numeric(new_dataframe['value'])
-                    if inflow_dataframe['timestamp'].dt.tz is None:
-                        inflow_dataframe['timestamp'] = inflow_dataframe['timestamp'].dt.tz_localize('UTC')
-                    if new_dataframe['timestamp'].dt.tz is None:
-                        new_dataframe['timestamp'] = new_dataframe['timestamp'].dt.tz_localize('UTC')
-                    inflow_dataframe = pd.merge(inflow_dataframe, new_dataframe, how='left', on='timestamp')
-                    inflow_dataframe.ffill(inplace=True)
-                else:
-                    inflow_dataframe[polygon_name] = float(data)
-                inflow_function = create_inflow_function(inflow_dataframe, polygon_name)
-                inflow_functions[polygon_name] = inflow_function
-                geometry = inflow_polygon.get('geometry').get('coordinates')[0]
-                Polygonal_rate_operator(domain, rate=inflow_function, factor=defaults.RAINFALL_FACTOR, polygon=geometry,
-                                        default_rate=0.00)
-            if len(rainfall_inflow_polygons) >= 1 and len(catchment_polygons) > 0:
-                for catchment_polygon in catchment_polygons:
-                    uniform_rainfall_rate = float(rainfall_inflow_polygons[0].get('properties').get('data'))
-                    polygon_name = catchment_polygon.get('id')
-                    inflow_dataframe[polygon_name] = uniform_rainfall_rate
-                    inflow_function = create_inflow_function(inflow_dataframe, polygon_name)
-                    geometry = catchment_polygon.get('geometry').get('coordinates')[0]
-                    # The catchment needs to be wholly in the domain:
-                    if check_coordinates_are_in_polygon(geometry, boundary_polygon):
-                        Polygonal_rate_operator(domain, rate=inflow_function, factor=-defaults.RAINFALL_FACTOR, polygon=geometry,
-                                                default_rate=0.00)
-            if len(rainfall_inflow_polygons) > 1 and len(catchment_polygons) > 0:
-                raise NotImplementedError('Cannot handle multiple rainfall polygons together with catchment hydrology.')
-
-            for inflow_line in surface_inflow_lines:
-                polyline_name = inflow_line.get('id')
-                inflow_dataframe[polyline_name] = float(inflow_line.get('properties').get('data'))
-                inflow_function = create_inflow_function(inflow_dataframe, polyline_name)
-                inflow_functions[polyline_name] = inflow_function
-                geometry = inflow_line.get('geometry').get('coordinates')
-                # check that inflow line is actually in the domain:
-                if check_coordinates_are_in_polygon(geometry, boundary_polygon):
-                    Inlet_operator(domain, geometry, Q=inflow_function)
+            # Inflow.make_file() resolved each feature's `data` via
+            # FeatureDataMixin (TASK-820). Per-feature shapes (None / list /
+            # float) are handled inside apply_inflows_to_domain, which is
+            # unit-tested at tests/unit/test_run_anuga/test_apply_inflows.py.
+            apply_inflows_to_domain(
+                input_data=input_data,
+                domain=domain,
+                start=start,
+                duration=duration,
+                Polygonal_rate_operator=Polygonal_rate_operator,
+                Inlet_operator=Inlet_operator,
+                defaults_module=defaults,
+            )
         default_boundary_maps = {
             'exterior': anuga.Dirichlet_boundary([0, 0, 0]),
             'interior': anuga.Reflective_boundary(domain),

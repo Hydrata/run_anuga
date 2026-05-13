@@ -734,6 +734,170 @@ def build_time_boundary_function(time_boundary_features, defaults=None):
     return _time_function
 
 
+def apply_inflows_to_domain(
+    input_data,
+    domain,
+    start,
+    duration,
+    Polygonal_rate_operator,
+    Inlet_operator,
+    defaults_module=None,
+):
+    """Apply Rainfall, Surface and Catchment inflows to an Anuga ``domain``.
+
+    Inflow.make_file() server-side resolves each feature's ``properties.data``
+    via FeatureDataMixin (TASK-820) to one of:
+
+      * a list of ``{timestamp: ISO8601, value: number}`` dicts (timeseries case),
+      * a float (constant case, from ``data_constant`` or numeric legacy value),
+      * ``None`` (no resolved value, e.g. a legacy free-text row with neither
+        ``data_constant`` nor ``data_timeseries_id`` set).
+
+    This function guards at the consumption boundary, mirroring the contract
+    enforced by ``build_time_boundary_function``. Side effects:
+
+      * For each Rainfall inflow, register a ``Polygonal_rate_operator`` on
+        ``domain`` with a positive ``RAINFALL_FACTOR``.
+      * For each Catchment polygon, register a ``Polygonal_rate_operator``
+        with a *negative* ``RAINFALL_FACTOR`` (the catchment absorbs the rain
+        falling on it and re-introduces it as a Surface inflow elsewhere).
+      * For each Surface inflow line that is fully inside the boundary,
+        register an ``Inlet_operator``.
+
+    Raises:
+        NotImplementedError: if a catchment is paired with a timeseries
+            rainfall (catchments need a single uniform rate), or if more than
+            one rainfall polygon is paired with a catchment.
+
+    Returns a dict ``{feature_id: callable}`` of the inflow callables created,
+    primarily for test introspection.
+    """
+    pd = import_optional("pandas")
+    if defaults_module is None:
+        defaults_module = defaults
+
+    rainfall_inflow_polygons = [
+        feature for feature in input_data.get('inflow').get('features')
+        if feature.get('properties').get('type') == 'Rainfall'
+    ]
+    surface_inflow_lines = [
+        feature for feature in input_data.get('inflow').get('features')
+        if feature.get('properties').get('type') == 'Surface'
+    ]
+    catchment_polygons = (
+        [feature for feature in input_data.get('catchment').get('features')]
+        if input_data.get('catchment') else []
+    )
+    boundary_polygon = input_data.get('boundary_polygon')
+
+    datetime_range = pd.date_range(start=start, periods=duration + 1, freq='s')
+    inflow_dataframe = pd.DataFrame(datetime_range, columns=['timestamp'])
+    inflow_functions = dict()
+
+    def create_inflow_function(dataframe, name):
+        def rain(time_in_seconds):
+            t_sec = int(math.floor(time_in_seconds))
+            return dataframe[name][t_sec]
+        rain.__name__ = name
+        return rain
+
+    def _merge_timeseries(name, rows):
+        """Merge a timeseries list of ``{timestamp, value}`` dicts into
+        ``inflow_dataframe`` under column ``name``, ffill-aligned to the
+        model's per-second timestamp index.
+        """
+        nonlocal inflow_dataframe
+        new_dataframe = pd.DataFrame(rows)
+        new_dataframe['timestamp'] = pd.to_datetime(new_dataframe['timestamp'])
+        new_dataframe[name] = pd.to_numeric(new_dataframe['value'])
+        if inflow_dataframe['timestamp'].dt.tz is None:
+            inflow_dataframe['timestamp'] = inflow_dataframe['timestamp'].dt.tz_localize('UTC')
+        if new_dataframe['timestamp'].dt.tz is None:
+            new_dataframe['timestamp'] = new_dataframe['timestamp'].dt.tz_localize('UTC')
+        inflow_dataframe = pd.merge(inflow_dataframe, new_dataframe, how='left', on='timestamp')
+        inflow_dataframe.ffill(inplace=True)
+
+    for inflow_polygon in rainfall_inflow_polygons:
+        polygon_name = inflow_polygon.get('id')
+        data = inflow_polygon.get('properties').get('data')
+        if data is None:
+            logger.warning(
+                "Rainfall inflow %s has no resolved data (data_constant "
+                "and data_timeseries_id both unset); skipping",
+                polygon_name,
+            )
+            continue
+        if isinstance(data, list):
+            _merge_timeseries(polygon_name, data)
+        else:
+            inflow_dataframe[polygon_name] = float(data)
+        inflow_function = create_inflow_function(inflow_dataframe, polygon_name)
+        inflow_functions[polygon_name] = inflow_function
+        geometry = inflow_polygon.get('geometry').get('coordinates')[0]
+        Polygonal_rate_operator(
+            domain,
+            rate=inflow_function,
+            factor=defaults_module.RAINFALL_FACTOR,
+            polygon=geometry,
+            default_rate=0.00,
+        )
+
+    if len(rainfall_inflow_polygons) >= 1 and len(catchment_polygons) > 0:
+        first_rainfall_data = rainfall_inflow_polygons[0].get('properties').get('data')
+        if isinstance(first_rainfall_data, list):
+            # Catchments use a SINGLE uniform rate, which is undefined for a
+            # time-varying input. Surface the limitation clearly.
+            raise NotImplementedError(
+                'Catchment hydrology with a timeseries rainfall inflow is '
+                'not supported. Use a constant rainfall value or remove the '
+                'catchment.'
+            )
+        for catchment_polygon in catchment_polygons:
+            uniform_rainfall_rate = float(first_rainfall_data)
+            polygon_name = catchment_polygon.get('id')
+            inflow_dataframe[polygon_name] = uniform_rainfall_rate
+            inflow_function = create_inflow_function(inflow_dataframe, polygon_name)
+            geometry = catchment_polygon.get('geometry').get('coordinates')[0]
+            # The catchment needs to be wholly in the domain:
+            if check_coordinates_are_in_polygon(geometry, boundary_polygon):
+                Polygonal_rate_operator(
+                    domain,
+                    rate=inflow_function,
+                    factor=-defaults_module.RAINFALL_FACTOR,
+                    polygon=geometry,
+                    default_rate=0.00,
+                )
+
+    if len(rainfall_inflow_polygons) > 1 and len(catchment_polygons) > 0:
+        raise NotImplementedError(
+            'Cannot handle multiple rainfall polygons together with catchment '
+            'hydrology.'
+        )
+
+    for inflow_line in surface_inflow_lines:
+        polyline_name = inflow_line.get('id')
+        data = inflow_line.get('properties').get('data')
+        if data is None:
+            logger.warning(
+                "Surface inflow %s has no resolved data (data_constant "
+                "and data_timeseries_id both unset); skipping",
+                polyline_name,
+            )
+            continue
+        if isinstance(data, list):
+            _merge_timeseries(polyline_name, data)
+        else:
+            inflow_dataframe[polyline_name] = float(data)
+        inflow_function = create_inflow_function(inflow_dataframe, polyline_name)
+        inflow_functions[polyline_name] = inflow_function
+        geometry = inflow_line.get('geometry').get('coordinates')
+        # check that inflow line is actually in the domain:
+        if check_coordinates_are_in_polygon(geometry, boundary_polygon):
+            Inlet_operator(domain, geometry, Q=inflow_function)
+
+    return inflow_functions
+
+
 def post_process_sww(package_dir, run_args=None, output_raster_resolution=None):
     anuga = import_optional("anuga")
     util = anuga.utilities.plot_utils
