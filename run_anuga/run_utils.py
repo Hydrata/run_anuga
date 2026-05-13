@@ -87,6 +87,10 @@ def _load_package_data(package_dir):
     if input_data['scenario_config'].get('elevation') and os.path.isfile(elevation_filepath):
         input_data['elevation_filename'] = elevation_filepath
 
+    friction_raster_filepath = os.path.join(package_dir, f"inputs/{input_data['scenario_config'].get('friction_raster')}")
+    if input_data['scenario_config'].get('friction_raster') and os.path.isfile(friction_raster_filepath):
+        input_data['friction_raster_filename'] = friction_raster_filepath
+
     if input_data['scenario_config'].get('resolution'):
         input_data['resolution'] = input_data['scenario_config'].get('resolution')
 
@@ -470,6 +474,13 @@ def make_interior_holes_and_tags(input_data):
 
 
 def make_frictions(input_data):
+    # Raster precedence (TASK-830): a friction raster covers the whole
+    # domain at higher resolution than per-polygon scalars. When present,
+    # skip the polygon list entirely and return the raster as a single
+    # 'Extent' entry consumed by composite_quantity_setting_function.
+    # See docs/reports/2026-05-13-q-1-task-830-friction-raster-attachment.html.
+    if input_data.get('friction_raster_filename'):
+        return [['Extent', input_data['friction_raster_filename']]]
     frictions = list()
     if input_data.get('structure'):
         for structure in input_data['structure']['features']:
