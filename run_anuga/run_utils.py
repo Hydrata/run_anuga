@@ -70,6 +70,7 @@ def _load_package_data(package_dir):
     data_types = [
         'friction',
         'inflow',
+        'rainfall',
         'structure',
         'mesh_region',
         'network',
@@ -787,14 +788,8 @@ def apply_inflows_to_domain(
     if defaults_module is None:
         defaults_module = defaults
 
-    rainfall_inflow_polygons = [
-        feature for feature in input_data.get('inflow').get('features')
-        if feature.get('properties').get('type') == 'Rainfall'
-    ]
-    surface_inflow_lines = [
-        feature for feature in input_data.get('inflow').get('features')
-        if feature.get('properties').get('type') == 'Surface'
-    ]
+    rainfall_inflow_polygons = (input_data.get('rainfall') or {}).get('features', []) or []
+    surface_inflow_lines = (input_data.get('inflow') or {}).get('features', []) or []
     catchment_polygons = (
         [feature for feature in input_data.get('catchment').get('features')]
         if input_data.get('catchment') else []
@@ -1233,12 +1228,14 @@ def calculate_hydrology(package_dir):
         node_index = node_points.index(node_candidate[0])
         input_data['catchment']['features'][index]['node_id'] = input_data.get('nodes').get('features')[node_index].get('id')
 
-    # assign rainfall to catchments
-    def rainfall_filter(inflow_feature):
-        return inflow_feature.get('properties').get('type')
-
-    rainfall_inflows = list(filter(rainfall_filter, input_data.get('inflow').get('features')))
-    rainfall_steady_state_intensity_mm_hr = float(rainfall_inflows[0].get('properties').get('data'))
+    rainfall_features = (input_data.get('rainfall') or {}).get('features', []) or []
+    if not rainfall_features:
+        logger.warning(
+            "calculate_hydrology: no rainfall features supplied; "
+            "skipping surface_flow_m3_s assignment for catchments"
+        )
+        return True
+    rainfall_steady_state_intensity_mm_hr = float(rainfall_features[0].get('properties').get('data'))
     rainfall_steady_state_intensity_m_s = rainfall_steady_state_intensity_mm_hr * 0.001 / 3600
     for index, catchment in enumerate(input_data.get('catchment').get('features')):
         area_m2 = Polygon(catchment.get('geometry').get('coordinates')[0]).area

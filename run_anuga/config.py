@@ -35,6 +35,7 @@ class ScenarioConfig(BaseModel):
     elevation: Optional[str] = None
     friction: Optional[str] = None
     inflow: Optional[str] = None
+    rainfall: Optional[str] = None
     structure: Optional[str] = None
     mesh_region: Optional[str] = None
     hydrology_status: Optional[str] = None

@@ -52,9 +52,10 @@ def _catchment_feature(fid='catch.1'):
     }
 
 
-def _input_data(rainfall_features=None, catchment_features=None):
+def _input_data(rainfall_features=None, catchment_features=None, inflow_features=None):
     return {
-        'inflow': {'features': list(rainfall_features or [])},
+        'rainfall': {'features': list(rainfall_features or [])},
+        'inflow': {'features': list(inflow_features or [])},
         'catchment': {'features': list(catchment_features or [])},
         'boundary_polygon': BOUNDARY_POLYGON,
     }
