@@ -146,14 +146,10 @@ def create_mesher_mesh(input_data):
         mesh_size = len(mesh_dict['mesh']['elem'])
         return mesher_mesh_filepath, mesh_size
     # logger = setup_logger(input_data)
-    logger.critical(f"create_mesh running")
+    logger.critical("create_mesh running")
     elevation_raster = gdal.Open(input_data['elevation_filename'])
     ulx, xres, xskew, uly, yskew, yres = elevation_raster.GetGeoTransform()
     elevation_raster_resolution = xres
-    xmin = ulx
-    xmax = ulx + (elevation_raster.RasterXSize * xres)
-    ymin = uly + (elevation_raster.RasterYSize * yres)  # note yres is negative
-    ymax = uly
     user_resolution = float(input_data.get('resolution'))
     if input_data.get('structure_filename'):
         burn_structures_into_raster = subprocess.run([
@@ -186,7 +182,7 @@ def create_mesher_mesh(input_data):
             logger.critical(shp_boundary_filepath)
             mesh_region_clip = subprocess.run([
                 'gdalwarp',
-                f'-cutline', f'{shp_boundary_filepath}',
+                '-cutline', f'{shp_boundary_filepath}',
                 '-crop_to_cutline',
                 '-of', 'GTiff',
                 '-r', 'cubic',
@@ -270,7 +266,6 @@ simplify_tol = 10
     mesher_config_filepath = f"{input_data['output_directory']}/mesher_config.py"
     logger.critical(f"{mesher_config_filepath=}")
     max_rmse_tolerance = input_data['scenario_config'].get('max_rmse_tolerance', 1)
-    breaklines_shapefile_path = None
 
     text_blob = f"""mesher_path = '{mesher_bin}'
 dem_filename = '../inputs/{input_data["elevation_filename"].split("/")[-1]}'
@@ -371,7 +366,7 @@ constraints = {{
             capture_output=True,
             universal_newlines=True
         )
-        logger.critical(f"***mesher_out***")
+        logger.critical("***mesher_out***")
         logger.critical(mesher_out.stdout)
         logger.critical(mesher_out.stderr)
         if mesher_out.returncode != 0:
@@ -394,7 +389,7 @@ def create_anuga_mesh(input_data):
     # interior_holes, hole_tags = make_interior_holes_and_tags(input_data)
     bounding_polygon = input_data['boundary_polygon']
     boundary_tags = input_data['boundary_tags']
-    logger.critical(f"creating anuga_mesh")
+    logger.critical("creating anuga_mesh")
     if input_data.get('structure_filename'):
         burn_structures_into_raster = subprocess.run([
             "gdal_rasterize",
@@ -916,13 +911,9 @@ def apply_inflows_to_domain(
 def post_process_sww(package_dir, run_args=None, output_raster_resolution=None):
     anuga = import_optional("anuga")
     util = anuga.utilities.plot_utils
-    gdal = import_optional("osgeo.gdal")
     output_quantities = ['depth', 'velocity', 'depthIntegratedVelocity', 'stage']
     input_data = setup_input_data(package_dir)
     logger.critical(f'Generating output rasters on {anuga.myid}...')
-    raster = gdal.Open(input_data['elevation_filename'])
-    gt = raster.GetGeoTransform()
-    # resolution = 1 if math.floor(gt[1] / 4) == 0 else math.floor(gt[1] / 4)
     resolutions = list()
     if input_data.get('mesh_region'):
         for feature in input_data.get('mesh_region').get('features') or list():
@@ -974,12 +965,6 @@ def post_process_sww(package_dir, run_args=None, output_raster_resolution=None):
         k_nearest_neighbours=defaults.K_NEAREST_NEIGHBOURS,
         creation_options=[]
     )
-    output_directory = input_data['output_directory']
-    run_label = input_data['run_label']
-    initial_time_iso_string = input_data['scenario_config'].get('model_start', "1970-01-01T00:00:00+00:00")
-    # generate_stac(output_directory, run_label, output_quantities, initial_time_iso_string)
-    # for result_type in output_quantities:
-        # make_video(output_directory, run_label, result_type)
 
     video_dir = f"{input_data['output_directory']}/videos/"
     if os.path.isdir(video_dir):
