@@ -269,9 +269,43 @@ def main():
         run_sim(package_dir, username, password, batch_number, checkpoint_time)
     except Exception as e:
         run_args = RunContext(package_dir, username, password)
-        logger.exception(e, exc_info=True)
-        update_web_interface(run_args, data={'status': 'error'})
+        logger.exception("run.py main() failed")
+        _report_run_error(run_args, str(e))
         raise e
+
+
+def _report_run_error(run_args, message):
+    """POST the run failure to the dedicated /error/ endpoint.
+
+    The endpoint calls Run.mark_error() server-side, which appends to the
+    run log, mirrors onto any linked Compute row, and is idempotent on
+    already-terminal runs. Failures here are logged but never raised — we
+    must not mask the originating exception.
+    """
+    try:
+        package_dir = run_args.package_dir
+        username = run_args.username
+        password = run_args.password
+        if not (username and password):
+            return
+        scenario_json_path = os.path.join(package_dir, 'scenario.json')
+        with open(scenario_json_path, 'r') as f:
+            scenario_config = json.load(f)
+        run_id = scenario_config.get('run_id')
+        control_server = scenario_config.get('control_server')
+        if not (control_server and run_id):
+            return
+        requests = import_optional("requests")
+        url = f"{control_server}api/v2/anuga/runs/{run_id}/error/"
+        client = requests.Session()
+        client.auth = requests.auth.HTTPBasicAuth(username, password)
+        response = client.post(url, data={'message': message})
+        if response.status_code >= 400:
+            logger.error(
+                f"Error reporting run failure. HTTP code: {response.status_code} - {response.text}"
+            )
+    except Exception:
+        logger.exception("Failed to report run error to control server")
 
 
 if __name__ == '__main__':

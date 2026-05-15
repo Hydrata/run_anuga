@@ -534,6 +534,10 @@ def create_boundary_polygon_from_boundaries(boundaries_geojson):
     srs.ImportFromEPSG(epsg_integer)
 
     # Find the center of our project
+    if not all_x_coordinates or not all_y_coordinates:
+        raise ValueError(
+            "create_boundary_polygon_from_boundaries: no valid External-location boundary coordinates found"
+        )
     max_x = max(all_x_coordinates)
     max_y = max(all_y_coordinates)
     min_x = min(all_x_coordinates)
@@ -1285,6 +1289,17 @@ def check_coordinates_are_in_polygon(coordinates, polygon):
 
 def generate_stac(output_directory, run_label, output_quantities, initial_time_iso_string,
                   aws_access_key_id=None, aws_secret_access_key=None, s3_bucket_name=None):
+    # Deterministic no-op when required scenario_config inputs are missing.
+    # Without this guard, datetime.fromisoformat(None) and the for-loop over
+    # output_quantities raise on every legacy run (no initial_time/output_quantities
+    # in older packages). Log once so operators can spot the coverage gap.
+    if not initial_time_iso_string or not output_quantities:
+        logger.info(
+            "STAC generation skipped: missing required inputs "
+            "(run_label=%s, initial_time_iso_string=%r, output_quantities=%r)",
+            run_label, initial_time_iso_string, output_quantities,
+        )
+        return
     _explicit_creds = aws_access_key_id is not None
     # Fall back to Django settings if params not provided
     if not _explicit_creds:
