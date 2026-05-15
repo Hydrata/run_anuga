@@ -106,19 +106,13 @@ class HydrataCallback:
 
     def _patch(self, data: dict, files: dict | None = None) -> None:
         from run_anuga._imports import import_optional
+        from run_anuga._http import post_to_control_server
 
         requests = import_optional("requests")
-        client = requests.Session()
-        client.auth = requests.auth.HTTPBasicAuth(self.username, self.password)
+        auth = requests.auth.HTTPBasicAuth(self.username, self.password)
         data["project"] = self.project
         data["scenario"] = self.scenario
-        response = client.patch(self._url, data=data, files=files)
-        if response.status_code >= 400:
-            logger.error(
-                "Error updating web interface. HTTP code: %d - %s",
-                response.status_code,
-                response.text,
-            )
+        post_to_control_server(self._url, auth=auth, method="PATCH", data=data, files=files)
 
     def on_status(self, status: str, **kwargs: Any) -> None:
         self._patch({"status": status})

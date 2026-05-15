@@ -296,14 +296,16 @@ def _report_run_error(run_args, message):
         if not (control_server and run_id):
             return
         requests = import_optional("requests")
+        from run_anuga._http import post_to_control_server
+
         url = f"{control_server}api/v2/anuga/runs/{run_id}/error/"
-        client = requests.Session()
-        client.auth = requests.auth.HTTPBasicAuth(username, password)
-        response = client.post(url, data={'message': message})
-        if response.status_code >= 400:
-            logger.error(
-                f"Error reporting run failure. HTTP code: {response.status_code} - {response.text}"
-            )
+        auth = requests.auth.HTTPBasicAuth(username, password)
+        # Small POST with a scalar message: a 30s upper bound is fine here
+        # (the helper default is None / no timeout, which is required for the
+        # PATCH-with-files callers but inappropriate for an error report).
+        post_to_control_server(
+            url, auth=auth, method="POST", data={'message': message}, timeout=30,
+        )
     except Exception:
         logger.exception("Failed to report run error to control server")
 

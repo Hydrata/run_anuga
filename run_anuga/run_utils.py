@@ -118,22 +118,17 @@ def update_web_interface(run_args, data, files=None):
     package_dir, username, password = run_args.package_dir, run_args.username, run_args.password
     if username and password:
         requests = import_optional("requests")
+        from run_anuga._http import post_to_control_server
+
         input_data = setup_input_data(package_dir)
         data['project'] = input_data['scenario_config'].get('project')
         data['scenario'] = input_data['scenario_config'].get('id')
         run_id = input_data['scenario_config'].get('run_id')
         control_server = input_data['scenario_config'].get('control_server')
-        client = requests.Session()
-        client.auth = requests.auth.HTTPBasicAuth(username, password)
+        url = f"{control_server}anuga/api/{data['project']}/{data['scenario']}/run/{run_id}/"
+        auth = requests.auth.HTTPBasicAuth(username, password)
         # logger.critical(f"hydrata.com post:{data}")
-        response = client.patch(
-            f"{control_server}anuga/api/{data['project']}/{data['scenario']}/run/{run_id}/",
-            data=data,
-            files=files
-        )
-        status_code = response.status_code
-        if status_code >= 400:
-            logger.error(f"Error updating web interface. HTTP code: {status_code} - {response.text}")
+        post_to_control_server(url, auth=auth, method="PATCH", data=data, files=files)
 
 
 def create_mesher_mesh(input_data):
