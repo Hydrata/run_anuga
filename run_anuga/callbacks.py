@@ -34,6 +34,15 @@ class SimulationCallback(Protocol):
         """Called to report an output file (e.g. video, raster)."""
         ...
 
+    def on_progress(self, pct: float, eta_seconds: int | None = None) -> None:
+        """Report scalar progress (numeric percentage + optional ETA in seconds).
+
+        W6 (TASK-1044): replaces the legacy ``on_status('X%')`` overloading.
+        ``on_status`` is now reserved for state-word transitions; numeric
+        progress flows via this method.
+        """
+        ...
+
 
 class NullCallback:
     """Callback that silently discards all events.  Default for standalone use."""
@@ -45,6 +54,9 @@ class NullCallback:
         pass
 
     def on_file(self, key: str, filepath: str) -> None:
+        pass
+
+    def on_progress(self, pct, eta_seconds=None):
         pass
 
 
@@ -62,6 +74,9 @@ class LoggingCallback:
 
     def on_file(self, key: str, filepath: str) -> None:
         self._logger.info("file: %s -> %s", key, filepath)
+
+    def on_progress(self, pct, eta_seconds=None):
+        self._logger.info('progress: %.1f%% eta=%ss', pct, eta_seconds)
 
 
 class HydrataCallback:
@@ -104,6 +119,11 @@ class HydrataCallback:
     def _url(self) -> str:
         return f"{self.control_server}anuga/api/{self.project}/{self.scenario}/run/{self.run_id}/"
 
+    @property
+    def _v2_progress_url(self) -> str:
+        """W6 (TASK-1044) — V2 progress endpoint replacing the V1 status='X%' overload."""
+        return f"{self.control_server}api/v2/anuga/runs/{self.run_id}/progress/"
+
     def _patch(self, data: dict, files: dict | None = None) -> None:
         from run_anuga._imports import import_optional
         from run_anuga._http import post_to_control_server
@@ -114,6 +134,26 @@ class HydrataCallback:
         data["scenario"] = self.scenario
         post_to_control_server(self._url, auth=auth, method="PATCH", data=data, files=files)
 
+    def _patch_v2_progress(self, data: dict) -> None:
+        """W6 (TASK-1044) — POST to V2 /progress/ endpoint.
+
+        BasicAuth user is ANUGA_ADMIN_USERNAME, which satisfies
+        IsInternalComputeCaller permission check (back-compat path).
+        Mirrors the _patch shape but targets the V2 progress URL.
+        """
+        from run_anuga._imports import import_optional
+
+        requests = import_optional("requests")
+        client = requests.Session()
+        client.auth = requests.auth.HTTPBasicAuth(self.username, self.password)
+        response = client.post(self._v2_progress_url, json=data)
+        if response.status_code >= 400:
+            logger.error(
+                "Error posting V2 progress. HTTP code: %d - %s",
+                response.status_code,
+                response.text,
+            )
+
     def on_status(self, status: str, **kwargs: Any) -> None:
         self._patch({"status": status})
 
@@ -123,6 +163,21 @@ class HydrataCallback:
     def on_file(self, key: str, filepath: str) -> None:
         with open(filepath, "rb") as f:
             self._patch({}, files={key: f})
+
+    def on_progress(self, pct, eta_seconds=None):
+        """W6 (TASK-1044) — POST to V2 /progress/ endpoint.
+
+        BasicAuth user is ANUGA_ADMIN_USERNAME, which satisfies
+        IsInternalComputeCaller permission check. Pass ``eta_seconds=None``
+        when ETA is unknown (e.g. pct==0); the V2 endpoint accepts null.
+        """
+        try:
+            self._patch_v2_progress({
+                'progress_pct': float(pct),
+                'eta_seconds': int(eta_seconds) if eta_seconds is not None else None,
+            })
+        except Exception:
+            logger.exception('on_progress POST failed')
 
     @classmethod
     def from_config(

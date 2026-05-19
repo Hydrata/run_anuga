@@ -219,12 +219,23 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
             checkpoint_step=1
         )
         barrier()
-        start = time.time()
+        # W6 (TASK-1044) — `simulation_start` is the absolute wall-clock anchor used
+        # for ETA estimation; `start` is the per-tick reference reset every iteration.
+        simulation_start = time.time()
+        start = simulation_start
         for t in domain.evolve(yieldstep=yieldstep, finaltime=duration, skip_initial_step=skip_initial_step):
             if anuga.myid == 0:
                 stop = time.time()
                 percentage_done = round(t * 100 / duration, 1)
-                callback.on_status(f"{percentage_done}%")
+                # W6 (TASK-1044) — switch numeric progress from on_status('X%') to
+                # on_progress(X). on_status is reserved for state words ('error' below
+                # stays). ETA = elapsed * (100 - pct) / pct; unknown when pct==0.
+                elapsed = stop - simulation_start
+                if percentage_done > 0:
+                    eta_seconds = int(elapsed * (100 - percentage_done) / percentage_done)
+                else:
+                    eta_seconds = None
+                callback.on_progress(percentage_done, eta_seconds=eta_seconds)
                 duration_seconds = round(stop - start)
                 minutes, seconds = divmod(duration_seconds, 60)
                 memory_percent = psutil.virtual_memory().percent
