@@ -3,6 +3,7 @@ import json
 import logging
 import math
 import os
+import signal
 import time
 import traceback
 
@@ -18,6 +19,29 @@ try:
     logger = get_task_logger(__name__)
 except ImportError:
     logger = logging.getLogger(__name__)
+
+
+# SIGALRM watchdog around MPI_Finalize — defends against the libmpi
+# ompi_mpi_finalize → usleep busy-loop wedge observed in run 27593 forensics.
+def _finalize_with_timeout(finalize, timeout_seconds=None):
+    if timeout_seconds is None:
+        timeout_seconds = int(os.environ.get('RUN_ANUGA_FINALIZE_TIMEOUT_SECONDS', '30'))
+
+    def _on_timeout(signum, frame):
+        raise TimeoutError(f"MPI_Finalize exceeded {timeout_seconds}s")
+
+    previous_handler = signal.signal(signal.SIGALRM, _on_timeout)
+    signal.alarm(timeout_seconds)
+    try:
+        finalize()
+    except TimeoutError:
+        logger.warning(
+            f"MPI_Finalize hung after {timeout_seconds}s and was abandoned; "
+            "the run is otherwise complete and the OS will reclaim MPI state on process exit."
+        )
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, previous_handler)
 
 
 def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoint_time=None, callback=None):
@@ -256,7 +280,7 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
         logger.error(f"{traceback.format_exc()}")
         raise
     finally:
-        finalize()
+        _finalize_with_timeout(finalize)
     logger.info(f"finished run: {input_data['run_label']}")
 
 
