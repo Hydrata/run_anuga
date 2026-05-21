@@ -16,7 +16,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Set GDAL config for pip install
 ENV GDAL_CONFIG=/usr/bin/gdal-config
-ENV PYTHONUNBUFFERED=1
 
 WORKDIR /app
 
@@ -38,6 +37,11 @@ RUN pip install --no-cache-dir \
     mpi4py cython pybind11 requests boto3 awscli && \
     pip install --no-cache-dir \
     "anuga @ git+https://github.com/Hydrata/anuga_core.git@7f213c92e97034cc638fe3923f485984e1a0aded"
+
+# Unbuffered stdout/stderr so CloudWatch shows every print/logger output as
+# it happens, not in 4KB chunks. Placed after the heavy pip-install layers so
+# adding this ENV doesn't bust their cache.
+ENV PYTHONUNBUFFERED=1
 
 # entrypoint.sh BEFORE the source-tree COPY so its layer stays cached when
 # only run_anuga/*.py changes.
