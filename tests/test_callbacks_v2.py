@@ -128,3 +128,56 @@ def test_init_raises_on_missing_token(monkeypatch):
             scenario=2,
             run_id=3,
         )
+
+
+class TestFromConfig:
+    """Coverage for ``HydrataCallback.from_config``.
+
+    Hydrates a callback from the scenario JSON config dict that the worker
+    pulls out of the package zip. Required keys are
+    ``('control_server', 'project', 'id', 'run_id')``; ``id`` is the scenario
+    PK, ``run_id`` is the run PK. Any missing or falsy value raises ``KeyError``
+    (fail-fast — see ``HydrataCallback.from_config``).
+    """
+
+    def test_from_config_happy_path(self, token_env):
+        """All 4 required fields present → returns valid HydrataCallback with
+        ``id`` mapped onto the ``scenario`` attribute and ``run_id`` preserved."""
+        cfg = {
+            'control_server': 'https://hydrata.com/',
+            'project': 100,
+            'id': 200,        # scenario PK
+            'run_id': 300,
+        }
+        cb = HydrataCallback.from_config(cfg)
+        assert cb.control_server == 'https://hydrata.com/'
+        assert cb.project == 100
+        assert cb.scenario == 200
+        assert cb.run_id == 300
+        cb.close()
+
+    def test_from_config_missing_field_raises(self, token_env):
+        """Missing required field (here: ``run_id``) → KeyError — beats silently POSTing to /runs/0/ for 404s."""
+        cfg = {
+            'control_server': 'https://hydrata.com/',
+            'project': 100,
+            'id': 200,
+            # 'run_id' missing
+        }
+        with pytest.raises(KeyError, match='run_id'):
+            HydrataCallback.from_config(cfg)
+
+    def test_from_config_project_zero_treated_as_missing(self, token_env):
+        """from_config uses ``not scenario_config.get(k)`` so project=0 is falsy
+        and classified as "missing". Intentional: Hydrata Django PKs start at 1,
+        so project=0 is never a valid run. If a future Hydrata refactor allows
+        project=0, this assertion fires and forces a deliberate decision to
+        flip the check to ``k not in scenario_config``."""
+        cfg = {
+            'control_server': 'https://hydrata.com/',
+            'project': 0,  # falsy but technically present
+            'id': 200,
+            'run_id': 300,
+        }
+        with pytest.raises(KeyError, match='project'):
+            HydrataCallback.from_config(cfg)

@@ -19,28 +19,34 @@ ENV GDAL_CONFIG=/usr/bin/gdal-config
 
 WORKDIR /app
 
-# Copy the run_anuga package (build context = run_anuga repo root)
-COPY . /app/run_anuga_src
+# Copy only pyproject.toml first so the heavy pip-install layers below remain
+# cached when only run_anuga source files change.
+COPY pyproject.toml /app/run_anuga_src/
 
 # Install GDAL Python bindings matching system GDAL
 RUN pip install --no-cache-dir "numpy>=2.0" setuptools wheel && \
     pip install --no-cache-dir --no-binary GDAL --no-build-isolation \
     "GDAL==$(gdal-config --version).*"
 
-# Install ANUGA runtime dependencies (not declared in pyproject.toml)
-# then ANUGA from Hydrata fork (has lazy pymetis fix).
-# Pinned to a specific anuga_core SHA for reproducible builds (D-decision per
-# TASK-1048 W2). Bump intentionally via operator workflow; do NOT use @main.
+# Install ANUGA runtime dependencies (not declared in pyproject.toml) then
+# ANUGA from Hydrata fork (has lazy pymetis fix). Pinned to a specific
+# anuga_core SHA for reproducible builds; bump intentionally via operator
+# workflow, do NOT use @main.
 RUN pip install --no-cache-dir \
     scipy matplotlib meshpy pymetis netcdf4 dill utm pyproj affine \
     mpi4py cython pybind11 requests boto3 && \
     pip install --no-cache-dir \
-    "anuga @ git+https://github.com/Hydrata/anuga_core.git@7f213c92e97034cc638fe3923f485984e1a0aded" && \
-    pip install --no-cache-dir "/app/run_anuga_src[sim,platform]"
+    "anuga @ git+https://github.com/Hydrata/anuga_core.git@7f213c92e97034cc638fe3923f485984e1a0aded"
 
-# Copy the entrypoint script
+# entrypoint.sh BEFORE the source-tree COPY so its layer stays cached when
+# only run_anuga/*.py changes.
 COPY batch/entrypoint.sh /app/entrypoint.sh
 RUN chmod +x /app/entrypoint.sh
+
+# Source tree + local-package install. The heavy layers above stay cached
+# across source-only changes; only these two layers re-run.
+COPY . /app/run_anuga_src/
+RUN pip install --no-cache-dir "/app/run_anuga_src[sim,platform]"
 
 WORKDIR /app
 ENTRYPOINT ["/app/entrypoint.sh"]
