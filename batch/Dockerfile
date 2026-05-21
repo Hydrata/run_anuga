@@ -34,7 +34,7 @@ RUN pip install --no-cache-dir "numpy>=2.0" setuptools wheel && \
 # workflow, do NOT use @main.
 RUN pip install --no-cache-dir \
     scipy matplotlib meshpy pymetis netcdf4 dill utm pyproj affine \
-    mpi4py cython pybind11 requests boto3 && \
+    mpi4py cython pybind11 requests boto3 awscli && \
     pip install --no-cache-dir \
     "anuga @ git+https://github.com/Hydrata/anuga_core.git@7f213c92e97034cc638fe3923f485984e1a0aded"
 
