@@ -80,6 +80,11 @@ rm "${PACKAGE_ZIP}"
 # below carry the token directly and satisfy V2 IsInternalComputeCaller.
 echo "[entrypoint] Starting simulation (subprocess, cpus=${CPUS})..."
 export HYDRATA_INTERNAL_COMPUTE_TOKEN
+# OpenMPI refuses to run as root by default. The Batch container is single-purpose
+# (Fargate-style: run sim, upload result, exit) so the standard non-root hardening
+# does not apply here. These two env vars are the documented escape hatch.
+export OMPI_ALLOW_RUN_AS_ROOT=1
+export OMPI_ALLOW_RUN_AS_ROOT_CONFIRM=1
 if [ "${CPUS}" -gt 1 ]; then
     mpirun -np "${CPUS}" --use-hwthread-cpus python /app/run_anuga_src/run_anuga/run.py \
         --package_dir "${WORK_DIR}" \
