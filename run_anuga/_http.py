@@ -1,14 +1,15 @@
 """HTTP helper for control-server callbacks.
 
-Three sites used to duplicate the requests.Session + HTTPBasicAuth +
-status-check + error-log pattern:
+Used by:
 
 * ``run.py::_report_run_error`` (POST /api/v2/anuga/runs/<id>/error/)
-* ``run_utils.py::update_web_interface`` (PATCH anuga/api/<p>/<s>/run/<id>/)
-* ``callbacks.py::HydrataCallback._patch`` (PATCH anuga/api/<p>/<s>/run/<id>/)
+* ``callbacks.py::HydrataCallback._post`` (POST /api/v2/anuga/runs/<id>/{log,progress}/)
+* ``run_utils.py::update_web_interface`` (legacy V1 PATCH path, kept for
+  backwards-compat with the 80-day-stale Batch image)
 
-This module collapses them onto a single helper.  Callers still own URL
-construction since the templates vary across sites.
+Callers pass an owned ``requests.Session`` via ``session=`` to realise
+connection-reuse on hot paths (e.g. evolve loop 100+ POSTs per run).
+When ``session`` is omitted a fresh Session is created and closed per call.
 """
 
 from __future__ import annotations
@@ -28,13 +29,21 @@ logger = logging.getLogger(__name__)
 def post_to_control_server(
     url: str,
     *,
-    auth: "HTTPBasicAuth",
+    auth: "HTTPBasicAuth | None" = None,
     method: str = "POST",
     data: dict | None = None,
     files: dict | None = None,
     timeout: int | None = None,
+    session: "requests.Session | None" = None,
 ) -> "requests.Response":
-    """POST or PATCH to the control server using a requests.Session with pre-set BasicAuth.
+    """POST or PATCH to the control server.
+
+    TASK-1049 (W1): a caller-owned ``session`` may be supplied so a long-lived
+    Session (with pre-set headers like ``X-Internal-Token``) can be reused
+    across many callback POSTs without rebuilding TCP/TLS. When ``session`` is
+    provided the helper does NOT close it (caller owns lifecycle). When
+    omitted, the helper falls back to a single-shot ``with requests.Session()``
+    block, which closes the session on exit.
 
     Returns the response object. Logs an error (does not raise) on status >= 400.
     Callers are responsible for URL construction (templates vary across sites).
@@ -44,7 +53,10 @@ def post_to_control_server(
     url
         Fully constructed URL (callers own templating).
     auth
-        ``HTTPBasicAuth`` instance, set on the session, not per-request.
+        Optional ``HTTPBasicAuth`` instance. When provided alongside an owned
+        Session, it is set on the session (overwriting any prior auth) for the
+        legacy BasicAuth callers. When a caller-supplied ``session`` is used
+        with its own pre-set auth/headers, leave ``auth=None``.
     method
         ``"POST"`` or ``"PATCH"``.  Case-insensitive.
     data
@@ -57,6 +69,11 @@ def post_to_control_server(
         PATCH-with-``files`` callers (mesh/result artifact uploads from a
         worker on a slow link can easily exceed any short bound). Callers
         that want a timeout should pass one explicitly.
+    session
+        Optional ``requests.Session`` owned by the caller. When provided, the
+        helper uses it directly and does NOT close it (caller's responsibility,
+        typically via a ``close()`` method paired with a ``try/finally`` block
+        at the run-loop site).
 
     Returns
     -------
@@ -71,15 +88,27 @@ def post_to_control_server(
     """
     requests = import_optional("requests")
 
-    with requests.Session() as client:
-        client.auth = auth
+    def _do_request(client) -> "requests.Response":
         verb = method.lower()
         if verb == "post":
-            response = client.post(url, data=data, files=files, timeout=timeout)
+            return client.post(url, data=data, files=files, timeout=timeout)
         elif verb == "patch":
-            response = client.patch(url, data=data, files=files, timeout=timeout)
+            return client.patch(url, data=data, files=files, timeout=timeout)
         else:
             raise ValueError(f"Unsupported HTTP method: {method!r}. Use 'POST' or 'PATCH'.")
+
+    if session is not None:
+        # Caller-owned Session: do NOT close. Only set auth if the caller
+        # explicitly passed one (callers using header-based auth like
+        # X-Internal-Token leave auth=None and pre-set session.headers).
+        if auth is not None:
+            session.auth = auth
+        response = _do_request(session)
+    else:
+        with requests.Session() as client:
+            if auth is not None:
+                client.auth = auth
+            response = _do_request(client)
 
     if response.status_code >= 400:
         logger.error(

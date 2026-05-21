@@ -58,11 +58,8 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
     run_args = RunContext(package_dir, username, password)
     input_data = setup_input_data(package_dir)
 
-    # Backward compat: auto-construct callback from username/password if not provided.
-    if callback is None and username:
-        callback = HydrataCallback.from_config(
-            username, password, input_data['scenario_config']
-        )
+    if callback is None and os.environ.get('HYDRATA_INTERNAL_COMPUTE_TOKEN'):
+        callback = HydrataCallback.from_config(input_data['scenario_config'])
     callback = callback or NullCallback()
     logger = setup_logger(input_data, username, password, batch_number)
     logger.info(f"run_sim started with {batch_number=}")
@@ -280,7 +277,13 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
         logger.error(f"{traceback.format_exc()}")
         raise
     finally:
-        _finalize_with_timeout(finalize)
+        try:
+            _finalize_with_timeout(finalize)
+        finally:
+            try:
+                callback.close()
+            except Exception:
+                logger.exception('callback.close() raised; suppressed')
     logger.info(f"finished run: {input_data['run_label']}")
 
 
