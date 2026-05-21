@@ -86,3 +86,59 @@ def test_external_boundary_with_empty_coordinates_raises_clear_value_error():
     }
     with pytest.raises(ValueError, match='no valid External-location boundary coordinates'):
         create_boundary_polygon_from_boundaries(geojson)
+
+
+def _external_mls_feature(fid='b.1', coords=None, boundary='north'):
+    """MultiLineString variant — PostGIS / GeoServer normalises every boundary
+    feature to MultiLineString on the round-trip from the standard upload
+    pipeline, so this is what real prod scenarios see when the BE reads the
+    boundary GeoJSON back from PG via WFS."""
+    if coords is None:
+        coords = [[[0.0, 0.0], [100.0, 0.0]]]
+    return {
+        'type': 'Feature',
+        'id': fid,
+        'geometry': {'type': 'MultiLineString', 'coordinates': coords},
+        'properties': {'location': 'External', 'boundary': boundary},
+    }
+
+
+def test_multilinestring_boundary_features_handled():
+    """Regression for TASK-1048 prod canary: Merewether boundary features
+    came back from PG as MultiLineString with one ring each. The pre-fix
+    coordinate loop yielded [x, y] lists into all_x_coordinates, then
+    `max([list, list, ...]) - min(...)` raised TypeError on line 540."""
+    geojson = {
+        'crs': CRS_EPSG_32616,
+        'features': [
+            _external_mls_feature(fid='b.1', coords=[[[0.0, 0.0], [100.0, 0.0]]], boundary='south'),
+            _external_mls_feature(fid='b.2', coords=[[[100.0, 0.0], [100.0, 100.0]]], boundary='east'),
+            _external_mls_feature(fid='b.3', coords=[[[100.0, 100.0], [0.0, 100.0]]], boundary='north'),
+            _external_mls_feature(fid='b.4', coords=[[[0.0, 100.0], [0.0, 0.0]]], boundary='west'),
+        ],
+    }
+    boundary_polygon, boundary_tags = create_boundary_polygon_from_boundaries(geojson)
+    assert len(boundary_polygon) == 8
+    assert set(boundary_tags.keys()) == {'south', 'east', 'north', 'west'}
+
+
+def test_multilinestring_with_multiple_rings_per_feature():
+    """A MultiLineString feature with more than one ring is rare in the
+    Hydrata FE but valid GeoJSON. Each ring's points contribute to the
+    bounding-box calc and the boundary_polygon ring."""
+    geojson = {
+        'crs': CRS_EPSG_32616,
+        'features': [
+            _external_mls_feature(
+                fid='b.1',
+                coords=[[[0.0, 0.0], [50.0, 0.0]], [[50.0, 0.0], [100.0, 0.0]]],
+                boundary='south',
+            ),
+            _external_feature(fid='b.2', coords=[[100.0, 0.0], [100.0, 100.0]], boundary='east'),
+            _external_feature(fid='b.3', coords=[[100.0, 100.0], [0.0, 0.0]], boundary='diag'),
+        ],
+    }
+    boundary_polygon, boundary_tags = create_boundary_polygon_from_boundaries(geojson)
+    # 4 points from the two-ring MultiLineString + 2 + 2 = 8 total
+    assert len(boundary_polygon) == 8
+    assert set(boundary_tags.keys()) == {'south', 'east', 'diag'}

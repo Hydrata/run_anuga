@@ -502,6 +502,23 @@ def lookup_boundary_tag(index, boundary_tags):
             return key
 
 
+def _flatten_line_coordinates(geometry):
+    """
+    Return a flat list of [x, y] points from a LineString or MultiLineString
+    GeoJSON geometry. PostGIS / GeoServer normalises every boundary feature
+    to MultiLineString regardless of input — even when the source file is
+    LineString — so this helper has to handle both. For MultiLineString with
+    a single ring we flatten one level; for true multi-rings we concatenate
+    (the boundary polygon is sorted clockwise by feature centroid afterwards,
+    so the join order within a feature does not matter for sorting).
+    """
+    coords = geometry.get('coordinates') or []
+    gtype = geometry.get('type')
+    if gtype == 'MultiLineString':
+        return [pt for line in coords for pt in line]
+    return coords
+
+
 def create_boundary_polygon_from_boundaries(boundaries_geojson):
     ogr = import_optional("osgeo.ogr")
     geometry_collection = ogr.Geometry(ogr.wkbGeometryCollection)
@@ -520,7 +537,7 @@ def create_boundary_polygon_from_boundaries(boundaries_geojson):
         geometry = ogr.CreateGeometryFromJson(json.dumps(feature.get('geometry')))
         geometry_collection.AddGeometry(geometry)
         # Collect a list of the coordinates associated with each boundary tag:
-        feature_coordinates = feature.get('geometry').get('coordinates')
+        feature_coordinates = _flatten_line_coordinates(feature.get('geometry'))
         for coordinate in feature_coordinates:
             all_x_coordinates.append(coordinate[0])
             all_y_coordinates.append(coordinate[1])
@@ -557,7 +574,7 @@ def create_boundary_polygon_from_boundaries(boundaries_geojson):
             "boundary": feature.get('properties').get('boundary'),
             "id": feature.get('id'),
             "angle": angle,
-            "coordinates": feature.get('geometry').get('coordinates')
+            "coordinates": _flatten_line_coordinates(feature.get('geometry')),
         })
     line_list.sort(key=lambda line: line.get('angle'), reverse=True)
 
