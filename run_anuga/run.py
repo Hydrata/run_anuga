@@ -275,6 +275,12 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
     except Exception:
         callback.on_status('error')
         logger.error(f"{traceback.format_exc()}")
+        # Tear down COMM_WORLD so other ranks don't spin at the next barrier.
+        try:
+            from mpi4py import MPI
+            MPI.COMM_WORLD.Abort(1)
+        except Exception:
+            logger.exception('MPI_Abort failed')
         raise
     finally:
         try:
@@ -324,7 +330,10 @@ def _report_run_error(run_args, message):
         package_dir = run_args.package_dir
         username = run_args.username
         password = run_args.password
-        if not (username and password):
+        # Prefer Batch token-auth (RAW X-Internal-Token header, not Bearer);
+        # fall back to BasicAuth for localhost/legacy.
+        token = os.environ.get('HYDRATA_INTERNAL_COMPUTE_TOKEN')
+        if not token and not (username and password):
             return
         scenario_json_path = os.path.join(package_dir, 'scenario.json')
         with open(scenario_json_path, 'r') as f:
@@ -337,13 +346,27 @@ def _report_run_error(run_args, message):
         from run_anuga._http import post_to_control_server
 
         url = f"{control_server}api/v2/anuga/runs/{run_id}/error/"
-        auth = requests.auth.HTTPBasicAuth(username, password)
         # Small POST with a scalar message: a 30s upper bound is fine here
         # (the helper default is None / no timeout, which is required for the
         # PATCH-with-files callers but inappropriate for an error report).
-        post_to_control_server(
-            url, auth=auth, method="POST", data={'message': message}, timeout=30,
-        )
+        if token:
+            session = requests.Session()
+            session.headers['X-Internal-Token'] = token
+            try:
+                post_to_control_server(
+                    url,
+                    method="POST",
+                    data={'message': message},
+                    session=session,
+                    timeout=30,
+                )
+            finally:
+                session.close()
+        else:
+            auth = requests.auth.HTTPBasicAuth(username, password)
+            post_to_control_server(
+                url, auth=auth, method="POST", data={'message': message}, timeout=30,
+            )
     except Exception:
         logger.exception("Failed to report run error to control server")
 

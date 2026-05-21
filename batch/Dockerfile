@@ -16,6 +16,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Set GDAL config for pip install
 ENV GDAL_CONFIG=/usr/bin/gdal-config
+ENV PYTHONUNBUFFERED=1
 
 WORKDIR /app
 
