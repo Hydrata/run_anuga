@@ -179,7 +179,7 @@ def create_mesher_mesh(input_data):
             shp_boundary_filepath = os.path.join(mesh_region_directory, f"{mesh_region_name}.shp")
             tif_mesh_region_filepath = os.path.join(mesh_region_directory, f"{mesh_region_name}.tif")
             epsg_code = int(input_data.get('mesh_region').get('crs').get('properties').get('name').split(':')[-1])
-            make_shp_from_polygon(feature.get('geometry').get('coordinates')[0], epsg_code, shp_boundary_filepath)
+            make_shp_from_polygon(_extract_polygon_outer_ring(feature.get('geometry')), epsg_code, shp_boundary_filepath)
             logger.critical(shp_boundary_filepath)
             mesh_region_clip = subprocess.run([
                 'gdalwarp',
@@ -443,7 +443,7 @@ def make_interior_regions(input_data):
     interior_regions = list()
     if input_data.get('mesh_region'):
         for mesh_region in input_data['mesh_region']['features']:
-            mesh_polygon = mesh_region.get('geometry').get('coordinates')[0]
+            mesh_polygon = _extract_polygon_outer_ring(mesh_region.get('geometry'))
             mesh_resolution = mesh_region.get('properties').get('resolution')
             interior_regions.append((mesh_polygon, mesh_resolution,))
     return interior_regions
@@ -456,7 +456,7 @@ def make_interior_holes_and_tags(input_data):
         for structure in input_data['structure']['features']:
             if structure.get('properties').get('method') == 'Mannings':
                 continue
-            structure_polygon = structure.get('geometry').get('coordinates')[0]
+            structure_polygon = _extract_polygon_outer_ring(structure.get('geometry'))
             interior_holes.append(structure_polygon)
             if structure.get('properties').get('method') == 'Holes':
                 hole_tags.append(None)
@@ -482,11 +482,11 @@ def make_frictions(input_data):
     if input_data.get('structure'):
         for structure in input_data['structure']['features']:
             if structure.get('properties').get('method') == 'Mannings':
-                structure_polygon = structure.get('geometry').get('coordinates')[0]
+                structure_polygon = _extract_polygon_outer_ring(structure.get('geometry'))
                 frictions.append((structure_polygon, defaults.BUILDING_MANNINGS_N,))
     if input_data.get('friction'):
         for friction in input_data['friction']['features']:
-            friction_polygon = friction.get('geometry').get('coordinates')[0]
+            friction_polygon = _extract_polygon_outer_ring(friction.get('geometry'))
             friction_value = friction.get('properties').get('mannings')
             frictions.append((friction_polygon, friction_value,))
     frictions.append(['All', defaults.DEFAULT_MANNINGS_N])
@@ -523,6 +523,32 @@ def _flatten_line_coordinates(geometry):
     if gtype == 'MultiLineString':
         return [pt for line in coords for pt in line]
     return coords
+
+
+def _extract_polygon_outer_ring(geometry):
+    """
+    Return the 2-D outer ring of a Polygon or MultiPolygon GeoJSON geometry.
+    The BE can serialise the same polygon-shaped feature as either Polygon
+    or MultiPolygon depending on storage and round-trip path, so ANUGA-side
+    callers (set_quantity, Polygonal_rate_operator, shapely.Polygon,
+    gdalwarp -cutline) must accept both shapes — they all want an (N, 2)
+    list of vertices, not a (1, N, 2) list-of-polygons.
+    For MultiPolygon with multiple sub-polygons, the first sub-polygon's
+    outer ring is returned and a warning is logged. Inner rings (holes)
+    inside the first sub-polygon are also dropped, matching the previous
+    Polygon-only behaviour which only ever consumed coordinates[0].
+    """
+    coords = geometry.get('coordinates') or []
+    if not coords:
+        return []
+    if geometry.get('type') == 'MultiPolygon':
+        if len(coords) > 1:
+            logger.warning(
+                "MultiPolygon with %d sub-polygons; only the first will be used",
+                len(coords),
+            )
+        return coords[0][0] if coords[0] else []
+    return coords[0]
 
 
 def create_boundary_polygon_from_boundaries(boundaries_geojson):
@@ -856,7 +882,7 @@ def apply_inflows_to_domain(
             inflow_dataframe[polygon_name] = float(data)
         inflow_function = create_inflow_function(inflow_dataframe, polygon_name)
         inflow_functions[polygon_name] = inflow_function
-        geometry = inflow_polygon.get('geometry').get('coordinates')[0]
+        geometry = _extract_polygon_outer_ring(inflow_polygon.get('geometry'))
         Polygonal_rate_operator(
             domain,
             rate=inflow_function,
@@ -895,7 +921,7 @@ def apply_inflows_to_domain(
             polygon_name = catchment_polygon.get('id')
             inflow_dataframe[polygon_name] = uniform_rainfall_rate
             inflow_function = create_inflow_function(inflow_dataframe, polygon_name)
-            geometry = catchment_polygon.get('geometry').get('coordinates')[0]
+            geometry = _extract_polygon_outer_ring(catchment_polygon.get('geometry'))
             # The catchment needs to be wholly in the domain:
             if check_coordinates_are_in_polygon(geometry, boundary_polygon):
                 Polygonal_rate_operator(
@@ -1224,7 +1250,7 @@ def calculate_hydrology(package_dir):
 
     # assign catchments to nodes
     for index, catchment in enumerate(input_data.get('catchment').get('features')):
-        catchment_polygon = prep(Polygon(catchment.get('geometry').get('coordinates')[0]))
+        catchment_polygon = prep(Polygon(_extract_polygon_outer_ring(catchment.get('geometry'))))
         node_candidate = list(filter(catchment_polygon.contains, node_points))
         if len(node_candidate) == 0:
             logger.critical(f"Catchment {catchment.get('id')} has no internal node")
@@ -1245,7 +1271,7 @@ def calculate_hydrology(package_dir):
     rainfall_steady_state_intensity_mm_hr = float(rainfall_features[0].get('properties').get('data'))
     rainfall_steady_state_intensity_m_s = rainfall_steady_state_intensity_mm_hr * 0.001 / 3600
     for index, catchment in enumerate(input_data.get('catchment').get('features')):
-        area_m2 = Polygon(catchment.get('geometry').get('coordinates')[0]).area
+        area_m2 = Polygon(_extract_polygon_outer_ring(catchment.get('geometry'))).area
         input_data['catchment']['features'][index]['surface_flow_m3_s'] = 1.0 * rainfall_steady_state_intensity_m_s * area_m2
 
     # create surface inflows at catchment nodes
