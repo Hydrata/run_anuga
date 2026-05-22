@@ -26,6 +26,18 @@ if TYPE_CHECKING:  # pragma: no cover — typing only
 logger = logging.getLogger(__name__)
 
 
+def make_internal_session(token: str) -> "requests.Session":
+    """Return a Session with ``X-Internal-Token`` set to ``token`` (RAW, no Bearer prefix).
+
+    ``IsInternalComputeCaller`` in ``apps/gn_anuga/permissions.py`` reads the
+    header verbatim, so a ``Bearer`` prefix would 401. Caller owns close().
+    """
+    requests = import_optional("requests")
+    session = requests.Session()
+    session.headers['X-Internal-Token'] = token
+    return session
+
+
 def post_to_control_server(
     url: str,
     *,

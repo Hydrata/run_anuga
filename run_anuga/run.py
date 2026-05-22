@@ -4,6 +4,7 @@ import logging
 import math
 import os
 import signal
+import sys
 import time
 import traceback
 
@@ -19,6 +20,20 @@ try:
     logger = get_task_logger(__name__)
 except ImportError:
     logger = logging.getLogger(__name__)
+
+# celery's get_task_logger returns a logger with no stdout handler outside a
+# celery worker (which is the case in the Batch container), so logger.error()
+# in the rank-0 broad-except would otherwise be silently dropped from
+# CloudWatch. Idempotent: skip if any caller already attached one.
+if not any(
+    isinstance(h, logging.StreamHandler) and getattr(h, 'stream', None) is sys.stderr
+    for h in logger.handlers
+):
+    _stderr_handler = logging.StreamHandler(sys.stderr)
+    _stderr_handler.setFormatter(logging.Formatter('%(asctime)s %(levelname)s %(name)s: %(message)s'))
+    logger.addHandler(_stderr_handler)
+    if logger.level == logging.NOTSET:
+        logger.setLevel(logging.INFO)
 
 
 # SIGALRM watchdog around MPI_Finalize — defends against the libmpi
@@ -57,6 +72,7 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
     # Keep run_args for backward compat with update_web_interface in main() error handler.
     run_args = RunContext(package_dir, username, password)
     input_data = setup_input_data(package_dir)
+    run_args.scenario_config = input_data['scenario_config']
 
     if callback is None and os.environ.get('HYDRATA_INTERNAL_COMPUTE_TOKEN'):
         callback = HydrataCallback.from_config(input_data['scenario_config'])
@@ -275,6 +291,9 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
     except Exception:
         callback.on_status('error')
         logger.error(f"{traceback.format_exc()}")
+        # Belt-and-braces in case a caller clobbered logger.handlers.
+        print(traceback.format_exc(), file=sys.stderr)
+        sys.stderr.flush()
         # Tear down COMM_WORLD so other ranks don't spin at the next barrier.
         try:
             from mpi4py import MPI
@@ -335,23 +354,25 @@ def _report_run_error(run_args, message):
         token = os.environ.get('HYDRATA_INTERNAL_COMPUTE_TOKEN')
         if not token and not (username and password):
             return
-        scenario_json_path = os.path.join(package_dir, 'scenario.json')
-        with open(scenario_json_path, 'r') as f:
-            scenario_config = json.load(f)
+        if run_args.scenario_config is not None:
+            scenario_config = run_args.scenario_config
+        else:
+            # run_sim failed before setup_input_data populated the cache.
+            scenario_json_path = os.path.join(package_dir, 'scenario.json')
+            with open(scenario_json_path, 'r') as f:
+                scenario_config = json.load(f)
         run_id = scenario_config.get('run_id')
         control_server = scenario_config.get('control_server')
         if not (control_server and run_id):
             return
-        requests = import_optional("requests")
-        from run_anuga._http import post_to_control_server
+        from run_anuga._http import make_internal_session, post_to_control_server
 
         url = f"{control_server}api/v2/anuga/runs/{run_id}/error/"
         # Small POST with a scalar message: a 30s upper bound is fine here
         # (the helper default is None / no timeout, which is required for the
         # PATCH-with-files callers but inappropriate for an error report).
         if token:
-            session = requests.Session()
-            session.headers['X-Internal-Token'] = token
+            session = make_internal_session(token)
             try:
                 post_to_control_server(
                     url,
@@ -363,6 +384,7 @@ def _report_run_error(run_args, message):
             finally:
                 session.close()
         else:
+            requests = import_optional("requests")
             auth = requests.auth.HTTPBasicAuth(username, password)
             post_to_control_server(
                 url, auth=auth, method="POST", data={'message': message}, timeout=30,

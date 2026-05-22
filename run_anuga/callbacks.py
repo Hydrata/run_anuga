@@ -143,7 +143,7 @@ class HydrataCallback:
         scenario: int,
         run_id: int,
     ):
-        from run_anuga._imports import import_optional
+        from run_anuga._http import make_internal_session
 
         token = os.environ.get(self._TOKEN_ENV, '')
         if not token:
@@ -155,12 +155,7 @@ class HydrataCallback:
         self.project = project
         self.scenario = scenario
         self.run_id = run_id
-
-        requests = import_optional("requests")
-        self.session = requests.Session()
-        # RAW token, NOT "Bearer <token>" — IsInternalComputeCaller reads it
-        # literally (see gn_anuga.permissions:13-37).
-        self.session.headers['X-Internal-Token'] = token
+        self.session = make_internal_session(token)
 
     @property
     def _log_url(self) -> str:

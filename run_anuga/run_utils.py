@@ -34,6 +34,9 @@ class RunContext:
     package_dir: str
     username: Optional[str] = None
     password: Optional[str] = None
+    # Cached at run_sim startup so _report_run_error reuses the same config
+    # the run started with even if scenario.json is overwritten mid-run.
+    scenario_config: Optional[dict] = None
 
 
 def is_dir_check(path):
@@ -49,7 +52,8 @@ def _load_package_data(package_dir):
         raise FileNotFoundError(f'Could not find "scenario.json" in {package_dir}')
 
     input_data = dict()
-    input_data['scenario_config'] = json.load(open(os.path.join(package_dir, 'scenario.json')))
+    with open(os.path.join(package_dir, 'scenario.json')) as f:
+        input_data['scenario_config'] = json.load(f)
     try:
         ScenarioConfig.model_validate(input_data['scenario_config'])
     except Exception as e:
@@ -65,7 +69,8 @@ def _load_package_data(package_dir):
     Path(input_data['checkpoint_directory']).mkdir(parents=True, exist_ok=True)
 
     input_data['boundary_filename'] = os.path.join(package_dir, f"inputs/{input_data['scenario_config'].get('boundary')}")
-    input_data['boundary'] = json.load(open(input_data['boundary_filename']))
+    with open(input_data['boundary_filename']) as f:
+        input_data['boundary'] = json.load(f)
 
     data_types = [
         'friction',
@@ -82,7 +87,8 @@ def _load_package_data(package_dir):
         filepath = os.path.join(package_dir, f"inputs/{input_data['scenario_config'].get(data_type)}")
         if input_data['scenario_config'].get(data_type) and os.path.isfile(filepath):
             input_data[f'{data_type}_filename'] = filepath
-            input_data[data_type] = json.load(open(filepath))
+            with open(filepath) as f:
+                input_data[data_type] = json.load(f)
 
     elevation_filepath = os.path.join(package_dir, f"inputs/{input_data['scenario_config'].get('elevation')}")
     if input_data['scenario_config'].get('elevation') and os.path.isfile(elevation_filepath):
@@ -1279,7 +1285,8 @@ def make_new_inflow(inflow_id, coordinates, flow):
 
 
 def add_inflow_to_file(inflow_object, filepath):
-    file_contents = json.load(open(filepath))
+    with open(filepath) as f:
+        file_contents = json.load(f)
     file_contents['features'].append(inflow_object)
     with open(filepath, 'w') as json_file:
         json.dump(file_contents, json_file)

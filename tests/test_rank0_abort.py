@@ -9,6 +9,7 @@ container exits fast and the entrypoint EXIT trap can report /error/.
 Regression for canary-15 wedge (TASK-1048 W6.4 / TASK-1080).
 """
 
+import logging
 import sys
 from unittest import mock
 
@@ -113,3 +114,71 @@ class TestRank0AbortOnException:
             run_sim(str(tmp_path), callback=NullCallback())
 
         fake_comm.Abort.assert_called_once_with(1)
+
+
+class TestRank0TracebackReachesStderr:
+    """rank-0 traceback must reach the OS stderr fd (what AWS Batch / CloudWatch drains)."""
+
+    def test_rank0_traceback_reaches_stderr(self, monkeypatch, tmp_path, fake_mpi, capfd):
+        # capfd captures the file descriptor — capsys would miss the
+        # belt-and-braces print() that bypasses Python-level redirects.
+        from run_anuga.callbacks import NullCallback
+        from run_anuga.run import run_sim
+
+        _stub_setup_input_data_for_inside_try_failure(monkeypatch)
+        _stub_logger_and_callback(monkeypatch)
+
+        with pytest.raises(RuntimeError, match="synthetic-rank0-boom"):
+            run_sim(str(tmp_path), callback=NullCallback())
+
+        captured = capfd.readouterr()
+        # Traceback frame header must appear on stderr.
+        assert "Traceback" in captured.err, (
+            f"expected 'Traceback' on stderr; got stderr={captured.err!r} "
+            f"stdout={captured.out!r}"
+        )
+        # The synthetic exception message must also appear.
+        assert "synthetic-rank0-boom" in captured.err, (
+            f"expected exception message on stderr; got stderr={captured.err!r}"
+        )
+
+    def test_logger_has_stderr_stream_handler(self):
+        # reload() so the module-init attach runs against pytest's sys.stderr.
+        import importlib
+        import sys as _sys
+
+        import run_anuga.run as run_module
+        importlib.reload(run_module)
+
+        stderr_stream_handlers = [
+            h for h in run_module.logger.handlers
+            if isinstance(h, logging.StreamHandler)
+            and getattr(h, 'stream', None) is _sys.stderr
+        ]
+        assert stderr_stream_handlers, (
+            f"expected a StreamHandler(sys.stderr) on run_anuga.run logger; "
+            f"got handlers={run_module.logger.handlers!r}"
+        )
+
+    def test_logger_stderr_handler_attachment_is_idempotent(self):
+        import importlib
+        import sys as _sys
+
+        import run_anuga.run as run_module
+        # First reload to align with current sys.stderr.
+        importlib.reload(run_module)
+        before = [
+            h for h in run_module.logger.handlers
+            if isinstance(h, logging.StreamHandler)
+            and getattr(h, 'stream', None) is _sys.stderr
+        ]
+        # Second reload: idempotency check.
+        importlib.reload(run_module)
+        after = [
+            h for h in run_module.logger.handlers
+            if isinstance(h, logging.StreamHandler)
+            and getattr(h, 'stream', None) is _sys.stderr
+        ]
+        # Exactly one stderr handler before and after — no accumulation.
+        assert len(before) == 1, f"expected 1 stderr handler before reload; got {before!r}"
+        assert len(after) == 1, f"expected 1 stderr handler after reload; got {after!r}"
