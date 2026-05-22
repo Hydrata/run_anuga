@@ -948,8 +948,7 @@ def apply_inflows_to_domain(
             inflow_dataframe[polyline_name] = float(data)
         inflow_function = create_inflow_function(inflow_dataframe, polyline_name)
         inflow_functions[polyline_name] = inflow_function
-        geometry = inflow_line.get('geometry').get('coordinates')
-        # check that inflow line is actually in the domain:
+        geometry = _flatten_line_coordinates(inflow_line.get('geometry'))
         if check_coordinates_are_in_polygon(geometry, boundary_polygon):
             Inlet_operator(domain, geometry, Q=inflow_function)
 

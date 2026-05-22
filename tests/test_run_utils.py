@@ -6,6 +6,8 @@ import pytest
 
 from run_anuga.run_utils import (
     _extract_polygon_outer_ring,
+    _flatten_line_coordinates,
+    check_coordinates_are_in_polygon,
     make_frictions,
     make_interior_holes_and_tags,
     make_interior_regions,
@@ -121,3 +123,87 @@ class TestMakeInteriorHolesAndTags:
         holes, tags = make_interior_holes_and_tags(input_data)
         assert holes == [OUTER_RING]
         assert tags == [None]
+
+
+LINESTRING_COORDS = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]]
+LINESTRING_COORDS_2 = [[2.0, 2.0], [3.0, 2.0]]
+
+
+class TestFlattenLineCoordinates:
+    def test_linestring_returns_coords_as_is(self):
+        geometry = {'type': 'LineString', 'coordinates': LINESTRING_COORDS}
+        assert _flatten_line_coordinates(geometry) == LINESTRING_COORDS
+
+    def test_multilinestring_single_subline_is_flattened_one_level(self):
+        geometry = {'type': 'MultiLineString', 'coordinates': [LINESTRING_COORDS]}
+        assert _flatten_line_coordinates(geometry) == LINESTRING_COORDS
+
+    def test_multilinestring_multiple_sublines_are_concatenated(self):
+        geometry = {'type': 'MultiLineString',
+                    'coordinates': [LINESTRING_COORDS, LINESTRING_COORDS_2]}
+        assert _flatten_line_coordinates(geometry) == LINESTRING_COORDS + LINESTRING_COORDS_2
+
+    def test_none_coordinates_returns_empty_list(self):
+        assert _flatten_line_coordinates({'type': 'LineString', 'coordinates': None}) == []
+        assert _flatten_line_coordinates({'type': 'MultiLineString', 'coordinates': None}) == []
+
+    def test_empty_coordinates_returns_empty_list(self):
+        assert _flatten_line_coordinates({'type': 'LineString', 'coordinates': []}) == []
+        assert _flatten_line_coordinates({'type': 'MultiLineString', 'coordinates': []}) == []
+
+
+# Square polygon spanning (0,0) -> (10,10); used for in/out membership checks.
+CONTAINER_POLYGON = [[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]]
+
+
+class TestCheckCoordinatesAreInPolygon:
+    def test_flat_linestring_inside_polygon_returns_true(self):
+        coords = [[1.0, 1.0], [2.0, 2.0], [3.0, 3.0]]
+        assert check_coordinates_are_in_polygon(coords, CONTAINER_POLYGON) is True
+
+    def test_flat_linestring_outside_polygon_returns_false(self):
+        coords = [[100.0, 100.0], [101.0, 101.0]]
+        assert check_coordinates_are_in_polygon(coords, CONTAINER_POLYGON) is False
+
+    def test_flat_linestring_partially_outside_polygon_returns_false(self):
+        coords = [[1.0, 1.0], [100.0, 100.0]]
+        assert check_coordinates_are_in_polygon(coords, CONTAINER_POLYGON) is False
+
+    def test_single_point_as_xy_inside_polygon_returns_true(self):
+        assert check_coordinates_are_in_polygon([5.0, 5.0], CONTAINER_POLYGON) is True
+
+    def test_single_point_as_xy_outside_polygon_returns_false(self):
+        assert check_coordinates_are_in_polygon([50.0, 50.0], CONTAINER_POLYGON) is False
+
+
+class TestApplyInflowsCoordinateHandling:
+    BOUNDARY_POLYGON = [
+        [382000.0, 6354000.0],
+        [383000.0, 6354000.0],
+        [383000.0, 6355000.0],
+        [382000.0, 6355000.0],
+    ]
+
+    def test_multilinestring_inflow_shape_does_not_raise(self):
+        inflow_geometry = {
+            'type': 'MultiLineString',
+            'coordinates': [[[382260.0, 6354275.0], [382270.0, 6354285.0]]],
+        }
+        flat = _flatten_line_coordinates(inflow_geometry)
+        assert check_coordinates_are_in_polygon(flat, self.BOUNDARY_POLYGON) is True
+
+    def test_linestring_equivalent_shape_returns_true(self):
+        inflow_geometry = {
+            'type': 'LineString',
+            'coordinates': [[382260.0, 6354275.0], [382270.0, 6354285.0]],
+        }
+        flat = _flatten_line_coordinates(inflow_geometry)
+        assert check_coordinates_are_in_polygon(flat, self.BOUNDARY_POLYGON) is True
+
+    def test_multilinestring_outside_polygon_returns_false(self):
+        inflow_geometry = {
+            'type': 'MultiLineString',
+            'coordinates': [[[500000.0, 7000000.0], [500010.0, 7000010.0]]],
+        }
+        flat = _flatten_line_coordinates(inflow_geometry)
+        assert check_coordinates_are_in_polygon(flat, self.BOUNDARY_POLYGON) is False
