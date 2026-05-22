@@ -517,11 +517,28 @@ def _flatten_line_coordinates(geometry):
     a single ring we flatten one level; for true multi-rings we concatenate
     (the boundary polygon is sorted clockwise by feature centroid afterwards,
     so the join order within a feature does not matter for sorting).
+
+    Returns [] for missing or empty coordinates; the debug log surfaces
+    data-quality issues without aborting the simulation.
     """
-    coords = geometry.get('coordinates') or []
+    raw_coords = geometry.get('coordinates')
+    coords = raw_coords or []
     gtype = geometry.get('type')
+    if not coords:
+        logger.debug(
+            "_flatten_line_coordinates: empty/missing coordinates "
+            "(type=%r, raw=%r); returning []",
+            gtype, raw_coords,
+        )
+        return []
     if gtype == 'MultiLineString':
         return [pt for line in coords for pt in line]
+    if gtype != 'LineString':
+        logger.debug(
+            "_flatten_line_coordinates: unsupported geometry type %r; "
+            "returning coordinates as-is",
+            gtype,
+        )
     return coords
 
 
@@ -537,17 +554,33 @@ def _extract_polygon_outer_ring(geometry):
     outer ring is returned and a warning is logged. Inner rings (holes)
     inside the first sub-polygon are also dropped, matching the previous
     Polygon-only behaviour which only ever consumed coordinates[0].
+
+    Returns [] for missing or empty coordinates; the debug log surfaces
+    data-quality issues without aborting the simulation.
     """
-    coords = geometry.get('coordinates') or []
+    raw_coords = geometry.get('coordinates')
+    coords = raw_coords or []
+    gtype = geometry.get('type')
     if not coords:
+        logger.debug(
+            "_extract_polygon_outer_ring: empty/missing coordinates "
+            "(type=%r, raw=%r); returning []",
+            gtype, raw_coords,
+        )
         return []
-    if geometry.get('type') == 'MultiPolygon':
+    if gtype == 'MultiPolygon':
         if len(coords) > 1:
             logger.warning(
                 "MultiPolygon with %d sub-polygons; only the first will be used",
                 len(coords),
             )
         return coords[0][0] if coords[0] else []
+    if gtype != 'Polygon':
+        logger.debug(
+            "_extract_polygon_outer_ring: unsupported geometry type %r; "
+            "falling through to coords[0]",
+            gtype,
+        )
     return coords[0]
 
 
@@ -1319,6 +1352,8 @@ def add_inflow_to_file(inflow_object, filepath):
 
 
 def check_coordinates_are_in_polygon(coordinates, polygon):
+    if not coordinates:
+        return False
     shapely_geometry = import_optional("shapely.geometry")
     Point, Polygon = shapely_geometry.Point, shapely_geometry.Polygon
     shapely_polgyon = Polygon(polygon)

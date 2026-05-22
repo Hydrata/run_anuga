@@ -51,6 +51,17 @@ class TestExtractPolygonOuterRing:
         # Defensive: pathological "MultiPolygon with [[]]" doesn't crash.
         assert _extract_polygon_outer_ring({'type': 'MultiPolygon', 'coordinates': [[]]}) == []
 
+    def test_empty_coordinates_emits_debug_log(self, caplog):
+        with caplog.at_level(logging.DEBUG, logger='run_anuga.run_utils'):
+            result = _extract_polygon_outer_ring({'type': 'Polygon', 'coordinates': []})
+        assert result == []
+        assert any(
+            rec.levelno == logging.DEBUG
+            and '_extract_polygon_outer_ring' in rec.message
+            and 'empty/missing coordinates' in rec.message
+            for rec in caplog.records
+        )
+
 
 class TestMakeFrictions:
     def test_polygon_friction_feature_returns_2d_ring(self):
@@ -151,6 +162,17 @@ class TestFlattenLineCoordinates:
         assert _flatten_line_coordinates({'type': 'LineString', 'coordinates': []}) == []
         assert _flatten_line_coordinates({'type': 'MultiLineString', 'coordinates': []}) == []
 
+    def test_empty_coordinates_emits_debug_log(self, caplog):
+        with caplog.at_level(logging.DEBUG, logger='run_anuga.run_utils'):
+            result = _flatten_line_coordinates({'type': 'LineString', 'coordinates': []})
+        assert result == []
+        assert any(
+            rec.levelno == logging.DEBUG
+            and '_flatten_line_coordinates' in rec.message
+            and 'empty/missing coordinates' in rec.message
+            for rec in caplog.records
+        )
+
 
 # Square polygon spanning (0,0) -> (10,10); used for in/out membership checks.
 CONTAINER_POLYGON = [[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]]
@@ -174,6 +196,9 @@ class TestCheckCoordinatesAreInPolygon:
 
     def test_single_point_as_xy_outside_polygon_returns_false(self):
         assert check_coordinates_are_in_polygon([50.0, 50.0], CONTAINER_POLYGON) is False
+
+    def test_empty_coordinates_list_returns_false(self):
+        assert check_coordinates_are_in_polygon([], CONTAINER_POLYGON) is False
 
 
 class TestApplyInflowsCoordinateHandling:
