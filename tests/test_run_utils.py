@@ -7,6 +7,7 @@ import pytest
 from run_anuga.run_utils import (
     _extract_polygon_outer_ring,
     _flatten_line_coordinates,
+    assert_raster_has_no_nodata_inside_boundary,
     check_coordinates_are_in_polygon,
     make_frictions,
     make_interior_holes_and_tags,
@@ -232,3 +233,126 @@ class TestApplyInflowsCoordinateHandling:
         }
         flat = _flatten_line_coordinates(inflow_geometry)
         assert check_coordinates_are_in_polygon(flat, self.BOUNDARY_POLYGON) is False
+
+
+# --- assert_raster_has_no_nodata_inside_boundary (TASK-1138) ----------------
+#
+# These tests write tiny real Float32 GeoTIFFs (no live ANUGA) and assert the
+# pre-flight nodata guard raises a clear error when a nodata cell falls INSIDE
+# the model boundary, and passes otherwise. Applies equally to elevation and
+# friction rasters (the guard is quantity-agnostic; quantity_name only labels
+# the error message).
+
+# 10x10 grid, 1 m pixels, top-left origin at (0, 10). The raster therefore
+# spans x in [0, 10], y in [0, 10]; pixel (row, col) has centre
+# (col + 0.5, 10 - row - 0.5).
+_RASTER_WIDTH = 10
+_RASTER_HEIGHT = 10
+# UTM zone 56S (used elsewhere in these tests) — a real projected CRS.
+_PROJECTED_EPSG = 32756
+# A square boundary well inside the raster extent: x,y in [2, 7].
+_INNER_BOUNDARY = [[2.0, 2.0], [7.0, 2.0], [7.0, 7.0], [2.0, 7.0]]
+_NODATA_TAG = -9999.0
+
+
+def _write_geotiff(path, *, nodata_rowcol=None, declared_nodata=_NODATA_TAG,
+                   fill_value=5.0, nodata_is_nan=False):
+    """Write a tiny Float32 GeoTIFF in a projected CRS.
+
+    nodata_rowcol: (row, col) to stamp with the nodata sentinel (or NaN), or
+        None for an all-valid raster.
+    declared_nodata: value written to the GeoTIFF nodata tag (None = no tag).
+    nodata_is_nan: if True, stamp the cell with NaN instead of the sentinel.
+    """
+    import numpy
+    import rasterio
+    from rasterio.transform import from_origin
+
+    data = numpy.full((_RASTER_HEIGHT, _RASTER_WIDTH), fill_value, dtype='float32')
+    if nodata_rowcol is not None:
+        row, col = nodata_rowcol
+        data[row, col] = numpy.nan if nodata_is_nan else _NODATA_TAG
+    transform = from_origin(0.0, float(_RASTER_HEIGHT), 1.0, 1.0)
+    profile = {
+        'driver': 'GTiff',
+        'height': _RASTER_HEIGHT,
+        'width': _RASTER_WIDTH,
+        'count': 1,
+        'dtype': 'float32',
+        'crs': rasterio.crs.CRS.from_epsg(_PROJECTED_EPSG),
+        'transform': transform,
+    }
+    if declared_nodata is not None:
+        profile['nodata'] = declared_nodata
+    with rasterio.open(path, 'w', **profile) as dataset:
+        dataset.write(data, 1)
+    return str(path)
+
+
+class TestAssertRasterHasNoNodataInsideBoundary:
+    def test_elevation_nodata_inside_boundary_raises(self, tmp_path):
+        # Cell (row 5, col 4) -> centre (4.5, 4.5), inside the [2,7] square.
+        raster = _write_geotiff(tmp_path / 'elev.tif', nodata_rowcol=(5, 4))
+        with pytest.raises(ValueError) as excinfo:
+            assert_raster_has_no_nodata_inside_boundary(
+                raster, _INNER_BOUNDARY, quantity_name='elevation'
+            )
+        message = str(excinfo.value)
+        assert 'elevation' in message
+        assert 'nodata' in message
+        assert 'inside the model boundary' in message
+        assert 'gdal_fillnodata' in message
+
+    def test_elevation_nodata_outside_boundary_ok(self, tmp_path):
+        # Cell (row 0, col 0) -> centre (0.5, 9.5), outside the [2,7] square.
+        raster = _write_geotiff(tmp_path / 'elev_outside.tif', nodata_rowcol=(0, 0))
+        # Should NOT raise.
+        assert assert_raster_has_no_nodata_inside_boundary(
+            raster, _INNER_BOUNDARY, quantity_name='elevation'
+        ) is None
+
+    def test_elevation_no_nodata_tag_ok(self, tmp_path):
+        # All-valid raster with NO declared nodata tag -> nothing to check.
+        raster = _write_geotiff(
+            tmp_path / 'elev_no_tag.tif', nodata_rowcol=None, declared_nodata=None
+        )
+        assert assert_raster_has_no_nodata_inside_boundary(
+            raster, _INNER_BOUNDARY, quantity_name='elevation'
+        ) is None
+
+    def test_elevation_nan_nodata_inside_boundary_raises(self, tmp_path):
+        # NaN sentinel inside the boundary is treated as nodata even though the
+        # cell value is NaN rather than the finite -9999 tag.
+        raster = _write_geotiff(
+            tmp_path / 'elev_nan.tif', nodata_rowcol=(5, 4), nodata_is_nan=True
+        )
+        with pytest.raises(ValueError) as excinfo:
+            assert_raster_has_no_nodata_inside_boundary(
+                raster, _INNER_BOUNDARY, quantity_name='elevation'
+            )
+        assert 'elevation' in str(excinfo.value)
+
+    def test_elevation_empty_boundary_is_noop(self, tmp_path):
+        # No boundary polygon -> nothing the guard can assert, even with nodata.
+        raster = _write_geotiff(tmp_path / 'elev_nb.tif', nodata_rowcol=(5, 4))
+        assert assert_raster_has_no_nodata_inside_boundary(
+            raster, [], quantity_name='elevation'
+        ) is None
+
+    def test_friction_nodata_inside_boundary_raises(self, tmp_path):
+        # Same guard, friction raster: a friction nodata gap inside the boundary
+        # must also fail-fast with a clear message.
+        raster = _write_geotiff(tmp_path / 'friction.tif', nodata_rowcol=(5, 4))
+        with pytest.raises(ValueError) as excinfo:
+            assert_raster_has_no_nodata_inside_boundary(
+                raster, _INNER_BOUNDARY, quantity_name='friction'
+            )
+        message = str(excinfo.value)
+        assert 'friction' in message
+        assert 'nodata' in message
+
+    def test_friction_nodata_outside_boundary_ok(self, tmp_path):
+        raster = _write_geotiff(tmp_path / 'friction_outside.tif', nodata_rowcol=(0, 0))
+        assert assert_raster_has_no_nodata_inside_boundary(
+            raster, _INNER_BOUNDARY, quantity_name='friction'
+        ) is None

@@ -11,7 +11,8 @@ import traceback
 from run_anuga._imports import import_optional
 from run_anuga.run_utils import is_dir_check, setup_input_data, update_web_interface, create_mesher_mesh, create_anuga_mesh, \
     make_frictions, post_process_sww, setup_logger, RunContext, \
-    build_time_boundary_function, apply_inflows_to_domain
+    build_time_boundary_function, apply_inflows_to_domain, \
+    assert_raster_has_no_nodata_inside_boundary
 from run_anuga import defaults
 from run_anuga.callbacks import NullCallback, HydrataCallback
 
@@ -141,6 +142,16 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
             logger.info('No checkpoint file found. Starting new Simulation')
             callback.on_status('building mesh')
             if input_data['scenario_config'].get('simplify_mesh'):
+                # PRE-FLIGHT (TASK-1138): the mesher samples the elevation raster
+                # into vertex z-values directly, bypassing
+                # composite_quantity_setting_function, so this path needs the same
+                # guard as the else branch below. Run it before the (expensive)
+                # mesher subprocess so a doomed input fails fast.
+                assert_raster_has_no_nodata_inside_boundary(
+                    input_data['elevation_filename'],
+                    input_data['boundary_polygon'],
+                    quantity_name='elevation',
+                )
                 mesher_mesh_filepath, mesh_size = create_mesher_mesh(input_data)
                 with open(mesher_mesh_filepath, 'r') as mesh_file:
                     mesh_dict = json.load(mesh_file)
@@ -165,6 +176,15 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
                     use_cache=False,
                     verbose=False,
                 )
+                # PRE-FLIGHT (TASK-1138): surface nodata-under-mesh as a clear,
+                # actionable error here rather than as an opaque exception deep
+                # inside composite_quantity_setting_function. nan_treatment stays
+                # 'exception' — we never silently fabricate bed elevation.
+                assert_raster_has_no_nodata_inside_boundary(
+                    input_data['elevation_filename'],
+                    input_data['boundary_polygon'],
+                    quantity_name='elevation',
+                )
                 poly_fun_pairs = [['Extent', input_data['elevation_filename']]]
                 elevation_function = qs.composite_quantity_setting_function(
                     poly_fun_pairs,
@@ -182,6 +202,22 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
                         epsg_code=input_data['scenario_config'].get('epsg')
                     )
             frictions = make_frictions(input_data)
+            # PRE-FLIGHT (TASK-1138): only a friction RASTER is nodata-checkable.
+            # make_frictions returns a single [['Extent', path]] pair when a
+            # friction raster is configured; otherwise it returns polygon/scalar
+            # pairs (no raster → nothing to check). composite_quantity_setting_function
+            # below uses anuga's default nan_treatment='exception'.
+            friction_raster_pair = next(
+                (pair for pair in frictions
+                 if len(pair) == 2 and pair[0] == 'Extent'),
+                None,
+            )
+            if friction_raster_pair is not None:
+                assert_raster_has_no_nodata_inside_boundary(
+                    friction_raster_pair[1],
+                    input_data['boundary_polygon'],
+                    quantity_name='friction',
+                )
             friction_function = qs.composite_quantity_setting_function(
                 frictions,
                 domain

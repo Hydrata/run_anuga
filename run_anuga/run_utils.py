@@ -493,6 +493,97 @@ def make_frictions(input_data):
     return frictions
 
 
+def assert_raster_has_no_nodata_inside_boundary(raster_path, boundary_polygon, *, quantity_name):
+    """Pre-flight guard: raise a clear error if a raster has nodata cells inside the model boundary.
+
+    ANUGA seats elevation/friction values onto mesh centroids via
+    ``composite_quantity_setting_function(..., nan_treatment='exception')``. If
+    any sample point lands on a nodata cell, ANUGA raises an opaque exception
+    deep inside ``composite_quantity_setting_function`` mid-build, with no hint
+    that the cause is a data gap in the input raster. This function runs the
+    same check up-front, on rank 0, before the set_quantity calls, and raises a
+    message that names the raster, the count of offending cells, and the fix.
+
+    We deliberately KEEP ``nan_treatment='exception'`` everywhere (we never want
+    to silently fabricate a bed/friction value); this guard simply surfaces the
+    failure earlier and more clearly.
+
+    Nodata detection: a cell is "nodata" if it equals the raster's declared
+    nodata tag (e.g. the TASK-1136 standard ``-9999``) OR is NaN. Both are
+    handled because GeoTIFFs in the wild use either convention. If the raster
+    declares NO nodata value, there is nothing to check and we return (pass) —
+    a stray NaN with no declared nodata is left for ANUGA to surface.
+
+    Inside-boundary test: the boundary polygon is rasterised onto the raster's
+    own grid/transform via ``rasterio.features.geometry_mask`` (vectorised, one
+    pass — far cheaper than a per-cell shapely point-in-polygon test), then
+    intersected with the nodata mask.
+
+    Parameters
+    ----------
+    raster_path : str
+        Path to the elevation or friction GeoTIFF (in the raster's projected CRS).
+    boundary_polygon : list
+        Flat list of ``[x, y]`` vertices for the model boundary, in the raster's
+        projected CRS (``input_data['boundary_polygon']``). A no-op if empty.
+    quantity_name : str
+        Keyword-only label ('elevation' or 'friction') used in the error message.
+
+    Raises
+    ------
+    ValueError
+        If one or more nodata cells fall inside the model boundary.
+    """
+    if not boundary_polygon:
+        # No boundary to test against — nothing this guard can assert.
+        return
+    rasterio = import_optional("rasterio")
+    features = import_optional("rasterio.features")
+    numpy = import_optional("numpy")
+
+    with rasterio.open(raster_path) as dataset:
+        band = dataset.read(1)
+        nodata_value = dataset.nodata
+        transform = dataset.transform
+        out_shape = (dataset.height, dataset.width)
+
+    # NaN is always treated as nodata. A finite declared nodata tag (e.g. -9999)
+    # is matched exactly. If neither applies, there is nothing to flag.
+    nodata_mask = numpy.isnan(band)
+    if nodata_value is not None and not numpy.isnan(nodata_value):
+        nodata_mask = nodata_mask | (band == nodata_value)
+    # No nodata cells (no declared tag and no NaN, or a declared tag that no
+    # cell matches) — nothing to check.
+    if not nodata_mask.any():
+        return
+
+    # Close the ring so shapely/rasterio treats it as a polygon, not a line.
+    ring = [tuple(point) for point in boundary_polygon]
+    if ring[0] != ring[-1]:
+        ring = ring + [ring[0]]
+    boundary_geometry = {'type': 'Polygon', 'coordinates': [ring]}
+
+    # geometry_mask returns True OUTSIDE the geometry by default (invert=False),
+    # so cells inside the boundary are where the mask is False.
+    outside_mask = features.geometry_mask(
+        [boundary_geometry],
+        out_shape=out_shape,
+        transform=transform,
+        invert=False,
+        all_touched=True,
+    )
+    inside_mask = ~outside_mask
+    offending = nodata_mask & inside_mask
+    offending_count = int(offending.sum())
+    if offending_count > 0:
+        raise ValueError(
+            f"{quantity_name} raster '{raster_path}' has {offending_count} nodata "
+            f"cells inside the model boundary; fill the data gaps "
+            f"(e.g. gdal_fillnodata) or reselect the terrain extent. "
+            f"ANUGA cannot seat a bed/friction value there."
+        )
+
+
 def correction_for_polar_quadrants(base, height):
     result = 0
     result = 0 if base > 0 and height > 0 else result
