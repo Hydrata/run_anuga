@@ -115,7 +115,7 @@ echo "[entrypoint] Notifying control server via V2 /process-result/..."
 HTTP_CODE=$(curl -sS -o /tmp/process_result.out -w "%{http_code}" -X POST \
     -H "X-Internal-Token: ${HYDRATA_INTERNAL_COMPUTE_TOKEN}" \
     -H "Content-Type: application/json" \
-    --data "{\"key\":\"${RESULT_KEY}\"}" \
+    --data "{\"result_package_key\":\"${RESULT_KEY}\"}" \
     "${CONTROL_BASE}/api/v2/anuga/runs/${RUN_ID}/process-result/")
 echo "[entrypoint] /process-result/ returned ${HTTP_CODE}"
 cat /tmp/process_result.out || true
