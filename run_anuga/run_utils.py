@@ -1280,6 +1280,68 @@ def make_comparison_video(input_directory_1, input_directory_2, result_type):
     out.release()
 
 
+class _V2LogHandler(logging.Handler):
+    """Logging handler that ships records to the V2 ``/log/`` control endpoint.
+
+    Replaces the legacy ``logging.handlers.HTTPHandler`` (V1 BasicAuth to
+    ``/anuga/api/{p}/{s}/run/{r}/log/``) installed by ``setup_logger`` before
+    TASK-989. Auth is the site-wide ``X-Internal-Token`` shared secret (RAW,
+    no ``Bearer`` prefix — see ``gn_anuga.permissions.IsInternalComputeCaller``),
+    carried on a single owned ``requests.Session`` reused across every emit.
+
+    Mirrors ``HydrataCallback`` (callbacks.py): the V2 log endpoint accepts
+    ``{message, levelname, created}`` and writes the formatted line to
+    ``Run.log``; ``project_id``/``scenario_id`` are inferred server-side from
+    the run row, so only ``run_id`` appears in the URL.
+
+    Emit failures never propagate (logging must not break the run loop): a
+    transport error is routed through ``logging.Handler.handleError``. The
+    owned Session pool is released by ``close()`` (idempotent); ``setup_logger``
+    pairs ``addHandler`` with ``removeHandler`` + ``close()`` on re-entry.
+    """
+
+    def __init__(self, control_server: str, run_id, token: str):
+        super().__init__()
+        from run_anuga._http import make_internal_session
+
+        base = str(control_server).rstrip('/')
+        self._log_url = f"{base}/api/v2/anuga/runs/{run_id}/log/"
+        self._session = make_internal_session(token)
+
+    def emit(self, record: logging.LogRecord) -> None:
+        from run_anuga._http import post_to_control_server
+
+        try:
+            post_to_control_server(
+                self._log_url,
+                method='POST',
+                data={
+                    'message': self.format(record),
+                    'levelname': record.levelname,
+                    'created': record.created,
+                },
+                session=self._session,
+                timeout=30,
+            )
+        except Exception:
+            # Never let a log shipment break the run — route to the standard
+            # logging error hook (respects logging.raiseExceptions, which is
+            # False in production).
+            self.handleError(record)
+
+    def close(self) -> None:
+        """Release the owned ``requests.Session`` and unregister the handler.
+
+        Idempotent: a second call is a no-op (``self._session`` may already be
+        closed; ``requests.Session.close()`` tolerates repeat calls).
+        """
+        try:
+            self._session.close()
+        except Exception:  # pragma: no cover — defensive
+            pass
+        super().close()
+
+
 def setup_logger(input_data, username=None, password=None, batch_number=1):
     if not username or not password:
         username = os.environ.get('COMPUTE_USERNAME')
@@ -1288,28 +1350,38 @@ def setup_logger(input_data, username=None, password=None, batch_number=1):
     file_handler = logging.FileHandler(os.path.join(input_data['output_directory'], f'run_anuga_{batch_number}.log'))
     file_handler.setLevel(logging.DEBUG)
 
-    # Avoid duplicate handlers when run_sim() is called multiple times
+    # Avoid duplicate handlers when run_sim() is called multiple times.
+    # Close removed network handlers so their owned Session connection pool
+    # is released (the V2 handler below owns a requests.Session); FileHandler
+    # also benefits from close() flushing/closing its file descriptor.
     for h in logger.handlers[:]:
-        if isinstance(h, logging.FileHandler) or isinstance(h, logging.handlers.HTTPHandler):
+        if isinstance(h, (logging.FileHandler, logging.handlers.HTTPHandler, _V2LogHandler)):
             logger.removeHandler(h)
+            try:
+                h.close()
+            except Exception:  # pragma: no cover — defensive, never break setup
+                pass
 
     # Add handlers to the logger
     logger.addHandler(file_handler)
 
-    if username and password:
-        control_server = input_data['scenario_config'].get('control_server')
-        parsed_control_server = urlparse(control_server)
-        host = parsed_control_server.netloc
-        if "localhost" in control_server:
-            secure = False  # means we're running locally, no need for web logging
-        else:
-            secure = True
-        web_handler = logging.handlers.HTTPHandler(
-            host=host,
-            url=f"/anuga/api/{input_data['scenario_config'].get('project')}/{input_data['scenario_config'].get('id')}/run/{input_data['scenario_config'].get('run_id')}/log/",
-            method='POST',
-            secure=secure,
-            credentials=(username, password,)
+    # Ship log lines to the control server over the V2 log endpoint using the
+    # site-wide X-Internal-Token shared secret (NOT the legacy V1 BasicAuth
+    # HTTPHandler, which 401'd against allauth on localhost and targeted the
+    # /anuga/api/.../log/ URL that TASK-1184 will delete). The token is read
+    # from the environment, matching how run.py builds HydrataCallback; the
+    # username/password parameters are retained for signature back-compat but
+    # are no longer used for the web log channel. When the token is absent
+    # (e.g. a standalone CLI run) no web handler is installed and logging
+    # stays file/console-only.
+    token = os.environ.get('HYDRATA_INTERNAL_COMPUTE_TOKEN')
+    control_server = input_data['scenario_config'].get('control_server')
+    run_id = input_data['scenario_config'].get('run_id')
+    if token and control_server and run_id:
+        web_handler = _V2LogHandler(
+            control_server=control_server,
+            run_id=run_id,
+            token=token,
         )
         web_handler.setLevel(logging.DEBUG)
         logger.addHandler(web_handler)
