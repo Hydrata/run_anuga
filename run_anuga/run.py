@@ -9,7 +9,7 @@ import time
 import traceback
 
 from run_anuga._imports import import_optional
-from run_anuga.run_utils import is_dir_check, setup_input_data, update_web_interface, create_mesher_mesh, create_anuga_mesh, \
+from run_anuga.run_utils import is_dir_check, setup_input_data, create_mesher_mesh, create_anuga_mesh, \
     make_frictions, post_process_sww, setup_logger, RunContext, \
     build_time_boundary_function, apply_inflows_to_domain, \
     assert_raster_has_no_nodata_inside_boundary

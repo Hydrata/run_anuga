@@ -9,8 +9,6 @@ import logging
 import time
 from unittest.mock import MagicMock
 
-import pytest
-
 from run_anuga.run import _finalize_with_timeout
 
 

@@ -18,7 +18,6 @@ from __future__ import annotations
 import logging
 from unittest import mock
 
-import pytest
 import requests  # noqa: F401 — asserts requests is importable in the test env
 
 from run_anuga.run_utils import _V2LogHandler, setup_logger

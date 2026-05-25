@@ -11,8 +11,6 @@ no-op so operators can spot the coverage gap.
 
 import logging
 
-import pytest
-
 from run_anuga.run_utils import generate_stac
 
 
