@@ -1146,8 +1146,8 @@ def post_process_sww(package_dir, run_args=None, output_raster_resolution=None):
 
     # TASK-1143: guard against a future anuga_core default flip away from NaN.
     # Re-open the *_max.tif outputs and assert band 1 nodata is NaN.
+    import math
     _rasterio = import_optional("rasterio")
-    _math = import_optional("math")
     for _quantity in output_quantities:
         _max_tif = os.path.join(
             input_data['output_directory'],
@@ -1156,7 +1156,7 @@ def post_process_sww(package_dir, run_args=None, output_raster_resolution=None):
         if os.path.isfile(_max_tif):
             with _rasterio.open(_max_tif) as _ds:
                 _nodata = _ds.nodata
-            assert _nodata is not None and _math.isnan(_nodata), (
+            assert _nodata is not None and math.isnan(_nodata), (
                 f"Result raster '{_max_tif}' nodata is {_nodata!r}; expected NaN. "
                 "ANUGA result rasters intentionally use NaN nodata — do not switch to -9999."
             )
