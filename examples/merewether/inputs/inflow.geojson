@@ -1,0 +1,27 @@
+{
+    "type": "FeatureCollection",
+    "crs": {
+        "type": "name",
+        "properties": {
+            "name": "EPSG:32756"
+        }
+    },
+    "features": [
+        {
+            "type": "Feature",
+            "id": "pasha_bulka_inlet",
+            "geometry": {
+                "type": "LineString",
+                "coordinates": [
+                    [382260.0, 6354275.0],
+                    [382270.0, 6354285.0]
+                ]
+            },
+            "properties": {
+                "type": "Surface",
+                "data": "19.7",
+                "description": "Merewether 2007 Pasha Bulka peak inflow (19.7 m^3/s, derived from runMerewether.py Inlet_operator)"
+            }
+        }
+    ]
+}

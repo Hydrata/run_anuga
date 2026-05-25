@@ -1,0 +1,29 @@
+{
+    "type": "FeatureCollection",
+    "crs": {
+        "type": "name",
+        "properties": {
+            "name": "EPSG:32756"
+        }
+    },
+    "features": [
+        {
+            "type": "Feature",
+            "id": "merewether_default_friction",
+            "geometry": {
+                "type": "Polygon",
+                "coordinates": [[
+                    [382250.0, 6354265.0],
+                    [382571.0, 6354265.0],
+                    [382571.0, 6354681.0],
+                    [382250.0, 6354681.0],
+                    [382250.0, 6354265.0]
+                ]]
+            },
+            "properties": {
+                "mannings": 0.04,
+                "description": "Uniform Manning's n=0.04 over full Merewether extent (runMerewether.py default)"
+            }
+        }
+    ]
+}
