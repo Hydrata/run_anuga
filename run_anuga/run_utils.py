@@ -1080,6 +1080,13 @@ def apply_inflows_to_domain(
 
 
 def post_process_sww(package_dir, run_args=None, output_raster_resolution=None):
+    # TASK-1143: ANUGA result rasters (depth/velocity/depthIntegratedVelocity/stage)
+    # intentionally keep NaN as their nodata value, NOT -9999.  NaN is propagated
+    # by Make_Geotif (plot_utils.py nodata=numpy.nan) and relied upon by make_video
+    # (np.ma.masked_invalid) and make_raster_diff (--NoDataValue=nan).  Switching to
+    # -9999 would break both without any benefit — result layers are single-coverage
+    # per run so there is no overlapping-edge problem.  The assertion block below
+    # guards against a future anuga_core default flip.
     anuga = import_optional("anuga")
     util = anuga.utilities.plot_utils
     output_quantities = ['depth', 'velocity', 'depthIntegratedVelocity', 'stage']
@@ -1136,6 +1143,23 @@ def post_process_sww(package_dir, run_args=None, output_raster_resolution=None):
         k_nearest_neighbours=defaults.K_NEAREST_NEIGHBOURS,
         creation_options=[]
     )
+
+    # TASK-1143: guard against a future anuga_core default flip away from NaN.
+    # Re-open the *_max.tif outputs and assert band 1 nodata is NaN.
+    _rasterio = import_optional("rasterio")
+    _math = import_optional("math")
+    for _quantity in output_quantities:
+        _max_tif = os.path.join(
+            input_data['output_directory'],
+            f"{input_data['run_label']}_{_quantity}_max.tif",
+        )
+        if os.path.isfile(_max_tif):
+            with _rasterio.open(_max_tif) as _ds:
+                _nodata = _ds.nodata
+            assert _nodata is not None and _math.isnan(_nodata), (
+                f"Result raster '{_max_tif}' nodata is {_nodata!r}; expected NaN. "
+                "ANUGA result rasters intentionally use NaN nodata — do not switch to -9999."
+            )
 
     video_dir = f"{input_data['output_directory']}/videos/"
     if os.path.isdir(video_dir):
