@@ -9,11 +9,18 @@ container exits fast and the entrypoint EXIT trap can report /error/.
 Regression for canary-15 wedge (TASK-1048 W6.4 / TASK-1080).
 """
 
+import importlib.util
 import logging
 import sys
 from unittest import mock
 
 import pytest
+
+_HAS_ANUGA = importlib.util.find_spec("anuga") is not None
+_requires_anuga = pytest.mark.skipif(
+    not _HAS_ANUGA,
+    reason="anuga is a [full] extra, not installed in light CI",
+)
 
 
 def _install_fake_mpi():
@@ -79,6 +86,7 @@ def _stub_logger_and_callback(monkeypatch):
     monkeypatch.setattr("run_anuga.run._finalize_with_timeout", lambda *a, **kw: None)
 
 
+@_requires_anuga
 class TestRank0AbortOnException:
     def test_rank0_exception_calls_mpi_abort(self, monkeypatch, tmp_path, fake_mpi):
         """When an exception fires inside run_sim's try block,
@@ -119,6 +127,7 @@ class TestRank0AbortOnException:
 class TestRank0TracebackReachesStderr:
     """rank-0 traceback must reach the OS stderr fd (what AWS Batch / CloudWatch drains)."""
 
+    @_requires_anuga
     def test_rank0_traceback_reaches_stderr(self, monkeypatch, tmp_path, fake_mpi, capfd):
         # capfd captures the file descriptor — capsys would miss the
         # belt-and-braces print() that bypasses Python-level redirects.

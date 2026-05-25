@@ -1,5 +1,6 @@
 """Assert ANUGA-side polygon consumers accept Polygon and MultiPolygon shapes."""
 
+import importlib.util
 import logging
 
 import pytest
@@ -13,6 +14,8 @@ from run_anuga.run_utils import (
     make_interior_holes_and_tags,
     make_interior_regions,
 )
+
+_HAS_RASTERIO = importlib.util.find_spec("rasterio") is not None
 
 
 OUTER_RING = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0], [0.0, 0.0]]
@@ -289,6 +292,7 @@ def _write_geotiff(path, *, nodata_rowcol=None, declared_nodata=_NODATA_TAG,
     return str(path)
 
 
+@pytest.mark.skipif(not _HAS_RASTERIO, reason="rasterio is a [sim] extra, not installed in light CI")
 class TestAssertRasterHasNoNodataInsideBoundary:
     def test_elevation_nodata_inside_boundary_raises(self, tmp_path):
         # Cell (row 5, col 4) -> centre (4.5, 4.5), inside the [2,7] square.

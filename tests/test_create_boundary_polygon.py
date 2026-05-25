@@ -8,6 +8,10 @@ lists. See TASK-976.
 
 import pytest
 
+# osgeo.ogr is a [sim] extra not present in light CI; skip the whole module
+# rather than error at collection.
+pytest.importorskip("osgeo.ogr")
+
 from run_anuga.run_utils import create_boundary_polygon_from_boundaries
 
 
