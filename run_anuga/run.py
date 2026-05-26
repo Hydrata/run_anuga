@@ -15,12 +15,17 @@ from run_anuga.run_utils import is_dir_check, setup_input_data, create_mesher_me
     assert_raster_has_no_nodata_inside_boundary
 from run_anuga import defaults
 from run_anuga.callbacks import NullCallback, HydrataCallback
+from run_anuga._logging import install_mname_filter
 
 try:
     from celery.utils.log import get_task_logger
     logger = get_task_logger(__name__)
 except ImportError:
     logger = logging.getLogger(__name__)
+
+# Stamp anuga_core's mname/lnum record fields so run_anuga logs format cleanly
+# when they propagate to anuga's root %(mname)s formatter (TASK-1276).
+install_mname_filter(logger)
 
 # celery's get_task_logger returns a logger with no stdout handler outside a
 # celery worker (which is the case in the Batch container), so logger.error()

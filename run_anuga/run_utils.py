@@ -17,6 +17,7 @@ from urllib.parse import urlparse
 
 from run_anuga._imports import import_optional
 from run_anuga import defaults
+from run_anuga._logging import install_mname_filter
 from run_anuga.config import ScenarioConfig
 
 try:
@@ -26,6 +27,10 @@ try:
 except ImportError:
     logger = logging.getLogger(__name__)
     settings = dict()
+
+# Stamp anuga_core's mname/lnum record fields so run_anuga logs format cleanly
+# when they propagate to anuga's root %(mname)s formatter (TASK-1276).
+install_mname_filter(logger)
 
 
 @dataclass

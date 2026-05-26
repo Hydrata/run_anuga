@@ -219,3 +219,69 @@ def test_setup_logger_reentry_closes_prior_handler(tmp_path, monkeypatch):
                 h.close()
             except Exception:
                 pass
+
+
+# --- TASK-1276: run_anuga logs format cleanly under anuga_core's root formatter ---
+# anuga_core's basicConfig installs a root formatter referencing %(mname)s /
+# %(lnum)s (anuga/utilities/log.py). run_anuga records carry no such fields, so
+# when they propagate to that root handler it raises 'KeyError: mname' on every
+# emit (the CloudWatch '--- Logging error ---' spam seen in TASK-1182 W2 canary
+# 19). The fix keeps propagation ON (so pytest caplog still captures run_anuga
+# records) and stamps mname/lnum via a filter (run_anuga/_logging.py).
+
+# The exact (old-style) format string anuga_core installs on the root logger.
+_ANUGA_ROOT_FMT = '%(asctime)s %(levelname)-8s %(mname)25s:%(lnum)-4d|%(message)s'
+
+
+class _MnameRootHandler(logging.Handler):
+    """Mimics anuga_core's root handler: formats with %(mname)s/%(lnum)s.
+
+    Records every LogRecord it successfully formats and any formatting error, so
+    a test can assert run_anuga records both reach it (propagation intact) and
+    render without KeyError: mname.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.received = []
+        self.format_errors = []
+        self.setFormatter(logging.Formatter(_ANUGA_ROOT_FMT))
+
+    def emit(self, record):
+        try:
+            self.format(record)
+            self.received.append(record)
+        except Exception as exc:  # the KeyError: 'mname' this fix prevents
+            self.format_errors.append(exc)
+
+
+def test_mname_filter_installed_on_all_run_anuga_loggers():
+    """Every run_anuga logger that emits carries the mname/lnum filter."""
+    from run_anuga._logging import MnameLnumFilter
+    from run_anuga import run, run_utils, callbacks, _http
+    for module in (run, run_utils, callbacks, _http):
+        assert any(isinstance(f, MnameLnumFilter) for f in module.logger.filters), \
+            f"{module.__name__}.logger is missing MnameLnumFilter"
+
+
+def test_run_anuga_emit_formats_under_anuga_root_formatter():
+    """A run_anuga emit reaches anuga_core's %(mname)s root formatter (propagation
+    intact for caplog) and renders without KeyError: mname (TASK-1276)."""
+    from run_anuga import run_utils as run_utils_module
+    lg = run_utils_module.logger
+    root = logging.getLogger()
+    recorder = _MnameRootHandler()
+    # Isolate: clear lg's own handlers so a leaked file/V2 handler can't fire (no
+    # disk/network). Filters live on lg.filters, so the mname filter still runs.
+    saved_handlers = lg.handlers[:]
+    lg.handlers = []
+    root.addHandler(recorder)
+    try:
+        lg.error('evolving timestep 1/100')
+    finally:
+        root.removeHandler(recorder)
+        lg.handlers = saved_handlers
+    # No KeyError: mname when anuga's root formatter renders the record.
+    assert recorder.format_errors == []
+    # Propagation preserved: the record actually reached the root handler.
+    assert any('evolving timestep' in r.getMessage() for r in recorder.received)

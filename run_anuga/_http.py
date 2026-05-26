@@ -18,12 +18,14 @@ import logging
 from typing import TYPE_CHECKING
 
 from run_anuga._imports import import_optional
+from run_anuga._logging import install_mname_filter
 
 if TYPE_CHECKING:  # pragma: no cover — typing only
     import requests
     from requests.auth import HTTPBasicAuth
 
 logger = logging.getLogger(__name__)
+install_mname_filter(logger)  # TASK-1276: stamp mname/lnum for anuga's root formatter
 
 
 def make_internal_session(token: str) -> "requests.Session":

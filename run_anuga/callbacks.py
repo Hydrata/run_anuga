@@ -18,7 +18,10 @@ import os
 import time
 from typing import Any, Protocol, runtime_checkable
 
+from run_anuga._logging import install_mname_filter
+
 logger = logging.getLogger(__name__)
+install_mname_filter(logger)  # TASK-1276: stamp mname/lnum for anuga's root formatter
 
 
 @runtime_checkable
