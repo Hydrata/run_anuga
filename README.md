@@ -160,7 +160,47 @@ run-anuga viz /path/to/outputs/ depth
 
 # Upload results to S3 STAC catalog (requires [platform])
 run-anuga upload /path/to/outputs/ --bucket my-bucket
+
+# Run + hand results back to a Hydrata control server (requires [sim,platform] + anuga)
+run-anuga run-and-report /path/to/package/ --result-bucket my-bucket
 ```
+
+## Result-zip output contract
+
+`run-anuga run-and-report` (and the AWS Batch entrypoint that wraps it) ends every
+successful run by zipping the package directory, uploading the zip to
+`s3://<RESULT_S3_BUCKET>/<PROJECT>_<SCENARIO>_<RUN>_results.zip`, and POSTing the
+key back to the control server via `POST /api/v2/anuga/runs/<run_id>/process-result/`
+(field name `result_package_key`).
+
+The receiver extracts the zip and reads the canonical TIF artefacts produced by
+`run_anuga.run_utils.post_process_sww`:
+
+| File pattern | Quantity | Notes |
+|--------------|----------|-------|
+| `outputs_<project>_<scenario>_<run>/*_depth_max.tif` | maximum water depth (m) | |
+| `outputs_<project>_<scenario>_<run>/*_velocity_max.tif` | maximum velocity (m/s) | |
+| `outputs_<project>_<scenario>_<run>/*_dIV_max.tif` | maximum depth-integrated velocity | |
+| `outputs_<project>_<scenario>_<run>/*_stage_max.tif` | maximum stage | optional |
+| `outputs_<project>_<scenario>_<run>/run_*.sww` | raw ANUGA output | retained for re-processing |
+
+The zip EXCLUDES `package.zip` (the input the entrypoint downloaded), any
+embedded `run_anuga/` source tree, and the result zip itself.
+
+The receiver-side spec for which TIFs become published layers lives in
+`gn_anuga.services.RESULT_LAYER_SPECS`; this contract is the one residual
+coupling between `run_anuga` and the Django host. The POST field name is owned
+by `run_anuga._handoff.RESULT_PACKAGE_KEY_FIELD` so the sender and receiver
+cannot drift (TASK-1158 / F0 wedge class).
+
+Required env for `run-and-report`:
+
+| Env var | Purpose |
+|---------|---------|
+| `HYDRATA_INTERNAL_COMPUTE_TOKEN` | Raw `X-Internal-Token` value for the control server |
+| `RESULT_S3_BUCKET` | S3 bucket for the result zip (overridable via `--result-bucket`) |
+
+`scenario.json` must carry `run_id`, `project`, `id`, and `control_server`.
 
 ## Python API
 

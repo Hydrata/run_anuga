@@ -25,13 +25,13 @@ set -euo pipefail
 
 : "${CONTROL_SERVER:?CONTROL_SERVER env var is required}"
 : "${HYDRATA_INTERNAL_COMPUTE_TOKEN:?HYDRATA_INTERNAL_COMPUTE_TOKEN env var is required}"
+: "${RESULT_S3_BUCKET:?RESULT_S3_BUCKET env var is required}"
 : "${PROJECT_ID:?PROJECT_ID env var is required}"
 : "${SCENARIO_ID:?SCENARIO_ID env var is required}"
 : "${RUN_ID:?RUN_ID env var is required}"
 
 WORK_DIR="/tmp/simulation"
 CPUS="${CPUS:-$(nproc)}"
-RESULT_KEY="${PROJECT_ID}_${SCENARIO_ID}_${RUN_ID}_results.zip"
 CONTROL_BASE="${CONTROL_SERVER%/}"
 
 # Secondary safety net: if any step below fails before run.py can call its
@@ -71,58 +71,24 @@ cd "${WORK_DIR}"
 unzip -q "${PACKAGE_ZIP}"
 rm "${PACKAGE_ZIP}"
 
-# 3. Run simulation via subprocess (aligns with 2026-05-20 subprocess
-# unification: no in-process MPI taint, watchdog-protected finalize).
-# The HYDRATA_INTERNAL_COMPUTE_TOKEN is exported into run.py's environment
-# for any future token-aware HydrataCallback path (W1 / TASK-1049). Today
-# run.py invoked without positional username/password constructs a
-# NullCallback at runtime; the terminal /process-result/ + /error/ POSTs
-# below carry the token directly and satisfy V2 IsInternalComputeCaller.
-echo "[entrypoint] Starting simulation (subprocess, cpus=${CPUS})..."
+# 3. Run simulation + result handoff via run_anuga (TASK-1159 / F1).
+# run_anuga.cli run-and-report owns the whole post-sim handoff (zip + S3
+# upload + POST /process-result/, with /error/ on any failure) so the
+# wire-shape of /process-result/ is typed Python with a shared field-name
+# constant (RESULT_PACKAGE_KEY_FIELD) instead of two diverging shell+Python
+# copies. The TASK-1158 (F0) drift class is structurally impossible from
+# this point on.
+echo "[entrypoint] Starting simulation + handoff (cpus=${CPUS})..."
 export HYDRATA_INTERNAL_COMPUTE_TOKEN
+export RESULT_S3_BUCKET
 # OpenMPI refuses to run as root by default. The Batch container is single-purpose
 # (Fargate-style: run sim, upload result, exit) so the standard non-root hardening
 # does not apply here. These two env vars are the documented escape hatch.
 export OMPI_ALLOW_RUN_AS_ROOT=1
 export OMPI_ALLOW_RUN_AS_ROOT_CONFIRM=1
 if [ "${CPUS}" -gt 1 ]; then
-    mpirun -np "${CPUS}" --use-hwthread-cpus python /app/run_anuga_src/run_anuga/run.py \
-        --package_dir "${WORK_DIR}" \
-        --batch_number 1 \
-        --checkpoint_time 0
+    mpirun -np "${CPUS}" --use-hwthread-cpus python -m run_anuga.cli run-and-report "${WORK_DIR}"
 else
-    python /app/run_anuga_src/run_anuga/run.py \
-        --package_dir "${WORK_DIR}" \
-        --batch_number 1 \
-        --checkpoint_time 0
+    python -m run_anuga.cli run-and-report "${WORK_DIR}"
 fi
-echo "[entrypoint] Simulation complete."
-
-# 4. Zip results and upload to S3
-echo "[entrypoint] Packaging results..."
-RESULT_ZIP="${WORK_DIR}/${RESULT_KEY}"
-cd "${WORK_DIR}"
-zip -q -r "${RESULT_ZIP}" . -x "package.zip" "run_anuga/*" "${RESULT_KEY}"
-
-echo "[entrypoint] Uploading results to s3://${RESULT_S3_BUCKET}/${RESULT_KEY}..."
-aws s3 cp "${RESULT_ZIP}" "s3://${RESULT_S3_BUCKET}/${RESULT_KEY}"
-echo "[entrypoint] Upload complete."
-
-# 5. POST V2 /process-result/ with the result key. IsInternalComputeCaller
-# accepts the raw token in X-Internal-Token (NOT Bearer). On non-2xx, set -e
-# fails the script and the EXIT trap above posts /error/.
-echo "[entrypoint] Notifying control server via V2 /process-result/..."
-HTTP_CODE=$(curl -sS -o /tmp/process_result.out -w "%{http_code}" -X POST \
-    -H "X-Internal-Token: ${HYDRATA_INTERNAL_COMPUTE_TOKEN}" \
-    -H "Content-Type: application/json" \
-    --data "{\"result_package_key\":\"${RESULT_KEY}\"}" \
-    "${CONTROL_BASE}/api/v2/anuga/runs/${RUN_ID}/process-result/")
-echo "[entrypoint] /process-result/ returned ${HTTP_CODE}"
-cat /tmp/process_result.out || true
-echo
-if [ "${HTTP_CODE}" -ge 400 ]; then
-    echo "[entrypoint] /process-result/ POST failed (HTTP ${HTTP_CODE})" >&2
-    exit 1
-fi
-
-echo "[entrypoint] === Simulation complete ==="
+echo "[entrypoint] === Simulation + handoff complete ==="
