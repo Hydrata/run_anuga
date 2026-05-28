@@ -213,6 +213,13 @@ def _is_mpi_rank_zero() -> bool:
     try:
         from mpi4py import MPI
 
+        # anuga's run_sim finalizes MPI internally; calling Get_rank() after
+        # MPI_FINALIZE is illegal and aborts the process. In the single-process
+        # CLI case mpi4py auto-inits on import but anuga then finalizes, so
+        # post-sim callers see Is_finalized()=True. A single-process run is
+        # always rank 0.
+        if MPI.Is_finalized():
+            return True
         return MPI.COMM_WORLD.Get_rank() == 0
     except ImportError:
         return True
