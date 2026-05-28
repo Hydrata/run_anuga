@@ -2,6 +2,8 @@
 
 Run [ANUGA](https://github.com/anuga-community/anuga_core) flood simulations from Hydrata scenario packages.
 
+> README current as of 2026-05-28 (commit `4493a9b`).
+
 ## Quick Start
 
 Run the bundled example (a 200x200m Australian floodplain with uniform rainfall):
@@ -29,6 +31,8 @@ run-anuga run examples/australian_floodplain/
 run-anuga post-process examples/australian_floodplain/
 ```
 
+A second, smaller worked example is at `examples/merewether/` (Newcastle, NSW; mixed inflow and friction inputs).
+
 ## System Dependencies
 
 The `[sim]` and `[full]` extras require native C libraries. Install these before `pip install`:
@@ -50,7 +54,7 @@ pip install --no-build-isolation --no-binary GDAL "GDAL==$(gdal-config --version
 pip install "run_anuga[sim]"
 ```
 
-**ANUGA undeclared dependencies:** The `anuga` package (v3.2) only declares `numpy` in its metadata, but actually requires several additional packages at import time. Install them explicitly:
+**ANUGA undeclared dependencies:** The `anuga` package (v3.3.0+, which requires `numpy>=2.0`) only declares `numpy` in its metadata, but actually requires several additional packages at import time. Install them explicitly:
 
 ```bash
 pip install anuga mpi4py matplotlib scipy triangle netCDF4 pymetis
@@ -66,8 +70,10 @@ package/
   inputs/
     dem.tif              # elevation raster (GeoTIFF, projected CRS)
     boundary.geojson     # domain boundary lines
-    inflow.geojson       # rainfall / surface inflow polygons
-    friction.geojson     # optional friction zones
+    inflow.geojson       # optional surface inflow polygons
+    rainfall.geojson     # optional rainfall catchment polygons
+    friction.geojson     # optional friction zones (polygon)
+    friction.tif         # optional friction zones (raster; takes precedence)
     structure.geojson    # optional building footprints
     mesh_region.geojson  # optional mesh refinement regions
   outputs_<project>_<scenario>_<run>/   # created at runtime
@@ -85,10 +91,12 @@ package/
 | `project` | int | yes | Project ID |
 | `epsg` | string | yes | CRS code (e.g. `"EPSG:28355"`) |
 | `duration` | int | yes | Simulation duration (seconds) |
-| `boundary` | string | yes | Boundary GeoJSON filename |
+| `boundary` | string | yes | Boundary GeoJSON filename. Each feature's `properties.boundary` may be `"Reflective"`, `"Transmissive"`, or `"Time"` (timeseries supplied via `properties.data`) |
 | `elevation` | string | no | Elevation raster filename |
-| `inflow` | string | no | Inflow GeoJSON filename |
-| `friction` | string | no | Friction GeoJSON filename |
+| `inflow` | string | no | Surface-inflow GeoJSON filename |
+| `rainfall` | string | no | Rainfall catchment GeoJSON filename (separate from `inflow`) |
+| `friction` | string | no | Friction GeoJSON filename (polygon zones) |
+| `friction_raster` | string | no | Friction raster filename (GeoTIFF; takes precedence over `friction` when both are present) |
 | `structure` | string | no | Structure GeoJSON filename |
 | `mesh_region` | string | no | Mesh region GeoJSON filename |
 | `resolution` | float | no | Base mesh resolution (metres) |
@@ -100,11 +108,15 @@ See `run_anuga/config.py` for the Pydantic model with full validation.
 ## Installation
 
 ```bash
-# Core only — config parsing, validation, CLI (no geo deps)
+# Core only: config parsing, validation, CLI (no geo deps)
 pip install run_anuga
 
-# With simulation dependencies (GDAL, numpy, shapely, etc.)
-# Requires system deps — see "System Dependencies" above
+# Pure-Python sim deps (numpy>=2, pandas>=2, shapely>=2, dill, psutil).
+# Wheels available on bare CI runners; no apt packages needed.
+pip install "run_anuga[sim-light]"
+
+# Full simulation dependencies (sim-light + GDAL + rasterio).
+# Requires system deps, see "System Dependencies" above.
 pip install numpy setuptools
 pip install --no-build-isolation --no-binary GDAL "GDAL==$(gdal-config --version)"
 pip install "run_anuga[sim]"
@@ -115,10 +127,10 @@ pip install "run_anuga[viz]"
 # With platform integration (requests, boto3, pystac)
 pip install "run_anuga[platform]"
 
-# Everything (sim + viz + platform + anuga + celery + django)
+# Everything (sim + viz + platform + anuga>=3.3 + celery + django)
 pip install "run_anuga[full]"
 
-# Development tools (pytest, ruff)
+# Development tools (pytest, ruff, jsonschema, requests; pulls in sim-light)
 pip install "run_anuga[dev]"
 ```
 
@@ -168,6 +180,16 @@ from run_anuga.callbacks import LoggingCallback
 run_sim("/path/to/package", callback=LoggingCallback())
 ```
 
+Callback interface (see `run_anuga/callbacks.py`):
+
+```python
+class MyCallback:
+    def on_status(self, status: str, **kwargs) -> None: ...
+    def on_progress(self, pct: float, eta_seconds: int | None = None) -> None: ...
+```
+
+`on_progress` is the canonical way to report progress; the legacy pattern of encoding percentage in `on_status` is replaced. The `RUN_ANUGA_FINALIZE_TIMEOUT_SECONDS` env var (default `30`) controls the watchdog around `MPI.Finalize()`, used by celery workers to avoid hangs on shutdown.
+
 ## Defaults
 
 All simulation constants are defined in `run_anuga/defaults.py`:
@@ -186,6 +208,33 @@ All simulation constants are defined in `run_anuga/defaults.py`:
 | `MAX_TRIANGLE_AREA` | 10_000_000 | Max triangle area for mesher |
 | `K_NEAREST_NEIGHBOURS` | 3 | Neighbours for GeoTIFF interpolation |
 
+## AWS Batch
+
+The `batch/` directory ships a Dockerfile and entrypoint script for running ANUGA on AWS Batch. The container downloads a scenario package zip from S3, runs the simulation under `mpirun`, zips results, uploads them back to S3, and POSTs the result key to a Hydrata control server using V2 internal-token auth.
+
+Required env vars (set on the Batch job definition):
+
+| Variable | Description |
+|----------|-------------|
+| `PACKAGE_S3_BUCKET` | S3 bucket containing the package zip |
+| `PACKAGE_S3_KEY` | S3 key of the package zip |
+| `RESULT_S3_BUCKET` | S3 bucket for result uploads |
+| `CONTROL_SERVER` | Hydrata control server base URL (e.g. `https://hydrata.com/`) |
+| `PROJECT_ID` | Hydrata project ID |
+| `SCENARIO_ID` | Hydrata scenario ID |
+| `RUN_ID` | Hydrata run ID |
+| `HYDRATA_INTERNAL_COMPUTE_TOKEN` | Shared secret for V2 `IsInternalComputeCaller`. Raw token sent in the `X-Internal-Token` header, NOT a Bearer token |
+
+Optional: `CPUS` (default: `nproc`).
+
+Notes:
+- Auth is token-only. Legacy BasicAuth env vars (`COMPUTE_USERNAME` / `COMPUTE_PASSWORD`) are not read.
+- The entrypoint exports `OMPI_ALLOW_RUN_AS_ROOT=1` so `mpirun` runs inside the single-purpose container.
+- No SIGTERM trap, no checkpoint resume; operator accepts spot-loss.
+- On failure, an `EXIT` trap POSTs to `/api/v2/anuga/runs/<RUN_ID>/error/` so the run does not wedge in `COMPUTING`.
+
+Source: `batch/Dockerfile`, `batch/entrypoint.sh`.
+
 ## Testing
 
 ```bash
@@ -198,6 +247,8 @@ pytest tests/test_integration.py -v
 # Docker-based README validation (tests install + CLI from scratch)
 bash test-docker/test_readme.sh
 ```
+
+See `docs/shape-variance-audit.md` for the GeoJSON geometry-reading hardening audit (TASK-1115 W0).
 
 ## License
 
