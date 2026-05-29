@@ -147,7 +147,7 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
             logger.info('No checkpoint file found. Starting new Simulation')
             callback.on_status('building mesh')
             if not os.path.isfile(input_data['mesh_filepath']):
-                anuga_mesh_filepath, mesh_size = create_anuga_mesh(input_data)
+                create_anuga_mesh(input_data)
             domain = anuga.Domain(
                 mesh_filename=input_data['mesh_filepath'],
                 use_cache=False,
@@ -180,10 +180,11 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
                     )
             frictions = make_frictions(input_data)
             # PRE-FLIGHT (TASK-1138): only a friction RASTER is nodata-checkable.
-            # make_frictions returns a single [['Extent', path]] pair when a
-            # friction raster is configured; otherwise it returns polygon/scalar
-            # pairs (no raster → nothing to check). composite_quantity_setting_function
-            # below uses anuga's default nan_treatment='exception'.
+            # make_frictions (TASK-1259) returns a list that merges the optional
+            # ['Extent', raster] pair with any per-structure Manning's-n polygon
+            # patches; the next() below extracts the raster pair (if present) to
+            # nodata-check it. composite_quantity_setting_function below uses
+            # anuga's default nan_treatment='exception'.
             friction_raster_pair = next(
                 (pair for pair in frictions
                  if len(pair) == 2 and pair[0] == 'Extent'),

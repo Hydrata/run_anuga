@@ -6,6 +6,7 @@ import logging
 import logging.handlers
 import math
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -162,7 +163,6 @@ def get_utm_geo_reference(epsg_str):
     anuga.Geo_reference
         With ``zone`` set to the correct UTM zone integer.
     """
-    import re
     anuga = import_optional("anuga")
     pyproj = import_optional("pyproj")
     CRS = pyproj.CRS
