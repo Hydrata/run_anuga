@@ -9,7 +9,7 @@ import time
 import traceback
 
 from run_anuga._imports import import_optional
-from run_anuga.run_utils import is_dir_check, setup_input_data, create_mesher_mesh, create_anuga_mesh, \
+from run_anuga.run_utils import is_dir_check, setup_input_data, create_anuga_mesh, \
     make_frictions, post_process_sww, setup_logger, RunContext, \
     build_time_boundary_function, apply_inflows_to_domain, \
     assert_raster_has_no_nodata_inside_boundary
@@ -146,57 +146,29 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
             logger.info("Building domain...")
             logger.info('No checkpoint file found. Starting new Simulation')
             callback.on_status('building mesh')
-            if input_data['scenario_config'].get('simplify_mesh'):
-                # PRE-FLIGHT (TASK-1138): the mesher samples the elevation raster
-                # into vertex z-values directly, bypassing
-                # composite_quantity_setting_function, so this path needs the same
-                # guard as the else branch below. Run it before the (expensive)
-                # mesher subprocess so a doomed input fails fast.
-                assert_raster_has_no_nodata_inside_boundary(
-                    input_data['elevation_filename'],
-                    input_data['boundary_polygon'],
-                    quantity_name='elevation',
-                )
-                mesher_mesh_filepath, mesh_size = create_mesher_mesh(input_data)
-                with open(mesher_mesh_filepath, 'r') as mesh_file:
-                    mesh_dict = json.load(mesh_file)
-                    vertex = mesh_dict['mesh']['vertex']
-                    vertex = numpy.array(vertex)
-                    elem = mesh_dict['mesh']['elem']
-                    points = vertex[:, :2]
-                    elev = vertex[:, 2]
-                    domain = anuga.Domain(
-                        points,
-                        elem,
-                        use_cache=False,
-                        verbose=False
-                    )
-                    domain.set_quantity('elevation', elev, location='vertices')
-                    callback.on_metric('mesh_triangle_count', mesh_size)
-            else:
-                if not os.path.isfile(input_data['mesh_filepath']):
-                    anuga_mesh_filepath, mesh_size = create_anuga_mesh(input_data)
-                domain = anuga.Domain(
-                    mesh_filename=input_data['mesh_filepath'],
-                    use_cache=False,
-                    verbose=False,
-                )
-                # PRE-FLIGHT (TASK-1138): surface nodata-under-mesh as a clear,
-                # actionable error here rather than as an opaque exception deep
-                # inside composite_quantity_setting_function. nan_treatment stays
-                # 'exception' — we never silently fabricate bed elevation.
-                assert_raster_has_no_nodata_inside_boundary(
-                    input_data['elevation_filename'],
-                    input_data['boundary_polygon'],
-                    quantity_name='elevation',
-                )
-                poly_fun_pairs = [['Extent', input_data['elevation_filename']]]
-                elevation_function = qs.composite_quantity_setting_function(
-                    poly_fun_pairs,
-                    domain,
-                    nan_treatment='exception',
-                )
-                domain.set_quantity('elevation', elevation_function, verbose=False, alpha=0.99, location='centroids')
+            if not os.path.isfile(input_data['mesh_filepath']):
+                anuga_mesh_filepath, mesh_size = create_anuga_mesh(input_data)
+            domain = anuga.Domain(
+                mesh_filename=input_data['mesh_filepath'],
+                use_cache=False,
+                verbose=False,
+            )
+            # PRE-FLIGHT (TASK-1138): surface nodata-under-mesh as a clear,
+            # actionable error here rather than as an opaque exception deep
+            # inside composite_quantity_setting_function. nan_treatment stays
+            # 'exception' — we never silently fabricate bed elevation.
+            assert_raster_has_no_nodata_inside_boundary(
+                input_data['elevation_filename'],
+                input_data['boundary_polygon'],
+                quantity_name='elevation',
+            )
+            poly_fun_pairs = [['Extent', input_data['elevation_filename']]]
+            elevation_function = qs.composite_quantity_setting_function(
+                poly_fun_pairs,
+                domain,
+                nan_treatment='exception',
+            )
+            domain.set_quantity('elevation', elevation_function, verbose=False, alpha=0.99, location='centroids')
 
             if input_data['scenario_config'].get('store_mesh'):
                 if getattr(domain, "dump_shapefile", None):

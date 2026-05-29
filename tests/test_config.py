@@ -31,7 +31,6 @@ class TestScenarioConfigDefaults:
     def test_defaults_for_standalone(self):
         cfg = ScenarioConfig(**_minimal())
         assert cfg.format_version == "1.0"
-        assert cfg.simplify_mesh is False
         assert cfg.store_mesh is False
         assert cfg.name is None
         assert cfg.elevation is None
@@ -50,7 +49,6 @@ class TestScenarioConfigDefaults:
             catchment="catchment.geojson",
             nodes="nodes.geojson",
             links="links.geojson",
-            simplify_mesh=True,
             store_mesh=True,
             resolution=5.0,
             max_rmse_tolerance=0.5,
@@ -58,7 +56,6 @@ class TestScenarioConfigDefaults:
         ))
         assert cfg.id == 1
         assert cfg.project == 42
-        assert cfg.simplify_mesh is True
         assert cfg.resolution == 5.0
 
 

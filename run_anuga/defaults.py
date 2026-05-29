@@ -35,14 +35,6 @@ MIN_YIELDSTEP_S = 60
 MAX_YIELDSTEP_S = 1800
 """Maximum yield step interval (seconds) — at least yield every 30 minutes."""
 
-# Mesh generation
-MAX_TRIANGLE_AREA = 10_000_000
-"""Maximum triangle area (m^2) for the mesher config."""
-
 # Post-processing
 K_NEAREST_NEIGHBOURS = 3
 """Number of nearest neighbours for GeoTIFF interpolation."""
-
-# External tool paths
-DEFAULT_MESHER_EXE = "mesher"
-"""Default name of the mesher binary.  Resolved via PATH or MESHER_EXE env var."""

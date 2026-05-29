@@ -42,7 +42,6 @@ class ScenarioConfig(BaseModel):
     catchment: Optional[str] = None
     nodes: Optional[str] = None
     links: Optional[str] = None
-    simplify_mesh: bool = False
     store_mesh: bool = False
     resolution: Optional[float] = None
     max_rmse_tolerance: Optional[float] = None

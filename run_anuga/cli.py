@@ -12,8 +12,6 @@ def cmd_validate(args):
         config = ScenarioConfig.from_package(args.package_dir)
         print(f"Valid scenario: {config.run_label}")
         print(f"  Duration: {config.duration}s, EPSG: {config.epsg}")
-        if config.simplify_mesh:
-            print("  Mesh: adaptive (mesher)")
         if config.resolution:
             print(f"  Resolution: {config.resolution}m")
     except Exception as e:
