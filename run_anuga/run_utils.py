@@ -143,6 +143,58 @@ def update_web_interface(run_args, data, files=None):
 
 
 
+def get_utm_geo_reference(epsg_str):
+    """
+    TASK-1260: Derive an anuga.Geo_reference from an EPSG string using pyproj.
+
+    Replaces the fragile ``int(epsg[-2:])`` slice (e.g. "EPSG:32601"[-2:] →
+    "01" → zone=1 works, but edge cases like 3-digit zones could fail).
+    pyproj reliably extracts the UTM zone number for both pure-UTM (32655/32755)
+    and projected CRS whose name includes 'zone NN' (28355 / MGA).
+
+    Parameters
+    ----------
+    epsg_str : str
+        EPSG code, either "EPSG:32755" or bare "32755".
+
+    Returns
+    -------
+    anuga.Geo_reference
+        With ``zone`` set to the correct UTM zone integer.
+    """
+    import re
+    anuga = import_optional("anuga")
+    pyproj = import_optional("pyproj")
+    CRS = pyproj.CRS
+
+    # Normalise to integer EPSG code
+    epsg_clean = epsg_str.strip()
+    if ':' in epsg_clean:
+        epsg_int = int(epsg_clean.split(':')[-1])
+    else:
+        epsg_int = int(epsg_clean)
+
+    crs = CRS.from_epsg(epsg_int)
+
+    # pyproj.CRS.utm_zone returns e.g. "55N", "55S", "1N", or None for
+    # projected CRS that are not pure UTM (e.g. GDA94/MGA).
+    utm_zone_str = crs.utm_zone
+    if utm_zone_str:
+        zone = int(re.search(r'\d+', utm_zone_str).group())
+    else:
+        # Fall back to parsing the CRS name (e.g. "GDA94 / MGA zone 55")
+        m = re.search(r'zone\s+(\d+)', crs.name, re.IGNORECASE)
+        if not m:
+            raise ValueError(
+                f"Cannot determine UTM zone from EPSG:{epsg_int} "
+                f"(name={crs.name!r}, utm_zone={utm_zone_str!r}). "
+                "Provide a UTM or MGA projected CRS."
+            )
+        zone = int(m.group(1))
+
+    return anuga.Geo_reference(zone=zone)
+
+
 def create_anuga_mesh(input_data):
     anuga = import_optional("anuga")
     Geo_reference = anuga.Geo_reference
@@ -167,7 +219,7 @@ def create_anuga_mesh(input_data):
         if burn_structures_into_raster.returncode != 0:
             logger.critical(burn_structures_into_raster.stderr)
             raise UserWarning(burn_structures_into_raster.stderr)
-    mesh_geo_reference = Geo_reference(zone=int(input_data['scenario_config'].get('epsg')[-2:]))
+    mesh_geo_reference = get_utm_geo_reference(input_data['scenario_config'].get('epsg'))
     anuga_mesh = anuga.pmesh.mesh_interface.create_mesh_from_regions(
         bounding_polygon=bounding_polygon,
         boundary_tags=boundary_tags,
@@ -233,14 +285,30 @@ def make_interior_holes_and_tags(input_data):
 
 
 def make_frictions(input_data):
-    # Raster precedence (TASK-830): a friction raster covers the whole
-    # domain at higher resolution than per-polygon scalars. When present,
-    # skip the polygon list entirely and return the raster as a single
-    # 'Extent' entry consumed by composite_quantity_setting_function.
+    # Raster precedence (TASK-830 / TASK-1259): a friction raster sets the
+    # base Manning's value at full raster resolution across the whole domain.
+    # Per-structure Manning's-n patches (method='Mannings') must STILL overlay
+    # the raster — ANUGA's composite_quantity_setting_function evaluates entries
+    # in order, last-match wins, so appending the structure patches AFTER the
+    # raster entry applies them on top.
+    #
+    # Old behaviour (pre-TASK-1259): early-return dropped all structure patches
+    # when a raster was present.  New behaviour: raster first, then structure
+    # patches, no 'All' fallback (raster already covers the whole domain).
+    #
+    # Without a raster: polygon-only path unchanged (structure + friction polys
+    # + 'All' fallback).
     # See docs/reports/2026-05-13-q-1-task-830-friction-raster-attachment.html.
-    if input_data.get('friction_raster_filename'):
-        return [['Extent', input_data['friction_raster_filename']]]
     frictions = list()
+    if input_data.get('friction_raster_filename'):
+        frictions.append(['Extent', input_data['friction_raster_filename']])
+        # Overlay per-structure Manning's-n patches on top of the raster.
+        if input_data.get('structure'):
+            for structure in input_data['structure']['features']:
+                if structure.get('properties').get('method') == 'Mannings':
+                    structure_polygon = _extract_polygon_outer_ring(structure.get('geometry'))
+                    frictions.append((structure_polygon, defaults.BUILDING_MANNINGS_N,))
+        return frictions
     if input_data.get('structure'):
         for structure in input_data['structure']['features']:
             if structure.get('properties').get('method') == 'Mannings':

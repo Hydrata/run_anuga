@@ -32,8 +32,13 @@ RUN pip install --no-cache-dir "numpy>=2.0" setuptools wheel && \
 # ANUGA from Hydrata fork (has lazy pymetis fix). Pinned to a specific
 # anuga_core SHA for reproducible builds; bump intentionally via operator
 # workflow, do NOT use @main.
+#
+# TASK-1261: meshpy, pymetis, GDAL are pinned to the versions proven to work
+# on the sandbox/prod venv (meshpy==2025.1.1, pymetis==2025.2.2, GDAL==3.8.4).
+# Bump intentionally — floating these versions risks breaking the W2.4 golden
+# mesh determinism guarantee.
 RUN pip install --no-cache-dir \
-    scipy matplotlib meshpy pymetis netcdf4 dill utm pyproj affine \
+    scipy matplotlib "meshpy==2025.1.1" "pymetis==2025.2.2" netcdf4 dill utm pyproj affine \
     mpi4py cython pybind11 requests boto3 awscli && \
     pip install --no-cache-dir \
     "anuga @ git+https://github.com/Hydrata/anuga_core.git@7f213c92e97034cc638fe3923f485984e1a0aded"
