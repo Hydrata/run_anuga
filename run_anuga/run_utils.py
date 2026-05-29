@@ -414,6 +414,113 @@ def assert_raster_has_no_nodata_inside_boundary(raster_path, boundary_polygon, *
         )
 
 
+def compute_mesh_qa(anuga_mesh):
+    """Compute mesh-quality metrics from an ANUGA mesh object.
+
+    Returns a dict with:
+      triangle_count   — true element count (after W1.1 len() fix)
+      node_count       — vertex count
+      min_angle_deg    — minimum interior angle across all triangles (degrees)
+      max_angle_deg    — maximum interior angle across all triangles (degrees)
+      sliver_count     — triangles with any angle < SLIVER_ANGLE_THRESHOLD_DEG
+      aspect_ratio_max — maximum ratio of longest to shortest edge per triangle
+      duplicate_node_count — number of vertices duplicated (same x, y)
+      has_degenerate_triangles — True if any triangle has zero or near-zero area
+
+    All numeric fields default to 0 / False when the mesh has no triangles, so
+    callers never need to guard for None.
+
+    This function is anuga-independent: it reads tri_mesh.vertices and
+    tri_mesh.triangles (plain numpy arrays) and does all work with numpy.
+    """
+    numpy = import_optional("numpy")
+    SLIVER_ANGLE_THRESHOLD_DEG = 10.0  # leading CFL-risk indicator
+
+    vertices = anuga_mesh.tri_mesh.vertices   # (N, 2) float
+    triangles = anuga_mesh.tri_mesh.triangles  # (M, 3) int
+
+    n_triangles = len(triangles)
+    n_nodes = len(vertices)
+
+    if n_triangles == 0:
+        return {
+            'triangle_count': 0,
+            'node_count': n_nodes,
+            'min_angle_deg': 0.0,
+            'max_angle_deg': 0.0,
+            'sliver_count': 0,
+            'aspect_ratio_max': 0.0,
+            'duplicate_node_count': 0,
+            'has_degenerate_triangles': False,
+        }
+
+    # Gather vertex coordinates for each triangle corner
+    v0 = vertices[triangles[:, 0]]  # (M, 2)
+    v1 = vertices[triangles[:, 1]]
+    v2 = vertices[triangles[:, 2]]
+
+    # Edge vectors
+    e0 = v1 - v0  # opposite corner v2
+    e1 = v2 - v1  # opposite corner v0
+    e2 = v0 - v2  # opposite corner v1
+
+    # Edge lengths
+    l0 = numpy.linalg.norm(e0, axis=1)
+    l1 = numpy.linalg.norm(e1, axis=1)
+    l2 = numpy.linalg.norm(e2, axis=1)
+
+    # Degenerate triangles: any edge length near zero
+    EPS = 1e-10
+    has_degenerate = bool(numpy.any((l0 < EPS) | (l1 < EPS) | (l2 < EPS)))
+
+    # Interior angles via law of cosines (clamp for numerical safety)
+    def _safe_angle(a, b, c):
+        """Angle at vertex opposite side c, given side lengths a, b, c."""
+        denom = 2.0 * a * b
+        safe_denom = numpy.where(denom < EPS, EPS, denom)
+        cos_val = numpy.clip((a**2 + b**2 - c**2) / safe_denom, -1.0, 1.0)
+        return numpy.degrees(numpy.arccos(cos_val))
+
+    # angle at v0 (between edges e2 and e0, opposite edge l1)
+    ang0 = _safe_angle(l2, l0, l1)
+    # angle at v1 (between edges e0 and e1, opposite edge l2)
+    ang1 = _safe_angle(l0, l1, l2)
+    # angle at v2 (between edges e1 and e2, opposite edge l0)
+    ang2 = _safe_angle(l1, l2, l0)
+
+    all_angles = numpy.concatenate([ang0, ang1, ang2])
+
+    min_angle = float(numpy.min(all_angles))
+    max_angle = float(numpy.max(all_angles))
+
+    # Per-triangle minimum angle
+    per_tri_min_angle = numpy.minimum(numpy.minimum(ang0, ang1), ang2)
+    sliver_count = int(numpy.sum(per_tri_min_angle < SLIVER_ANGLE_THRESHOLD_DEG))
+
+    # Aspect ratio: longest / shortest edge per triangle
+    edge_max = numpy.maximum(numpy.maximum(l0, l1), l2)
+    edge_min = numpy.minimum(numpy.minimum(l0, l1), l2)
+    safe_min = numpy.where(edge_min < EPS, EPS, edge_min)
+    aspect_ratios = edge_max / safe_min
+    aspect_ratio_max = float(numpy.max(aspect_ratios))
+
+    # Duplicate nodes: round to 3 decimal places (millimetre precision)
+    rounded = numpy.round(vertices, 3)
+    unique_rows = numpy.unique(rounded, axis=0)
+    duplicate_node_count = int(n_nodes - len(unique_rows))
+
+    return {
+        'triangle_count': n_triangles,
+        'node_count': n_nodes,
+        'min_angle_deg': round(min_angle, 2),
+        'max_angle_deg': round(max_angle, 2),
+        'sliver_count': sliver_count,
+        'aspect_ratio_max': round(aspect_ratio_max, 2),
+        'duplicate_node_count': duplicate_node_count,
+        'has_degenerate_triangles': has_degenerate,
+    }
+
+
 def correction_for_polar_quadrants(base, height):
     result = 0
     result = 0 if base > 0 and height > 0 else result
