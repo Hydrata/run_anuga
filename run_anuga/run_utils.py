@@ -424,7 +424,7 @@ def create_anuga_mesh(input_data):
         verbose=False,
         fail_if_polygons_outside=False
     )
-    logger.critical(f"{anuga_mesh.tri_mesh.triangles.size=}")
+    logger.critical(f"mesh_triangle_count={len(anuga_mesh.tri_mesh.triangles)}")
     return mesh_filepath, anuga_mesh
 
 
