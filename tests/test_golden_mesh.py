@@ -90,7 +90,10 @@ SCENARIO_CONFIG = {
 # See regeneration instructions in the module docstring.
 # Set GOLDEN_MESH_REGEN=1 to regenerate.
 # ---------------------------------------------------------------------------
-GOLDEN_HASH: str = "4b23c88734efe112e5031cc899e47b67d6ed46d25af3f3f38ad85f1130ffb94a"
+# Updated for TASK-1270 W4.2: mesh_geo_reference removed from create_anuga_mesh
+# (avoids float32 degenerate triangles near hole boundaries with large UTM coords,
+# per run_anuga 5604fc1 investigation). interior_holes path now active.
+GOLDEN_HASH: str = "85c19fee6c84c78ed4751fdd4f8d0b4c26bca0e156f72acf47777e6012f286bb"
 
 
 def _build_input_data(tmp_dir: str) -> dict:

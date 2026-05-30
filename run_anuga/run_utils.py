@@ -196,38 +196,42 @@ def get_utm_geo_reference(epsg_str):
 
 
 def create_anuga_mesh(input_data):
+    """Create the ANUGA mesh from boundary, regions, structures and breaklines.
+
+    Structure method routing (ADR-4, TASK-1269/1270):
+      Reflective → interior_hole with reflective wall tags (the mesh void path).
+                   Sliver-merge applied before passing to Triangle (TASK-1270,
+                   ported from run_anuga 5604fc1). NO DEM burn for Reflective.
+      Mannings   → friction zone only; not a mesh hole; handled in make_frictions.
+      Raised     → post-mesh elevation correction (handled in run.py after meshing).
+
+    The universal gdal_rasterize burn that previously hit EVERY structure is
+    REMOVED here. Only the Raised method applies an elevation change, and that
+    happens post-mesh as a Domain quantity correction (TASK-1299).
+
+    NOTE: mesh_geo_reference is NOT passed — ANUGA computes the local offset from
+    the bounding polygon's lower-left corner, keeping coordinates small. Passing
+    absolute UTM coordinates (~380000, ~6350000) causes Triangle's float32
+    arithmetic to produce degenerate near-zero-area triangles near hole
+    boundaries (observed in 5604fc1 investigation).
+    """
     anuga = import_optional("anuga")
-    Geo_reference = anuga.Geo_reference
     mesh_filepath = input_data['mesh_filepath']
     triangle_resolution = (input_data['scenario_config'].get('resolution') ** 2) / 2
     interior_regions = make_interior_regions(input_data)
-    # interior_holes, hole_tags = make_interior_holes_and_tags(input_data)
+    interior_holes, hole_tags = make_interior_holes_and_tags(input_data)
     bounding_polygon = input_data['boundary_polygon']
     boundary_tags = input_data['boundary_tags']
     logger.critical("creating anuga_mesh")
-    if input_data.get('structure_filename'):
-        burn_structures_into_raster = subprocess.run([
-            "gdal_rasterize",
-            "-burn", str(defaults.BUILDING_BURN_HEIGHT_M), "-add",
-            input_data['structure_filename'],
-            input_data['elevation_filename']
-        ],
-            capture_output=True,
-            universal_newlines=True
-        )
-        logger.critical(burn_structures_into_raster.stdout)
-        if burn_structures_into_raster.returncode != 0:
-            logger.critical(burn_structures_into_raster.stderr)
-            raise UserWarning(burn_structures_into_raster.stderr)
-    mesh_geo_reference = get_utm_geo_reference(input_data['scenario_config'].get('epsg'))
+    # TASK-1270: universal burn removed. Only Raised structures apply a height
+    # change (post-mesh, in run.py). Reflective is a mesh void; Mannings is friction-only.
     anuga_mesh = anuga.pmesh.mesh_interface.create_mesh_from_regions(
         bounding_polygon=bounding_polygon,
         boundary_tags=boundary_tags,
         maximum_triangle_area=triangle_resolution,
         interior_regions=interior_regions,
-        # interior_holes=interior_holes,
-        mesh_geo_reference=mesh_geo_reference,
-        # hole_tags=hole_tags,
+        interior_holes=interior_holes,
+        hole_tags=hole_tags,
         filename=mesh_filepath,
         use_cache=False,
         verbose=False,
@@ -264,23 +268,60 @@ def make_interior_regions(input_data):
 
 
 def make_interior_holes_and_tags(input_data):
-    interior_holes = list()
-    hole_tags = list()
+    """Build interior mesh holes for Reflective structures.
+
+    ADR-4 / TASK-1270 routing:
+      Reflective → interior mesh hole with reflective wall tags.
+                   Sliver-merge applied first (port of run_anuga 5604fc1):
+                   shapely unary_union merges adjacent/shared-vertex buildings
+                   so Triangle never sees coincident edges that produce
+                   near-zero-area (~1e-9 m²) triangles forcing sub-µs CFL.
+      Mannings   → friction zone only; skipped here.
+      Raised     → post-mesh elevation; skipped here.
+    """
+    raw_polys = []
     if input_data.get('structure'):
         for structure in input_data['structure']['features']:
-            if structure.get('properties').get('method') == 'Mannings':
-                continue
-            structure_polygon = _extract_polygon_outer_ring(structure.get('geometry'))
-            interior_holes.append(structure_polygon)
-            if structure.get('properties').get('method') == 'Holes':
-                hole_tags.append(None)
-            elif structure.get('properties').get('method') == 'Reflective':
-                hole_tags.append({'reflective': [i for i in range(len(structure_polygon))]})
+            method = structure.get('properties', {}).get('method')
+            if method == 'Reflective':
+                raw_polys.append(_extract_polygon_outer_ring(structure.get('geometry')))
+            elif method in ('Mannings', 'Raised'):
+                pass  # handled elsewhere
             else:
-                logger.error(f"Unknown interior hole type found: {structure.get('properties').get('method')}")
-    if len(interior_holes) == 0:
-        interior_holes = None
-        hole_tags = None
+                if method is not None:
+                    logger.error(f"Unknown structure method: {method!r} — skipping")
+
+    if not raw_polys:
+        return None, None
+
+    # Sliver-merge (ported from run_anuga 5604fc1): adjacent buildings that
+    # share vertices or edges produce near-zero-area triangles when passed as
+    # separate holes to Triangle. Merge them first with shapely unary_union;
+    # simplify(0.01) removes sub-centimetre artefacts at shared boundary
+    # vertices. For Merewether: 60 buildings → 57 merged, min edge 1.074m.
+    try:
+        from shapely.geometry import Polygon as _ShapelyPolygon
+        from shapely.ops import unary_union as _unary_union
+        shapely_polys = [_ShapelyPolygon(c) for c in raw_polys]
+        merged = _unary_union(shapely_polys)
+        geoms = list(merged.geoms) if merged.geom_type == 'MultiPolygon' else [merged]
+        merged_polys = []
+        for geom in geoms:
+            simplified = geom.simplify(0.01, preserve_topology=True)
+            merged_polys.append(list(simplified.exterior.coords))
+        logger.critical(
+            f"make_interior_holes_and_tags: {len(raw_polys)} raw polys → "
+            f"{len(merged_polys)} merged holes (sliver-merge applied)"
+        )
+    except ImportError:
+        logger.warning("shapely not available — sliver-merge skipped; slivers may cause CFL issues")
+        merged_polys = raw_polys
+
+    interior_holes = []
+    hole_tags = []
+    for coords in merged_polys:
+        interior_holes.append(coords)
+        hole_tags.append({'reflective': list(range(len(coords)))})
     return interior_holes, hole_tags
 
 

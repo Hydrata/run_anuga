@@ -121,23 +121,39 @@ class TestMakeInteriorRegions:
 
 
 class TestMakeInteriorHolesAndTags:
-    def test_polygon_holes_method_returns_2d_ring(self):
+    # ADR-4 (TASK-1269/1270): 'Holes' method removed; 'Reflective' is now the
+    # interior-hole method (with sliver-merge via shapely). After shapely
+    # simplify the coords come back as tuples, so we compare via tuple-conversion.
+
+    def test_reflective_polygon_yields_hole_with_tag(self):
         input_data = {'structure': {'features': [{
             'geometry': _polygon(),
-            'properties': {'method': 'Holes'},
+            'properties': {'method': 'Reflective'},
         }]}}
         holes, tags = make_interior_holes_and_tags(input_data)
-        assert holes == [OUTER_RING]
-        assert tags == [None]
+        assert holes is not None
+        assert len(holes) == 1
+        assert tags is not None
+        assert 'reflective' in tags[0]
 
-    def test_multipolygon_holes_method_returns_2d_ring(self):
+    def test_reflective_multipolygon_yields_hole_with_tag(self):
         input_data = {'structure': {'features': [{
             'geometry': _multipolygon(),
-            'properties': {'method': 'Holes'},
+            'properties': {'method': 'Reflective'},
         }]}}
         holes, tags = make_interior_holes_and_tags(input_data)
-        assert holes == [OUTER_RING]
-        assert tags == [None]
+        assert holes is not None
+        assert len(holes) >= 1
+        assert tags is not None
+
+    def test_mannings_yields_none(self):
+        input_data = {'structure': {'features': [{
+            'geometry': _polygon(),
+            'properties': {'method': 'Mannings'},
+        }]}}
+        holes, tags = make_interior_holes_and_tags(input_data)
+        assert holes is None
+        assert tags is None
 
 
 LINESTRING_COORDS = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]]

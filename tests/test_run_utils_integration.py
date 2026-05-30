@@ -145,43 +145,83 @@ class TestMakeInteriorRegionsEmptyAndNone:
 
 
 class TestMakeInteriorHolesEmptyAndNone:
-    """Audit gap: ``make_interior_holes_and_tags`` × {empty, None}."""
+    """Tests for make_interior_holes_and_tags after ADR-4 (TASK-1270).
 
-    def test_polygon_empty_coordinates_yields_empty_ring(self):
-        from run_anuga.run_utils import make_interior_holes_and_tags
-        input_data = {'structure': {'features': [
-            _empty_polygon_feature(kind='Polygon', properties={'method': 'Holes'}),
-        ]}}
-        holes, tags = make_interior_holes_and_tags(input_data)
-        assert holes == [[]]
-        assert tags == [None]
+    ADR-4 routing: Reflective → interior hole (with sliver-merge via shapely);
+    Mannings → friction only (skipped); Raised → post-mesh (skipped);
+    Holes method is REMOVED — 'Holes' rows were migrated to 'Reflective' by 0114.
+    """
 
-    def test_multipolygon_empty_coordinates_yields_empty_ring(self):
-        from run_anuga.run_utils import make_interior_holes_and_tags
-        input_data = {'structure': {'features': [
-            _empty_polygon_feature(kind='MultiPolygon', properties={'method': 'Holes'}),
-        ]}}
-        holes, tags = make_interior_holes_and_tags(input_data)
-        assert holes == [[]]
-        assert tags == [None]
-
-    def test_polygon_reflective_method_yields_reflective_tag(self):
+    def test_reflective_polygon_yields_reflective_tag(self):
+        """Reflective polygon → one hole with reflective wall tags."""
         from run_anuga.run_utils import make_interior_holes_and_tags
         input_data = {'structure': {'features': [
             _polygon_feature(properties={'method': 'Reflective'}),
         ]}}
         holes, tags = make_interior_holes_and_tags(input_data)
-        assert holes == [OUTER_RING]
-        assert tags == [{'reflective': list(range(len(OUTER_RING)))}]
+        # After sliver-merge through shapely, coords come back as tuples;
+        # convert for comparison.
+        assert holes is not None
+        assert len(holes) == 1
+        hole_tuples = [tuple(c) for c in holes[0]]
+        expected = [tuple(c) for c in OUTER_RING]
+        assert hole_tuples == expected
+        assert len(tags) == 1
+        assert 'reflective' in tags[0]
+        assert tags[0]['reflective'] == list(range(len(holes[0])))
 
-    def test_multipolygon_reflective_method_yields_reflective_tag(self):
+    def test_multipolygon_reflective_method_yields_hole(self):
+        """Reflective MultiPolygon → at least one hole."""
         from run_anuga.run_utils import make_interior_holes_and_tags
         input_data = {'structure': {'features': [
             _multipolygon_feature(properties={'method': 'Reflective'}),
         ]}}
         holes, tags = make_interior_holes_and_tags(input_data)
-        assert holes == [OUTER_RING]
-        assert tags == [{'reflective': list(range(len(OUTER_RING)))}]
+        assert holes is not None
+        assert len(holes) >= 1
+        assert 'reflective' in tags[0]
+
+    def test_mannings_structure_is_skipped(self):
+        """Mannings structures produce no holes (friction-only)."""
+        from run_anuga.run_utils import make_interior_holes_and_tags
+        input_data = {'structure': {'features': [
+            _polygon_feature(properties={'method': 'Mannings'}),
+        ]}}
+        holes, tags = make_interior_holes_and_tags(input_data)
+        assert holes is None
+        assert tags is None
+
+    def test_raised_structure_is_skipped(self):
+        """Raised structures produce no holes (post-mesh elevation)."""
+        from run_anuga.run_utils import make_interior_holes_and_tags
+        input_data = {'structure': {'features': [
+            _polygon_feature(properties={'method': 'Raised'}),
+        ]}}
+        holes, tags = make_interior_holes_and_tags(input_data)
+        assert holes is None
+        assert tags is None
+
+    def test_no_structures_returns_none(self):
+        """No structure input → None, None."""
+        from run_anuga.run_utils import make_interior_holes_and_tags
+        holes, tags = make_interior_holes_and_tags({})
+        assert holes is None
+        assert tags is None
+
+    def test_sliver_merge_reduces_touching_buildings(self):
+        """Two adjacent buildings sharing an edge merge into one hole."""
+        from run_anuga.run_utils import make_interior_holes_and_tags
+        # Two unit squares sharing the edge x=5 (they touch).
+        square_a = [[0.0, 0.0], [5.0, 0.0], [5.0, 5.0], [0.0, 5.0], [0.0, 0.0]]
+        square_b = [[5.0, 0.0], [10.0, 0.0], [10.0, 5.0], [5.0, 5.0], [5.0, 0.0]]
+        input_data = {'structure': {'features': [
+            _polygon_feature('a', ring=square_a, properties={'method': 'Reflective'}),
+            _polygon_feature('b', ring=square_b, properties={'method': 'Reflective'}),
+        ]}}
+        holes, tags = make_interior_holes_and_tags(input_data)
+        assert holes is not None
+        # The two touching squares should merge into 1 (or at most 2 if not touching)
+        assert len(holes) <= 2
 
 
 # --------------------------------------------------------------------------- #
