@@ -19,6 +19,9 @@ from pathlib import Path
     "zip_filename, package_dir_length, output_dir_name, result_directory_length", [
         ("package_fourthreextwo_halves_checkpoint_173.zip", 4, "outputs_18_17_173", 10),
         # ("package_anuga_te_proposed_4_krzVHbr.zip", 4, "outputs_100_4_4", 10),
+        # Merewether Urban Flood Benchmark — canonical goto test run (2007 Pasha Bulka event).
+        # Lean package: inputs/ + scenario.json only; run_sim regenerates the mesh into outputs_1_1_1/.
+        ("merewether_package.zip", 2, "outputs_1_1_1", 10),
     ])
 def test_end_to_end_run(tmp_path, zip_filename, package_dir_length, output_dir_name, result_directory_length):
     # Import at test time, not module level, so the test file can be collected
