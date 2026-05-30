@@ -87,7 +87,8 @@ def _load_package_data(package_dir):
         'network',
         'catchment',
         'nodes',
-        'links'
+        'links',
+        'breakline',  # TASK-1271 W4.3 — breaklines for mesh edge conformance
     ]
     for data_type in data_types:
         filepath = os.path.join(package_dir, f"inputs/{input_data['scenario_config'].get(data_type)}")
@@ -219,6 +220,11 @@ def create_anuga_mesh(input_data):
     mesh_filepath = input_data['mesh_filepath']
     triangle_resolution = (input_data['scenario_config'].get('resolution') ** 2) / 2
     interior_regions = make_interior_regions(input_data)
+    # TASK-1271: append breakline grading regions to the interior_regions list.
+    breakline_regions = make_breaklines(input_data)
+    if breakline_regions:
+        logger.critical(f"make_breaklines: {len(breakline_regions)} buffer-ring regions added")
+        interior_regions = interior_regions + breakline_regions
     interior_holes, hole_tags = make_interior_holes_and_tags(input_data)
     bounding_polygon = input_data['boundary_polygon']
     boundary_tags = input_data['boundary_tags']
@@ -265,6 +271,131 @@ def make_interior_regions(input_data):
             mesh_resolution = mesh_region.get('properties').get('resolution')
             interior_regions.append((mesh_polygon, mesh_resolution,))
     return interior_regions
+
+
+def make_breaklines(input_data):
+    """Build interior_regions from breaklines for distance-graded mesh sizing.
+
+    TASK-1271 (W4.3): Breaklines force Triangle to align edges along linear
+    features (walls, roads, levees). This function synthesises distance-graded
+    mesh refinement around each breakline by emitting buffer rings at
+    h_near, 2*h_near, 4*h_near … up to the scenario default spacing.
+
+    Each ring is registered as an interior_region with max_area ≈ h²·√3/4
+    (the equilateral triangle area for a side length of h). The rings are
+    added to the existing interior_regions list so MeshRegion and breakline
+    refinement compose cleanly.
+
+    Shewchuk Triangle has no built-in grading — the buffer-ring approach
+    synthesises it deterministically with canonical input ordering.
+
+    SCOPE GUARDRAIL (operator 2026-05-29): grading quality is INFORMATIONAL
+    only. If Triangle's output is coarser than ideal ("crappy but coarse" is
+    fine). The ONE HARD FLOOR is no sub-CFL-area slivers from buffer seams.
+
+    Parameters
+    ----------
+    input_data : dict
+        Must contain 'breakline' (GeoJSON FeatureCollection) and optionally
+        'scenario_config' with 'resolution' and 'default_near_spacing'.
+
+    Returns
+    -------
+    list of (polygon, max_area) tuples — extend existing interior_regions with these.
+    """
+    if not input_data.get('breakline'):
+        return []
+
+    try:
+        from shapely.geometry import shape as _shape
+        from shapely.ops import unary_union as _unary_union
+    except ImportError:
+        logger.warning("shapely not available — breakline grading skipped")
+        return []
+
+    import math as _math
+
+    scenario_config = input_data.get('scenario_config', {})
+    default_resolution = scenario_config.get('resolution', 10.0)
+    default_near_spacing = scenario_config.get('default_near_spacing', 2.0)
+
+    # max_area for an equilateral triangle of side h: h² * sqrt(3) / 4
+    def _area_for_spacing(h):
+        return (h ** 2) * (_math.sqrt(3) / 4)
+
+    regions = []
+
+    for feature in input_data['breakline']['features']:
+        props = feature.get('properties') or {}
+        geom = feature.get('geometry')
+        if not geom:
+            continue
+
+        h_near = props.get('near_spacing') or default_near_spacing
+        h_near = float(h_near)
+        h_far = float(default_resolution)
+
+        try:
+            line = _shape(geom)
+        except Exception:
+            logger.warning(f"make_breaklines: could not parse geometry for feature {feature.get('id')}")
+            continue
+
+        # Build buffer rings at doubling distances: h_near, 2h, 4h, ...
+        # Stop when buffer distance exceeds h_far (the scenario resolution).
+        # Canonical ordering: process rings from outermost inward so inner
+        # rings (smaller area) override outer ones in Triangle's pick.
+        ring_distances = []
+        d = h_near
+        while d < h_far:
+            ring_distances.append(d)
+            d *= 2
+
+        if not ring_distances:
+            continue
+
+        # Sort innermost first (smallest buffer = finest mesh); compute each
+        # ring as buffer(d).difference(buffer(d/2)) so we get annular rings.
+        # Register each ring with max_area for spacing h=d (the outer edge
+        # of the ring). Fine inner rings override coarser outer ones because
+        # Triangle uses the SMALLEST max_area constraint for any point.
+        ring_distances_sorted = sorted(ring_distances)  # [2, 4, 8, 16]
+
+        inner_poly = None
+        for dist in ring_distances_sorted:
+            current_poly = line.buffer(dist)
+            if current_poly.is_empty:
+                continue
+            ring_geom = current_poly if inner_poly is None else current_poly.difference(inner_poly)
+            inner_poly = current_poly
+
+            # h for this ring = the buffer distance
+            h = dist
+            max_area = _area_for_spacing(h)
+            ring_coords = _ring_to_coords(ring_geom)
+            for coords in ring_coords:
+                regions.append((coords, max_area))
+
+    return regions
+
+
+def _ring_to_coords(geom):
+    """Extract outer rings from a shapely geometry as lists of [x, y] pairs."""
+    from shapely.geometry import MultiPolygon as _MP
+    if geom.is_empty:
+        return []
+    if geom.geom_type == 'MultiPolygon':
+        polys = list(geom.geoms)
+    elif geom.geom_type == 'Polygon':
+        polys = [geom]
+    else:
+        return []
+    result = []
+    for poly in polys:
+        coords = [list(c) for c in poly.exterior.coords]
+        if coords:
+            result.append(coords)
+    return result
 
 
 def make_interior_holes_and_tags(input_data):

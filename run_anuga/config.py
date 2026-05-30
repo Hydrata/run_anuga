@@ -46,6 +46,10 @@ class ScenarioConfig(BaseModel):
     resolution: Optional[float] = None
     max_rmse_tolerance: Optional[float] = None
     model_start: Optional[str] = None
+    # TASK-1271 W4.3 — breaklines for mesh edge conformance
+    breakline: Optional[str] = None
+    # Default near-spacing (m) for breakline grading when no per-line value set.
+    default_near_spacing: Optional[float] = 2.0
 
     model_config = {"extra": "allow"}
 
