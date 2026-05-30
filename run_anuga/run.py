@@ -12,7 +12,7 @@ from run_anuga._imports import import_optional
 from run_anuga.run_utils import is_dir_check, setup_input_data, create_anuga_mesh, \
     make_frictions, post_process_sww, setup_logger, RunContext, \
     build_time_boundary_function, apply_inflows_to_domain, \
-    assert_raster_has_no_nodata_inside_boundary
+    assert_raster_has_no_nodata_inside_boundary, make_raised_elevation_pairs
 from run_anuga import defaults
 from run_anuga.callbacks import NullCallback, HydrataCallback
 from run_anuga._logging import install_mname_filter
@@ -169,6 +169,31 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
                 nan_treatment='exception',
             )
             domain.set_quantity('elevation', elevation_function, verbose=False, alpha=0.99, location='centroids')
+
+            # TASK-1299: post-mesh Raised structure elevation correction.
+            # Apply per-structure height additions AFTER the base DEM is seated.
+            # Only structures with method='Raised' are modified; Reflective and
+            # Mannings are untouched (Reflective is a mesh void; Mannings is friction).
+            # This replaces the old universal +5m gdal_rasterize burn (removed in 1270).
+            raised_pairs = make_raised_elevation_pairs(input_data)
+            if raised_pairs:
+                logger.critical(f"Applying raised elevation for {len(raised_pairs)} Raised structure(s)")
+                try:
+                    import numpy as _np
+                    from anuga.geometry.polygon import inside_polygon
+                    # Domain centroids (local coords relative to geo_reference offset)
+                    centroids = domain.get_centroid_coordinates(absolute=False)
+                    elev = domain.get_quantity('elevation').get_values(location='centroids')
+                    for poly_coords, height_m in raised_pairs:
+                        if not poly_coords:
+                            continue
+                        inside_idx = inside_polygon(centroids, poly_coords)
+                        if len(inside_idx) > 0:
+                            elev[inside_idx] += height_m
+                    domain.set_quantity('elevation', elev, location='centroids')
+                    logger.critical(f"Raised elevation applied for {len(raised_pairs)} structure(s)")
+                except Exception as e:
+                    logger.error(f"Failed to apply raised elevation: {e} — continuing without Raised correction")
 
             if input_data['scenario_config'].get('store_mesh'):
                 if getattr(domain, "dump_shapefile", None):

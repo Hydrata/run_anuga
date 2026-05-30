@@ -495,6 +495,36 @@ def make_frictions(input_data):
     return frictions
 
 
+def make_raised_elevation_pairs(input_data):
+    """Build (polygon, raised_height) pairs for Raised-method structures.
+
+    TASK-1299: The Raised method applies a post-mesh elevation correction to
+    building footprints. This replaces the old universal +5m DEM-burn: only
+    structures with method='Raised' get an elevation adjustment, and the height
+    is per-structure (defaulting to Scenario.default_raised_height via the
+    scenario_config key 'default_raised_height').
+
+    Returns a list of (polygon_coords, height_m) pairs, empty if no Raised
+    structures are present. Caller applies these via
+    composite_quantity_setting_function AFTER the base DEM elevation is seated.
+    """
+    default_raised_height = float(
+        input_data.get('scenario_config', {}).get('default_raised_height', defaults.BUILDING_BURN_HEIGHT_M)
+    )
+    pairs = []
+    if not input_data.get('structure'):
+        return pairs
+    for structure in input_data['structure']['features']:
+        method = structure.get('properties', {}).get('method')
+        if method != 'Raised':
+            continue
+        height = structure.get('properties', {}).get('raised_height')
+        height = float(height) if height is not None else default_raised_height
+        polygon = _extract_polygon_outer_ring(structure.get('geometry'))
+        pairs.append((polygon, height))
+    return pairs
+
+
 def assert_raster_has_no_nodata_inside_boundary(raster_path, boundary_polygon, *, quantity_name):
     """Pre-flight guard: raise a clear error if a raster has nodata cells inside the model boundary.
 

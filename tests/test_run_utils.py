@@ -13,6 +13,7 @@ from run_anuga.run_utils import (
     make_frictions,
     make_interior_holes_and_tags,
     make_interior_regions,
+    make_raised_elevation_pairs,  # TASK-1299
 )
 
 _HAS_RASTERIO = importlib.util.find_spec("rasterio") is not None
@@ -154,6 +155,83 @@ class TestMakeInteriorHolesAndTags:
         holes, tags = make_interior_holes_and_tags(input_data)
         assert holes is None
         assert tags is None
+
+
+class TestMakeRaisedElevationPairs:
+    """TASK-1299: make_raised_elevation_pairs routes Raised structures to post-mesh path."""
+
+    def test_raised_structure_returns_pair_with_default_height(self):
+        """Raised structure with no per-structure height uses scenario default."""
+        input_data = {
+            'structure': {'features': [{
+                'geometry': _polygon(),
+                'properties': {'method': 'Raised'},
+            }]},
+            'scenario_config': {'default_raised_height': 5.0},
+        }
+        pairs = make_raised_elevation_pairs(input_data)
+        assert len(pairs) == 1
+        coords, height = pairs[0]
+        assert height == 5.0
+        assert len(coords) > 0
+
+    def test_raised_structure_per_structure_height_overrides_default(self):
+        """Per-structure raised_height overrides the scenario default."""
+        input_data = {
+            'structure': {'features': [{
+                'geometry': _polygon(),
+                'properties': {'method': 'Raised', 'raised_height': 3.5},
+            }]},
+            'scenario_config': {'default_raised_height': 5.0},
+        }
+        pairs = make_raised_elevation_pairs(input_data)
+        assert len(pairs) == 1
+        _, height = pairs[0]
+        assert height == 3.5
+
+    def test_reflective_structure_produces_no_raised_pairs(self):
+        """Reflective structures are mesh holes; no post-mesh elevation correction."""
+        input_data = {
+            'structure': {'features': [{
+                'geometry': _polygon(),
+                'properties': {'method': 'Reflective'},
+            }]},
+            'scenario_config': {'default_raised_height': 5.0},
+        }
+        pairs = make_raised_elevation_pairs(input_data)
+        assert pairs == []
+
+    def test_mannings_structure_produces_no_raised_pairs(self):
+        """Mannings structures are friction-only; no post-mesh elevation correction."""
+        input_data = {
+            'structure': {'features': [{
+                'geometry': _polygon(),
+                'properties': {'method': 'Mannings'},
+            }]},
+            'scenario_config': {'default_raised_height': 5.0},
+        }
+        pairs = make_raised_elevation_pairs(input_data)
+        assert pairs == []
+
+    def test_no_structure_returns_empty(self):
+        """No structures → empty list."""
+        pairs = make_raised_elevation_pairs({})
+        assert pairs == []
+
+    def test_mixed_methods_only_raises_returned(self):
+        """Mixed structure methods → only Raised structures in pairs."""
+        input_data = {
+            'structure': {'features': [
+                {'geometry': _polygon(), 'properties': {'method': 'Reflective'}},
+                {'geometry': _polygon(), 'properties': {'method': 'Raised', 'raised_height': 2.0}},
+                {'geometry': _polygon(), 'properties': {'method': 'Mannings'}},
+            ]},
+            'scenario_config': {'default_raised_height': 5.0},
+        }
+        pairs = make_raised_elevation_pairs(input_data)
+        assert len(pairs) == 1
+        _, height = pairs[0]
+        assert height == 2.0
 
 
 LINESTRING_COORDS = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]]
