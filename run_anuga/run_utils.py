@@ -381,7 +381,6 @@ def make_breaklines(input_data):
 
 def _ring_to_coords(geom):
     """Extract outer rings from a shapely geometry as lists of [x, y] pairs."""
-    from shapely.geometry import MultiPolygon as _MP
     if geom.is_empty:
         return []
     if geom.geom_type == 'MultiPolygon':

@@ -179,7 +179,6 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
             if raised_pairs:
                 logger.critical(f"Applying raised elevation for {len(raised_pairs)} Raised structure(s)")
                 try:
-                    import numpy as _np
                     from anuga.geometry.polygon import inside_polygon
                     # Domain centroids (local coords relative to geo_reference offset)
                     centroids = domain.get_centroid_coordinates(absolute=False)
