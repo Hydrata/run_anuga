@@ -9,7 +9,6 @@ import os
 import re
 import shutil
 import subprocess
-import sys
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
@@ -308,7 +307,6 @@ def make_breaklines(input_data):
 
     try:
         from shapely.geometry import shape as _shape
-        from shapely.ops import unary_union as _unary_union
     except ImportError:
         logger.warning("shapely not available — breakline grading skipped")
         return []

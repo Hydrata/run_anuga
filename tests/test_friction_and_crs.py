@@ -125,7 +125,13 @@ class TestDeriveUtmZone:
     - Single-digit zone: EPSG:32601 (zone 1)
     - MGA zone: EPSG:28355 (zone 55, GDA94)
     - Non-UTM EPSG: function should still extract zone from pyproj CRS authority
+
+    get_utm_geo_reference returns an anuga.Geo_reference, so these cases require
+    the optional `anuga` engine — skip the whole class when it is absent (CI runs
+    `.[dev]` without anuga; localhost has it). See CLAUDE.md run_anuga CI gotcha.
     """
+
+    pytest.importorskip("anuga")
 
     def test_northern_hemisphere_zone_55(self):
         from run_anuga.run_utils import get_utm_geo_reference

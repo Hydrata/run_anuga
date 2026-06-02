@@ -69,7 +69,6 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
     # Lazy imports — these are only needed when actually running a simulation.
     anuga = import_optional("anuga")
     pickle = import_optional("dill")
-    numpy = import_optional("numpy")
     psutil = import_optional("psutil")
     from anuga import distribute, finalize, barrier, Inlet_operator
     from anuga.utilities import quantity_setting_functions as qs
