@@ -17,6 +17,7 @@ from urllib.parse import urlparse
 
 from run_anuga._imports import import_optional
 from run_anuga import defaults
+from run_anuga.breakline_conditioner import condition_breaklines
 from run_anuga._logging import install_mname_filter
 from run_anuga.config import ScenarioConfig
 
@@ -227,6 +228,21 @@ def create_anuga_mesh(input_data):
     interior_holes, hole_tags = make_interior_holes_and_tags(input_data)
     bounding_polygon = input_data['boundary_polygon']
     boundary_tags = input_data['boundary_tags']
+    # TASK-1715: conform mesh edges ALONG each breakline (a Shewchuk Triangle PSLG
+    # constraint), not merely grade density near it (the buffer rings above). The
+    # build-time conditioner clips to the boundary, nodes crossings, dedupes and
+    # drops sub-CFL segments so Triangle always gets a valid PSLG. Coords are
+    # absolute (ANUGA offsets them by the boundary lower-left internally, the same
+    # transform applied to boundary_polygon/interior_regions). Conform + grade
+    # COMPOSE — the grading regions above are kept.
+    breaklines = condition_breaklines(
+        input_data.get('breakline'),
+        bounding_polygon,
+        default_near_spacing=input_data.get('scenario_config', {}).get(
+            'default_near_spacing', 2.0),
+    )
+    if breaklines:
+        logger.critical(f"condition_breaklines: {len(breaklines)} conforming breaklines passed to Triangle")
     logger.critical("creating anuga_mesh")
     # TASK-1270: universal burn removed. Only Raised structures apply a height
     # change (post-mesh, in run.py). Reflective is a mesh void; Mannings is friction-only.
@@ -238,6 +254,7 @@ def create_anuga_mesh(input_data):
         interior_holes=interior_holes,
         hole_tags=hole_tags,
         filename=mesh_filepath,
+        breaklines=breaklines if breaklines else None,
         use_cache=False,
         verbose=False,
         fail_if_polygons_outside=False
