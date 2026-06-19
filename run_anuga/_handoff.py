@@ -62,17 +62,74 @@ def make_result_key(project_id: int, scenario_id: int, run_id: int) -> str:
     return f"{project_id}_{scenario_id}_{run_id}_results.zip"
 
 
+# Directory names whose entire subtree is excluded from the result package
+# (matched on any path component, at any depth). See ``_is_excluded_from_result``.
+_EXCLUDED_DIR_NAMES = frozenset({"run_anuga", "checkpoints", "videos"})
+
+
+def _is_excluded_from_result(relative: Path, result_zip_name: str) -> bool:
+    """Return True if ``relative`` (a path under the package dir) must NOT be
+    written into the result package.
+
+    Result-package slimming (TASK-1821). The only consumer of the uploaded
+    result zip is the Hydrata backend's ``Run.process_result``
+    (gn_anuga/models/run.py), which extracts ONLY the ``*_max.tif`` rasters
+    (depth / velocity / depthIntegratedVelocity). Everything else the runner
+    leaves in the output directory is, for the result zip's purpose, dead
+    weight — and at production scale the raw ``.sww`` (tens to >100 GB) made the
+    package overflow the Batch host disk AND dominated the zip+upload wall time
+    (the handoff was output-bound, not compute-bound). See
+    docs/reports/2026-06-19-anuga-x32-w0-benchmark.md and TASK-1820/1821.
+
+    Excluded:
+      ``*.sww``        Raw ANUGA NetCDF. Fully consumed on-box by
+                       ``post_process_sww`` (-> the max + per-timestep TIFs)
+                       BEFORE this zip is built; no BE/FE path reads it from the
+                       zip and no reprocess-from-sww code path exists. The
+                       dominant bulk at production scale.
+      ``checkpoints/`` MPI per-rank checkpoint pickles. D4.c (TASK-1048): no
+                       checkpoint resume — operator accepts spot loss. Pure
+                       scratch; scales with rank count (P32 -> 32 pickles per
+                       checkpoint time) and dominates small/short packages.
+      ``*_Time_*.tif`` Per-timestep rasters from ``Make_Geotif(myTimeStep='all')``.
+                       ``process_result`` reads only ``*_max.tif``; per-timestep
+                       rasters are delivered (when at all) by the separate
+                       ``generate_stac`` upload to ``ANUGA_S3_STAC_BUCKET_NAME``,
+                       which is NOT invoked on the Batch ``run-and-report`` path
+                       — so they are unread dead weight in the result zip.
+      ``*.msh``        The mesh is persisted independently via
+                       ``Run.msh_snapshot`` (AnugaMeshStorage); this copy is
+                       redundant.
+      ``videos/``      Already removed by ``post_process_sww`` before handoff;
+                       listed here for defence in depth.
+
+    Kept: the ``*_max.tif`` rasters (the BE payload), run logs, ``scenario.json``,
+    and the small ``inputs/`` tree (bounded provenance). Plus the always-excluded
+    ``package.zip`` (the downloaded input) and the result zip itself.
+    """
+    if any(part in _EXCLUDED_DIR_NAMES for part in relative.parts[:-1]):
+        return True
+    name = relative.name
+    if name in ("package.zip", result_zip_name):
+        return True
+    if name.endswith((".sww", ".msh")):
+        return True
+    if name.endswith(".tif") and "_Time_" in name:
+        return True
+    return False
+
+
 def zip_outputs(package_dir: str | Path, result_zip_path: str | Path) -> Path:
-    """Zip the package directory into ``result_zip_path``.
+    """Zip the slimmed result payload from ``package_dir`` into ``result_zip_path``.
 
-    Mirrors ``batch/entrypoint.sh`` lines 102-105:
-
-    ``zip -q -r "${RESULT_ZIP}" . -x "package.zip" "run_anuga/*" "${RESULT_KEY}"``
-
-    Excludes ``package.zip`` (the input the entrypoint downloaded), the result
-    zip itself (so the output never includes itself recursively), and any
-    ``run_anuga/`` source tree that may have been mounted into the working
-    directory during testing.
+    Writes only the artifacts the Hydrata backend consumes plus small
+    provenance (max-quantity rasters, run logs, ``scenario.json``, ``inputs/``);
+    the multi-GB raw ``.sww``, MPI ``checkpoints/``, per-timestep ``*_Time_*.tif``
+    rasters, redundant ``.msh`` mesh, ``package.zip``, the result zip itself, and
+    any embedded ``run_anuga/`` source tree are excluded. The exclusion rules
+    (and why each is safe) live in ``_is_excluded_from_result``; this Python is
+    the single source of truth for the result-zip contents (it supersedes the
+    historical ``zip -x`` line in ``batch/entrypoint.sh``).
     """
     package_dir = Path(package_dir).resolve()
     result_zip_path = Path(result_zip_path).resolve()
@@ -83,8 +140,7 @@ def zip_outputs(package_dir: str | Path, result_zip_path: str | Path) -> Path:
             if not path.is_file():
                 continue
             relative = path.relative_to(package_dir)
-            top = relative.parts[0]
-            if top == "run_anuga" or relative.name == "package.zip" or relative.name == result_zip_name:
+            if _is_excluded_from_result(relative, result_zip_name):
                 continue
             zf.write(path, arcname=str(relative))
 

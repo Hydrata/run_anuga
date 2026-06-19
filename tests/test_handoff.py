@@ -104,6 +104,74 @@ class TestZipOutputs:
         with zipfile.ZipFile(zip_path) as zf:
             assert "601_384_1243_results.zip" not in zf.namelist()
 
+    def _make_realistic_outputs(self, tmp_path: Path) -> Path:
+        """A package mirroring a real ANUGA output dir (TASK-1821 slimming)."""
+        (tmp_path / "scenario.json").write_text("{}")
+        inputs = tmp_path / "inputs"
+        inputs.mkdir()
+        (inputs / "ele_merewether_dem.tif").write_bytes(b"input dem")
+        outputs = tmp_path / "outputs_601_384_1243"
+        outputs.mkdir()
+        # Kept: the BE payload + provenance.
+        (outputs / "run_601_384_1243_depth_max.tif").write_bytes(b"depth max")
+        (outputs / "run_601_384_1243_velocity_max.tif").write_bytes(b"vel max")
+        (outputs / "run_601_384_1243_depthIntegratedVelocity_max.tif").write_bytes(b"div max")
+        (outputs / "run_anuga_1.log").write_text("log line")
+        # Excluded: raw sww, per-timestep rasters, mesh, MPI checkpoints.
+        (outputs / "run_601_384_1243.sww").write_bytes(b"huge netcdf" * 1000)
+        (outputs / "run_601_384_1243_depth_0_Time_0.tif").write_bytes(b"t0")
+        (outputs / "run_601_384_1243_velocity_5_Time_300.tif").write_bytes(b"t5")
+        (outputs / "run_601_384_1243.msh").write_bytes(b"mesh")
+        checkpoints = outputs / "checkpoints"
+        checkpoints.mkdir()
+        (checkpoints / "run_601_384_1243_P32_8_0.0.pickle").write_bytes(b"ckpt" * 1000)
+        return outputs
+
+    def test_slim_keeps_only_max_tifs_and_provenance(self, tmp_path: Path):
+        self._make_realistic_outputs(tmp_path)
+        zip_path = tmp_path / "601_384_1243_results.zip"
+        zip_outputs(tmp_path, zip_path)
+        with zipfile.ZipFile(zip_path) as zf:
+            names = set(zf.namelist())
+
+        # The 3 max rasters that Run.process_result extracts MUST survive.
+        assert "outputs_601_384_1243/run_601_384_1243_depth_max.tif" in names
+        assert "outputs_601_384_1243/run_601_384_1243_velocity_max.tif" in names
+        assert "outputs_601_384_1243/run_601_384_1243_depthIntegratedVelocity_max.tif" in names
+        # Provenance kept.
+        assert "scenario.json" in names
+        assert "outputs_601_384_1243/run_anuga_1.log" in names
+        assert "inputs/ele_merewether_dem.tif" in names
+
+        # The bulk / dead-weight artifacts are gone.
+        assert not any(n.endswith(".sww") for n in names)
+        assert not any("_Time_" in n for n in names)
+        assert not any(n.endswith(".msh") for n in names)
+        assert not any("/checkpoints/" in n for n in names)
+
+    def test_slim_excludes_sww(self, tmp_path: Path):
+        outputs = self._make_realistic_outputs(tmp_path)
+        zip_path = tmp_path / "result.zip"
+        zip_outputs(tmp_path, zip_path)
+        with zipfile.ZipFile(zip_path) as zf:
+            assert "outputs_601_384_1243/run_601_384_1243.sww" not in zf.namelist()
+
+    def test_slim_excludes_checkpoints_subtree(self, tmp_path: Path):
+        self._make_realistic_outputs(tmp_path)
+        zip_path = tmp_path / "result.zip"
+        zip_outputs(tmp_path, zip_path)
+        with zipfile.ZipFile(zip_path) as zf:
+            assert not any("checkpoints" in n for n in zf.namelist())
+
+    def test_slim_excludes_per_timestep_tifs_but_keeps_max(self, tmp_path: Path):
+        self._make_realistic_outputs(tmp_path)
+        zip_path = tmp_path / "result.zip"
+        zip_outputs(tmp_path, zip_path)
+        with zipfile.ZipFile(zip_path) as zf:
+            names = zf.namelist()
+        assert not any("_Time_" in n for n in names)
+        assert any(n.endswith("_depth_max.tif") for n in names)
+
 
 class TestUploadResultToS3:
     def test_uploads_via_boto3_client(self, tmp_path: Path):
