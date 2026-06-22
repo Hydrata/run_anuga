@@ -150,7 +150,7 @@ class TestZipOutputs:
         assert not any("/checkpoints/" in n for n in names)
 
     def test_slim_excludes_sww(self, tmp_path: Path):
-        outputs = self._make_realistic_outputs(tmp_path)
+        self._make_realistic_outputs(tmp_path)
         zip_path = tmp_path / "result.zip"
         zip_outputs(tmp_path, zip_path)
         with zipfile.ZipFile(zip_path) as zf:
