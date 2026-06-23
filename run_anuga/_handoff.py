@@ -458,10 +458,10 @@ def run_and_report(
         )
 
     try:
-        if sampler is not None:
-            with sampler:
-                run_sim(str(package_dir), callback=callback)
-        else:
+        # A None sampler (non-rank-0 / localhost / non-Batch) degrades to
+        # nullcontext so the run_sim call lives once.
+        import contextlib
+        with (sampler if sampler is not None else contextlib.nullcontext()):
             run_sim(str(package_dir), callback=callback)
     except Exception as exc:
         if _is_mpi_rank_zero():
