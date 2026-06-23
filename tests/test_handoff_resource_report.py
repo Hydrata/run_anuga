@@ -1,6 +1,12 @@
 """Tests for the TASK-1846 ANUGA resource-report retrofit (epic 1830 W4).
 
-Covers run_anuga._handoff's new resource_summary emit wiring:
+Updated for TASK-1879: ``report_resource_summary`` now delegates to the shared
+``gn_anuga.batch_common.emit.emit_resource_summary`` helper.  The helper is
+imported via a guarded try/except inside the function (mirrors the existing
+``_make_resource_sampler`` pattern), so tests that exercise the POST path must
+inject a fake ``gn_anuga.batch_common.emit`` module via ``mock.patch.dict``.
+
+Covers run_anuga._handoff's resource_summary emit wiring:
 
 * ``RESOURCE_REPORT_TOOL`` is the ``"anuga"`` discriminator.
 * ``_make_resource_sampler`` returns ``None`` (no raise) when the staged
@@ -18,6 +24,7 @@ lightweight stand-in (a real ResourceSampler needs the cgroup filesystem).
 from __future__ import annotations
 
 import sys
+import types
 from pathlib import Path
 from unittest import mock
 
@@ -38,6 +45,60 @@ class _FakeSampler:
 
     def summary(self):
         return self._summary
+
+
+def _fake_emit_module():
+    """Return a fake ``gn_anuga.batch_common.emit`` module with a real emit helper.
+
+    The helper directly does the POST via ``session`` (as the real one does),
+    so the per-test session mocks see the call.
+    """
+    import logging
+
+    def _emit(sampler, *, session, resource_report_url, timeout=30):
+        try:
+            summary = sampler.summary()
+            if not summary.get("job_id"):
+                logging.getLogger("run_anuga._handoff").info(
+                    "emit_resource_summary: no AWS_BATCH_JOB_ID"
+                    " — skipping resource-report POST",
+                )
+                return
+            resp = session.post(resource_report_url, json=summary, timeout=timeout)
+            if not getattr(resp, "ok", False):
+                logging.getLogger("run_anuga._handoff").warning(
+                    "emit_resource_summary: %s responded %s — %s",
+                    resource_report_url,
+                    getattr(resp, "status_code", "?"),
+                    (getattr(resp, "text", "") or "")[:200],
+                )
+        except Exception:
+            logging.getLogger("run_anuga._handoff").warning(
+                "emit_resource_summary: resource-report POST failed; suppressed",
+                exc_info=True,
+            )
+
+    mod = types.ModuleType("gn_anuga.batch_common.emit")
+    mod.emit_resource_summary = _emit
+    return mod
+
+
+def _with_emit(fn):
+    """Decorator: inject a working fake gn_anuga.batch_common.emit for the test."""
+    import functools
+
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        fake_mod = _fake_emit_module()
+        patch = {
+            "gn_anuga": types.ModuleType("gn_anuga"),
+            "gn_anuga.batch_common": types.ModuleType("gn_anuga.batch_common"),
+            "gn_anuga.batch_common.emit": fake_mod,
+        }
+        with mock.patch.dict(sys.modules, patch):
+            return fn(*args, **kwargs)
+
+    return wrapper
 
 
 def test_resource_report_tool_constant():
@@ -63,6 +124,7 @@ def test_make_resource_sampler_none_without_batch_common():
     assert sampler is None
 
 
+@_with_emit
 def test_report_resource_summary_posts_with_anuga_tool():
     """A summary carrying a job_id is POSTed to /jobs/resource-report/ as 'anuga'."""
     sampler = _FakeSampler({"tool": "anuga", "job_id": "abc-123", "observed": {}})
@@ -83,6 +145,7 @@ def test_report_resource_summary_posts_with_anuga_tool():
     fake_session.close.assert_called_once()
 
 
+@_with_emit
 def test_report_resource_summary_skips_without_job_id():
     """No AWS_BATCH_JOB_ID (local run) → no POST (BE would 400 an empty job_id)."""
     sampler = _FakeSampler({"tool": "anuga", "job_id": "", "observed": {}})
@@ -106,6 +169,7 @@ def test_report_resource_summary_none_sampler_is_noop():
     mk.assert_not_called()
 
 
+@_with_emit
 def test_report_resource_summary_never_raises_on_post_failure():
     """A POST failure must NOT mask the run outcome — best-effort ledger."""
     sampler = _FakeSampler({"tool": "anuga", "job_id": "abc-123", "observed": {}})
@@ -122,12 +186,28 @@ def test_report_resource_summary_never_raises_on_post_failure():
     fake_session.close.assert_called_once()
 
 
+@_with_emit
 def test_report_resource_summary_never_raises_on_summary_failure():
     """A sampler whose .summary() raises is swallowed (never masks the run)."""
     bad_sampler = mock.Mock()
     bad_sampler.summary.side_effect = RuntimeError("sampler broke")
     # No mock of make_internal_session needed — we never reach the POST.
-    report_resource_summary("https://hydrata.com", "tok", bad_sampler)
+    with mock.patch("run_anuga._http.make_internal_session"):
+        report_resource_summary("https://hydrata.com", "tok", bad_sampler)
+
+
+def test_report_resource_summary_skips_when_emit_absent():
+    """No gn_anuga.batch_common on path → emit_resource_summary = None → no-op."""
+    sampler = _FakeSampler({"tool": "anuga", "job_id": "abc-123", "observed": {}})
+    # Simulate gn_anuga absent (the localhost / non-Batch case).
+    with mock.patch.dict(sys.modules, {
+        "gn_anuga": None,
+        "gn_anuga.batch_common": None,
+        "gn_anuga.batch_common.emit": None,
+    }):
+        with mock.patch("run_anuga._http.make_internal_session") as mk:
+            report_resource_summary("https://hydrata.com", "tok", sampler)
+    mk.assert_not_called()
 
 
 def test_module_imports_without_django():

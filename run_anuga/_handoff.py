@@ -303,36 +303,36 @@ def _make_resource_sampler(scratch_dir, *, control_server, ids):
 def report_resource_summary(control_server: str, token: str, sampler) -> None:
     """Best-effort POST the sampler's resource_summary to /jobs/resource-report/.
 
-    TASK-1846 — mirrors ``merge_and_report._report_resource_summary``: builds the
-    v1 summary, skips the POST when there is no ``AWS_BATCH_JOB_ID`` (a local run
-    has no job to record and the BE 400s an empty job_id), and NEVER raises — a
-    ledger failure must not mask the ANUGA run outcome. ``sampler`` may be ``None``
-    (batch_common absent) in which case this is a no-op.
+    TASK-1846 / TASK-1879 — delegates to the shared
+    :func:`gn_anuga.batch_common.emit.emit_resource_summary` helper.  Skips the
+    POST when there is no ``AWS_BATCH_JOB_ID`` (a local run has no job to record
+    and the BE 400s an empty job_id), and NEVER raises — a ledger failure must not
+    mask the ANUGA run outcome.
+
+    ``sampler`` may be ``None`` (batch_common absent on localhost / non-Batch
+    image) in which case this is a no-op.  The ``emit_resource_summary`` import is
+    guarded (mirrors ``_make_resource_sampler``'s guard for the sampler leaf): when
+    ``gn_anuga.batch_common`` is not staged, the emit is silently skipped.
     """
     if sampler is None:
         return
     try:
-        summary = sampler.summary()
-        if not summary.get("job_id"):
-            logger.info(
-                "run_and_report: no AWS_BATCH_JOB_ID — skipping resource-report POST",
-            )
+        try:
+            from gn_anuga.batch_common.emit import emit_resource_summary
+        except ImportError:
+            emit_resource_summary = None
+        if emit_resource_summary is None:
             return
         from run_anuga._http import make_internal_session
 
         url = f"{control_server.rstrip('/')}/api/v2/anuga/jobs/resource-report/"
         session = make_internal_session(token)
         try:
-            # The receiver reads request.data as a JSON object — POST json=, not
-            # form data=, so the X-Internal-Token session carries an application/json
-            # body (mirrors merge_and_report._post).
-            resp = session.post(url, json=summary, timeout=30)
-            if not getattr(resp, "ok", False):
-                logger.warning(
-                    "report_resource_summary: %s responded %s — %s",
-                    url, getattr(resp, "status_code", "?"),
-                    (getattr(resp, "text", "") or "")[:200],
-                )
+            emit_resource_summary(
+                sampler,
+                session=session,
+                resource_report_url=url,
+            )
         finally:
             session.close()
     except Exception:
