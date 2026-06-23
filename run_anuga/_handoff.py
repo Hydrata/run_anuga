@@ -35,6 +35,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import tempfile
 import traceback
 import zipfile
 from pathlib import Path
@@ -52,6 +53,9 @@ install_mname_filter(logger)
 # read from this constant — the F0 drift class (``key`` vs ``result_package_key``)
 # cannot recur as long as both sides import it.
 RESULT_PACKAGE_KEY_FIELD = "result_package_key"
+
+# Discriminator stamped onto every resource_summary this tool emits (doc05 §6).
+RESOURCE_REPORT_TOOL = "anuga"
 
 
 def make_result_key(project_id: int, scenario_id: int, run_id: int) -> str:
@@ -240,6 +244,103 @@ def report_error(
             session.close()
 
 
+def _make_resource_sampler(scratch_dir, *, control_server, ids):
+    """Construct a Django-free ``ResourceSampler`` for the ANUGA run, or ``None``.
+
+    TASK-1846 (epic 1830 W4) — mirror the terrain-merge ledger emit
+    (``gn_anuga.terrain_compute.merge.merge_and_report``). The sampler lives in
+    the STAGED ``gn_anuga.batch_common`` leaf that the run-anuga Batch image bundles
+    (``rebuild-batch-image.sh --tool anuga`` stages it the same minimal way as
+    terrain-compute). run_anuga is Django-free and on a localhost / non-Batch run
+    the leaf is NOT on the path — so the import is guarded and a miss simply skips
+    the ledger (the sim still runs, NOTHING fails). Never raises.
+
+    The sampler tracks cgroup-scoped signals, so a single rank-0 instance covers
+    ALL MPI ranks (cgroup reads are container-wide). ``job_id`` falls back to the
+    ``AWS_BATCH_JOB_ID`` env inside the sampler; ``request`` (vcpu/mem denominator)
+    falls back to the cgroup ``memory.max``.
+    """
+    try:
+        from gn_anuga.batch_common.resource_sampler import ResourceSampler
+    except Exception:
+        # localhost / non-Batch (no batch_common staged) — ledger simply absent.
+        logger.info(
+            "run_and_report: gn_anuga.batch_common not on path — skipping "
+            "resource sampler (localhost / non-Batch run)",
+        )
+        return None
+
+    request = {}
+    vcpu = os.environ.get("ANUGA_REQUEST_VCPU") or os.environ.get("NPROCS")
+    mem_mib = os.environ.get("ANUGA_REQUEST_MEM_MIB")
+    if vcpu:
+        try:
+            request["vcpu"] = int(vcpu)
+        except ValueError:
+            pass
+    if mem_mib:
+        try:
+            request["mem_mib"] = int(mem_mib)
+        except ValueError:
+            pass
+
+    try:
+        return ResourceSampler(
+            scratch_dir,
+            tool=RESOURCE_REPORT_TOOL,
+            control_server=control_server,
+            ids=ids,
+            request=request or None,
+        )
+    except Exception:
+        logger.warning(
+            "run_and_report: ResourceSampler construction failed; "
+            "continuing without the ledger", exc_info=True,
+        )
+        return None
+
+
+def report_resource_summary(control_server: str, token: str, sampler) -> None:
+    """Best-effort POST the sampler's resource_summary to /jobs/resource-report/.
+
+    TASK-1846 — mirrors ``merge_and_report._report_resource_summary``: builds the
+    v1 summary, skips the POST when there is no ``AWS_BATCH_JOB_ID`` (a local run
+    has no job to record and the BE 400s an empty job_id), and NEVER raises — a
+    ledger failure must not mask the ANUGA run outcome. ``sampler`` may be ``None``
+    (batch_common absent) in which case this is a no-op.
+    """
+    if sampler is None:
+        return
+    try:
+        summary = sampler.summary()
+        if not summary.get("job_id"):
+            logger.info(
+                "run_and_report: no AWS_BATCH_JOB_ID — skipping resource-report POST",
+            )
+            return
+        from run_anuga._http import make_internal_session
+
+        url = f"{control_server.rstrip('/')}/api/v2/anuga/jobs/resource-report/"
+        session = make_internal_session(token)
+        try:
+            # The receiver reads request.data as a JSON object — POST json=, not
+            # form data=, so the X-Internal-Token session carries an application/json
+            # body (mirrors merge_and_report._post).
+            resp = session.post(url, json=summary, timeout=30)
+            if not getattr(resp, "ok", False):
+                logger.warning(
+                    "report_resource_summary: %s responded %s — %s",
+                    url, getattr(resp, "status_code", "?"),
+                    (getattr(resp, "text", "") or "")[:200],
+                )
+        finally:
+            session.close()
+    except Exception:
+        logger.warning(
+            "run_and_report: resource-report POST failed; suppressed", exc_info=True,
+        )
+
+
 def _read_scenario_config(package_dir: Path) -> dict:
     """Read ``scenario.json`` from a package directory.
 
@@ -337,10 +438,36 @@ def run_and_report(
             f"control_server={control_server!r})"
         )
 
+    # TASK-1846 (epic 1830 W4) — emit a Batch resource_summary at job end, mirroring
+    # terrain-merge. Rank-0 ONLY constructs the sampler: cgroup reads are
+    # container-scoped so one rank covers all MPI ranks (constructing N samplers
+    # would N-count the same cgroup peak). Determine rank-0 BEFORE run_sim — anuga
+    # finalizes MPI inside run_sim, after which Get_rank() is illegal; pre-sim all
+    # ranks are live so the check is sound. The sampler is None on a non-rank-0
+    # process and on any localhost / non-Batch run (batch_common not staged).
+    sampler = None
+    if _is_mpi_rank_zero():
+        sampler = _make_resource_sampler(
+            tempfile.gettempdir(),
+            control_server=control_server,
+            ids={
+                "run_id": run_id,
+                "project_id": project_id,
+                "scenario_id": scenario_id,
+            },
+        )
+
     try:
-        run_sim(str(package_dir), callback=callback)
+        if sampler is not None:
+            with sampler:
+                run_sim(str(package_dir), callback=callback)
+        else:
+            run_sim(str(package_dir), callback=callback)
     except Exception as exc:
         if _is_mpi_rank_zero():
+            # the sampler context already exited on the raise (its summary reflects
+            # the failure) — report both the ledger and the wedge-defence /error/.
+            report_resource_summary(control_server, token, sampler)
             try:
                 report_error(
                     control_server,
@@ -352,6 +479,9 @@ def run_and_report(
             except Exception:
                 logger.exception("run_and_report: /error/ POST failed; suppressed")
         raise
+
+    # Sim succeeded: emit the success ledger (rank-0 only; no-op when sampler None).
+    report_resource_summary(control_server, token, sampler)
 
     if not _is_mpi_rank_zero():
         return {"result_key": None, "process_result_status": None}

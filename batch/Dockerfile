@@ -53,6 +53,19 @@ ENV PYTHONUNBUFFERED=1
 COPY batch/entrypoint.sh /app/entrypoint.sh
 RUN chmod +x /app/entrypoint.sh
 
+# Staged Django-free gn_anuga.batch_common leaf (TASK-1846, epic 1830 W4).
+# deploy/scripts/rebuild-batch-image.sh --tool anuga OVERLAYS gn_anuga/ (a minimal
+# namespace shim + the batch_common/ leaf) into the run_anuga build context, the
+# same minimal way the terrain-compute image stages it. PYTHONPATH=/app (set
+# below) puts /app/gn_anuga on sys.path so run_anuga._handoff's guarded
+# `from gn_anuga.batch_common.resource_sampler import ResourceSampler` resolves
+# in-container and emits the resource_summary ledger. COPYed BEFORE the run_anuga
+# source so this layer stays cached when only run_anuga/*.py changes. On a build
+# context WITHOUT the overlay (e.g. a plain `docker build .`) this COPY no-ops
+# absent gn_anuga/ — but the unified rebuild script always stages it.
+ENV PYTHONPATH=/app
+COPY gn_anuga /app/gn_anuga
+
 # Source tree + local-package install. The heavy layers above stay cached
 # across source-only changes; only these two layers re-run.
 COPY . /app/run_anuga_src/
