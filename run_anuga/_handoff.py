@@ -256,7 +256,7 @@ def upload_cold_archive(
         s3.upload_file(str(local_path), bucket, key)
 
     # --- .sww (may be very large; boto3 multipart is automatic) ---
-    sww_pattern = str(output_dir / f"*.sww")
+    sww_pattern = str(output_dir / "*.sww")
     sww_matches = glob.glob(sww_pattern)
     if sww_matches:
         sww_path = Path(sww_matches[0])

@@ -1362,12 +1362,11 @@ def reprocess_from_archived_sww(
     util = anuga.utilities.plot_utils
 
     # Build a working directory.
-    _owned_tmp = output_dir is None
-    _tmpdir_obj = None
-    if _owned_tmp:
+    if output_dir is None:
         _tmpdir_obj = tempfile.TemporaryDirectory()
         output_dir = Path(_tmpdir_obj.name)
     else:
+        _tmpdir_obj = None
         output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1375,69 +1374,61 @@ def reprocess_from_archived_sww(
     sww_filename = sww_key.rsplit("/", 1)[-1]  # e.g. "601_384_1243.sww"
     local_sww = output_dir / sww_filename
 
-    try:
-        # Fetch the .sww from S3 cold archive.
-        s3 = boto3.client("s3")
-        logger.info(
-            "reprocess_from_archived_sww: fetching s3://%s/%s -> %s",
-            bucket, sww_key, local_sww,
-        )
-        s3.download_file(bucket, sww_key, str(local_sww))
+    # Fetch the .sww from S3 cold archive.
+    s3 = boto3.client("s3")
+    logger.info(
+        "reprocess_from_archived_sww: fetching s3://%s/%s -> %s",
+        bucket, sww_key, local_sww,
+    )
+    s3.download_file(bucket, sww_key, str(local_sww))
 
-        # Derive run_label from the .sww filename (strip .sww extension).
-        run_stem = sww_filename[:-4]  # e.g. "601_384_1243"
+    # Derive run_label from the .sww filename (strip .sww extension).
+    run_stem = sww_filename[:-4]  # e.g. "601_384_1243"
 
-        # Re-render ONE quantity at ONE time-step using Make_Geotif.
-        logger.info(
-            "reprocess_from_archived_sww: running Make_Geotif(quantity=%s, myTimeStep=max)",
-            quantity,
-        )
-        util.Make_Geotif(
-            swwFile=str(local_sww),
-            output_quantities=[quantity],
-            myTimeStep="max",
-            CellSize=cell_size,
-            lower_left=None,
-            upper_right=None,
-            EPSG_CODE=epsg_code,
-            proj4string=None,
-            velocity_extrapolation=True,
-            min_allowed_height=defaults.MIN_ALLOWED_HEIGHT_M,
-            output_dir=str(output_dir),
-            bounding_polygon=None,
-            internal_holes=None,
-            verbose=False,
-            k_nearest_neighbours=defaults.K_NEAREST_NEIGHBOURS,
-            creation_options=[],
-        )
+    # Re-render ONE quantity at ONE time-step using Make_Geotif.
+    logger.info(
+        "reprocess_from_archived_sww: running Make_Geotif(quantity=%s, myTimeStep=max)",
+        quantity,
+    )
+    util.Make_Geotif(
+        swwFile=str(local_sww),
+        output_quantities=[quantity],
+        myTimeStep="max",
+        CellSize=cell_size,
+        lower_left=None,
+        upper_right=None,
+        EPSG_CODE=epsg_code,
+        proj4string=None,
+        velocity_extrapolation=True,
+        min_allowed_height=defaults.MIN_ALLOWED_HEIGHT_M,
+        output_dir=str(output_dir),
+        bounding_polygon=None,
+        internal_holes=None,
+        verbose=False,
+        k_nearest_neighbours=defaults.K_NEAREST_NEIGHBOURS,
+        creation_options=[],
+    )
 
-        # Locate the produced raster.  Make_Geotif writes
-        # ``<stem>_<quantity>_max.tif`` into output_dir.
-        expected_name = f"{run_stem}_{quantity}_max.tif"
-        expected_path = output_dir / expected_name
-        if not expected_path.exists():
-            # Fallback: glob for any *_max.tif produced in output_dir.
-            candidates = list(output_dir.glob(f"*_{quantity}_max.tif"))
-            if candidates:
-                expected_path = candidates[0]
-            else:
-                raise FileNotFoundError(
-                    f"reprocess_from_archived_sww: Make_Geotif did not produce "
-                    f"'{expected_name}' (or any *_{quantity}_max.tif) in {output_dir}"
-                )
+    # Locate the produced raster.  Make_Geotif writes
+    # ``<stem>_<quantity>_max.tif`` into output_dir.
+    expected_name = f"{run_stem}_{quantity}_max.tif"
+    expected_path = output_dir / expected_name
+    if not expected_path.exists():
+        # Fallback: glob for any *_max.tif produced in output_dir.
+        candidates = list(output_dir.glob(f"*_{quantity}_max.tif"))
+        if candidates:
+            expected_path = candidates[0]
+        else:
+            raise FileNotFoundError(
+                f"reprocess_from_archived_sww: Make_Geotif did not produce "
+                f"'{expected_name}' (or any *_{quantity}_max.tif) in {output_dir}"
+            )
 
-        logger.info(
-            "reprocess_from_archived_sww: produced raster %s (%d bytes)",
-            expected_path, expected_path.stat().st_size,
-        )
-        return expected_path
-
-    finally:
-        # Only clean up if we own the tmp dir AND the caller didn't pass output_dir.
-        if _tmpdir_obj is not None:
-            # Keep for caller inspection; caller must clean up if needed.
-            # (TemporaryDirectory.__exit__ would delete it — don't call cleanup here.)
-            pass
+    logger.info(
+        "reprocess_from_archived_sww: produced raster %s (%d bytes)",
+        expected_path, expected_path.stat().st_size,
+    )
+    return expected_path
 
 
 def make_video(input_directory_1, result_type):
