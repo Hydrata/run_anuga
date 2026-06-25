@@ -54,6 +54,12 @@ install_mname_filter(logger)
 # cannot recur as long as both sides import it.
 RESULT_PACKAGE_KEY_FIELD = "result_package_key"
 
+# W2 (TASK-1920) — wire field for the per-run cold-archive S3 prefix.
+# Both the Python sender below and the Django receiver
+# (``gn_anuga.api_v2.HydrataAnugaRunsViewSet.process_result``) import this
+# constant so the sender/receiver field names cannot drift.
+COLD_ARCHIVE_PREFIX_FIELD = "cold_archive_prefix"
+
 # Discriminator stamped onto every resource_summary this tool emits (doc05 §6).
 RESOURCE_REPORT_TOOL = "anuga"
 
@@ -64,6 +70,29 @@ def make_result_key(project_id: int, scenario_id: int, run_id: int) -> str:
     Mirrors ``batch/entrypoint.sh`` line 34 (``${PROJECT_ID}_${SCENARIO_ID}_${RUN_ID}_results.zip``).
     """
     return f"{project_id}_{scenario_id}_{run_id}_results.zip"
+
+
+def make_cold_archive_prefix(
+    project_id: int, scenario_id: int, run_id: int
+) -> str:
+    """Return the canonical S3 key prefix for a run's cold archive.
+
+    W2 (TASK-1920) — the archive lives under the SAME result bucket as the slim
+    result zip (``RESULT_S3_BUCKET``) but under a dedicated ``cold-archive/``
+    root prefix so an S3 Lifecycle rule can target ONLY this prefix
+    (Standard -> Glacier Deep Archive after N days) without touching the app-read
+    slim result zips.
+
+    Prefix shape: ``cold-archive/{project}_{scenario}_{run}/``
+    Individual keys under the prefix:
+      * ``<run_label>.sww``              — raw ANUGA NetCDF time-series
+      * ``package.zip``                  — exact dispatched input bytes
+      * ``scenario.json``                — scenario config provenance
+      * ``<run_label>_depth_max.tif``    — max depth raster
+      * ``<run_label>_velocity_max.tif``
+      * ``<run_label>_depthIntegratedVelocity_max.tif``
+    """
+    return f"cold-archive/{project_id}_{scenario_id}_{run_id}/"
 
 
 # Directory names whose entire subtree is excluded from the result package
@@ -171,16 +200,104 @@ def upload_result_to_s3(
     s3.upload_file(str(zip_path), bucket, key)
 
 
+def upload_cold_archive(
+    package_dir: str | Path,
+    bucket: str,
+    prefix: str,
+    *,
+    project_id: int,
+    scenario_id: int,
+    run_id: int,
+) -> None:
+    """Stream the per-run cold-archive objects to ``s3://<bucket>/<prefix>*``.
+
+    W2 (TASK-1920) — durable cold archive (decision Option A).  Rank-0 only;
+    call ``_is_mpi_rank_zero()`` before invoking.
+
+    Uploads via ``s3.upload_file`` (boto3 TransferManager, multipart for large
+    files >8 MB).  Does NOT create a combined zip — the .sww can exceed 100 GB
+    and writing a 2nd copy on the disk-starved Batch box would replicate the
+    very problem TASK-1821 fixed.
+
+    Objects uploaded (6 total):
+    * ``<prefix><run_label>.sww``               — raw time-series (multipart)
+    * ``<prefix>package.zip``                   — exact dispatched input bytes
+    * ``<prefix>scenario.json``                 — scenario config provenance
+    * ``<prefix><run_label>_depth_max.tif``
+    * ``<prefix><run_label>_velocity_max.tif``
+    * ``<prefix><run_label>_depthIntegratedVelocity_max.tif``
+
+    The .sww and *_max.tif are searched for by glob pattern because the exact
+    filename includes a run-label that we reconstruct from the IDs (mirrors
+    ``make_result_key``).
+
+    The result bucket + prefix are DISTINCT from the slim result zip so a
+    Lifecycle rule can target ``cold-archive/`` only (see
+    ``make_cold_archive_prefix``).
+
+    Raises on any upload error — the caller (``run_and_report``) wraps this in
+    a best-effort try/except so a failed archive LOGS LOUDLY but does NOT fail
+    the run.
+    """
+    import glob
+
+    boto3 = import_optional("boto3")
+    s3 = boto3.client("s3")
+    package_dir = Path(package_dir).resolve()
+    run_label = f"{project_id}_{scenario_id}_{run_id}"
+    output_dir = package_dir / f"outputs_{run_label}"
+
+    def _upload(local_path: Path, object_name: str) -> None:
+        key = f"{prefix}{object_name}"
+        logger.info(
+            "upload_cold_archive: uploading %s -> s3://%s/%s",
+            local_path.name, bucket, key,
+        )
+        s3.upload_file(str(local_path), bucket, key)
+
+    # --- .sww (may be very large; boto3 multipart is automatic) ---
+    sww_pattern = str(output_dir / f"*.sww")
+    sww_matches = glob.glob(sww_pattern)
+    if sww_matches:
+        sww_path = Path(sww_matches[0])
+        _upload(sww_path, sww_path.name)
+    else:
+        logger.warning("upload_cold_archive: no .sww found in %s", output_dir)
+
+    # --- Small objects: package.zip + scenario.json ---
+    for filename in ("package.zip", "scenario.json"):
+        p = package_dir / filename
+        if p.exists():
+            _upload(p, filename)
+        else:
+            logger.warning("upload_cold_archive: %s not found in %s", filename, package_dir)
+
+    # --- 3 *_max.tif rasters ---
+    for quantity in ("depth", "velocity", "depthIntegratedVelocity"):
+        tif_name = f"run_{run_label}_{quantity}_max.tif"
+        tif_path = output_dir / tif_name
+        if tif_path.exists():
+            _upload(tif_path, tif_name)
+        else:
+            logger.warning(
+                "upload_cold_archive: %s not found (output_dir=%s)", tif_name, output_dir
+            )
+
+
 def report_result(
     control_server: str,
     run_id: int,
     token: str,
     result_key: str,
     *,
+    cold_archive_prefix: str | None = None,
     session: Any = None,
     timeout: int = 30,
 ) -> Any:
     """POST ``{result_package_key: result_key}`` to ``/api/v2/anuga/runs/<run_id>/process-result/``.
+
+    W2 (TASK-1920): also carries ``cold_archive_prefix`` when the cold archive
+    completed successfully so the BE can persist it on ``Run.cold_archive_prefix``.
 
     Returns the ``requests.Response`` so callers can inspect the status code.
     On non-2xx the helper logs (does not raise); callers MUST inspect the
@@ -192,11 +309,14 @@ def report_result(
     owns_session = session is None
     if owns_session:
         session = make_internal_session(token)
+    data: dict = {RESULT_PACKAGE_KEY_FIELD: result_key}
+    if cold_archive_prefix is not None:
+        data[COLD_ARCHIVE_PREFIX_FIELD] = cold_archive_prefix
     try:
         return post_to_control_server(
             url,
             method="POST",
-            data={RESULT_PACKAGE_KEY_FIELD: result_key},
+            data=data,
             session=session,
             timeout=timeout,
         )
@@ -498,10 +618,42 @@ def run_and_report(
     result_key = make_result_key(project_id, scenario_id, run_id)
     result_zip_path = package_dir / result_key
 
+    # W2 (TASK-1920) — best-effort cold archive BEFORE the slim-result handoff.
+    # A failed archive logs loudly but MUST NOT fail the run (the app result
+    # path is completely independent; report_result carries the prefix only when
+    # the archive succeeded).
+    cold_prefix = make_cold_archive_prefix(project_id, scenario_id, run_id)
+    completed_cold_prefix: str | None = None
+    try:
+        upload_cold_archive(
+            package_dir,
+            bucket,
+            cold_prefix,
+            project_id=project_id,
+            scenario_id=scenario_id,
+            run_id=run_id,
+        )
+        completed_cold_prefix = cold_prefix
+        logger.info(
+            "run_and_report: cold archive uploaded to s3://%s/%s", bucket, cold_prefix
+        )
+    except Exception:
+        logger.exception(
+            "run_and_report: cold archive FAILED (best-effort — run continues); "
+            "prefix=%s bucket=%s",
+            cold_prefix, bucket,
+        )
+
     try:
         zip_outputs(package_dir, result_zip_path)
         upload_result_to_s3(result_zip_path, bucket, result_key)
-        response = report_result(control_server, run_id, token, result_key)
+        response = report_result(
+            control_server,
+            run_id,
+            token,
+            result_key,
+            cold_archive_prefix=completed_cold_prefix,
+        )
     except Exception as exc:
         try:
             report_error(
