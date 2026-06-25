@@ -329,10 +329,34 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
         if yieldstep > defaults.MAX_YIELDSTEP_S:
             yieldstep = defaults.MAX_YIELDSTEP_S
         checkpoint_directory = input_data['checkpoint_directory']
+        # W2 (TASK-1919) — Disable checkpoint WRITING on the Batch/no-resume path.
+        # TASK-1048 confirmed there is no checkpoint-resume on AWS Batch (spot loss
+        # accepted); the pickles are pure scratch, filling the root volume linearly
+        # at checkpoint_step=1 (one full-domain pickle per rank per yieldstep).
+        # On Batch (AWS_BATCH_JOB_ID present) disable writing entirely.
+        # Explicit override env RUN_ANUGA_CHECKPOINTS={"on","off"} lets operators
+        # force either way and makes the behaviour unit-testable.
+        _ckpt_env = os.environ.get("RUN_ANUGA_CHECKPOINTS", "").strip().lower()
+        _on_batch = bool(os.environ.get("AWS_BATCH_JOB_ID"))
+        if _ckpt_env == "on":
+            _enable_checkpoints = True
+        elif _ckpt_env == "off":
+            _enable_checkpoints = False
+        else:
+            # Default: OFF on Batch, ON locally.
+            _enable_checkpoints = not _on_batch
+        if _enable_checkpoints:
+            logger.info("run_sim: checkpointing ENABLED (checkpoint_dir=%s)", checkpoint_directory)
+        else:
+            logger.info(
+                "run_sim: checkpointing DISABLED on %s path (RUN_ANUGA_CHECKPOINTS=%r)",
+                "Batch" if _on_batch else "forced-off",
+                _ckpt_env or "(default)",
+            )
         domain.set_checkpointing(
-            checkpoint=True,
+            checkpoint=_enable_checkpoints,
             checkpoint_dir=checkpoint_directory,
-            checkpoint_step=1
+            checkpoint_step=1,
         )
         barrier()
         # W6 (TASK-1044) — `simulation_start` is the absolute wall-clock anchor used
