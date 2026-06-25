@@ -1303,6 +1303,143 @@ def post_process_sww(package_dir, run_args=None, output_raster_resolution=None):
     logger.critical('Successfully generated depth, velocity, momentum outputs')
 
 
+def reprocess_from_archived_sww(
+    bucket: str,
+    sww_key: str,
+    *,
+    output_dir: "str | Path | None" = None,
+    quantity: str = "depth",
+    cell_size: float = 10.0,
+    epsg_code: int = 32754,
+) -> "Path":
+    """Fetch a .sww from the cold-archive S3 prefix and regenerate a max raster.
+
+    W2 (TASK-1921) — Reprocess-from-archive entrypoint / smoke.  TASK-1821
+    noted "no reprocess-from-sww code path exists"; this function is the seam
+    that a future flow-animation or re-render feature builds on.
+
+    Fetches the .sww from ``s3://<bucket>/<sww_key>`` into a temporary
+    directory, then runs the existing ``Make_Geotif`` reader (the same one
+    ``post_process_sww`` uses) for ONE quantity and ONE time-step ('max') and
+    returns the path to the produced raster.
+
+    Parameters
+    ----------
+    bucket
+        S3 bucket name (matches ``RESULT_S3_BUCKET``).
+    sww_key
+        Full S3 key of the .sww file, e.g.
+        ``cold-archive/601_384_1243/601_384_1243.sww``.
+    output_dir
+        Directory to write the produced raster(s) into.  When ``None`` a
+        temporary directory is created (caller is responsible for cleanup if
+        persistence is needed).
+    quantity
+        ANUGA output quantity to render (default ``"depth"``).
+    cell_size
+        Raster cell size in metres (default 10.0 — coarse, fast, smoke-only).
+    epsg_code
+        EPSG integer for the output raster CRS (default 32754 — Merewether
+        benchmark projection; override for other domains).
+
+    Returns
+    -------
+    Path
+        Path to the produced ``*_max.tif`` raster.  The file is non-empty and
+        readable by rasterio / GDAL.
+
+    Raises
+    ------
+    ImportError
+        If ``boto3`` or ``anuga`` are not installed (lazy via import_optional).
+    FileNotFoundError
+        If the produced raster is missing after ``Make_Geotif`` completes.
+    """
+    import tempfile
+
+    boto3 = import_optional("boto3")
+    anuga = import_optional("anuga")
+    util = anuga.utilities.plot_utils
+
+    # Build a working directory.
+    _owned_tmp = output_dir is None
+    _tmpdir_obj = None
+    if _owned_tmp:
+        _tmpdir_obj = tempfile.TemporaryDirectory()
+        output_dir = Path(_tmpdir_obj.name)
+    else:
+        output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Derive a local filename from the S3 key.
+    sww_filename = sww_key.rsplit("/", 1)[-1]  # e.g. "601_384_1243.sww"
+    local_sww = output_dir / sww_filename
+
+    try:
+        # Fetch the .sww from S3 cold archive.
+        s3 = boto3.client("s3")
+        logger.info(
+            "reprocess_from_archived_sww: fetching s3://%s/%s -> %s",
+            bucket, sww_key, local_sww,
+        )
+        s3.download_file(bucket, sww_key, str(local_sww))
+
+        # Derive run_label from the .sww filename (strip .sww extension).
+        run_stem = sww_filename[:-4]  # e.g. "601_384_1243"
+
+        # Re-render ONE quantity at ONE time-step using Make_Geotif.
+        logger.info(
+            "reprocess_from_archived_sww: running Make_Geotif(quantity=%s, myTimeStep=max)",
+            quantity,
+        )
+        util.Make_Geotif(
+            swwFile=str(local_sww),
+            output_quantities=[quantity],
+            myTimeStep="max",
+            CellSize=cell_size,
+            lower_left=None,
+            upper_right=None,
+            EPSG_CODE=epsg_code,
+            proj4string=None,
+            velocity_extrapolation=True,
+            min_allowed_height=defaults.MIN_ALLOWED_HEIGHT_M,
+            output_dir=str(output_dir),
+            bounding_polygon=None,
+            internal_holes=None,
+            verbose=False,
+            k_nearest_neighbours=defaults.K_NEAREST_NEIGHBOURS,
+            creation_options=[],
+        )
+
+        # Locate the produced raster.  Make_Geotif writes
+        # ``<stem>_<quantity>_max.tif`` into output_dir.
+        expected_name = f"{run_stem}_{quantity}_max.tif"
+        expected_path = output_dir / expected_name
+        if not expected_path.exists():
+            # Fallback: glob for any *_max.tif produced in output_dir.
+            candidates = list(output_dir.glob(f"*_{quantity}_max.tif"))
+            if candidates:
+                expected_path = candidates[0]
+            else:
+                raise FileNotFoundError(
+                    f"reprocess_from_archived_sww: Make_Geotif did not produce "
+                    f"'{expected_name}' (or any *_{quantity}_max.tif) in {output_dir}"
+                )
+
+        logger.info(
+            "reprocess_from_archived_sww: produced raster %s (%d bytes)",
+            expected_path, expected_path.stat().st_size,
+        )
+        return expected_path
+
+    finally:
+        # Only clean up if we own the tmp dir AND the caller didn't pass output_dir.
+        if _tmpdir_obj is not None:
+            # Keep for caller inspection; caller must clean up if needed.
+            # (TemporaryDirectory.__exit__ would delete it — don't call cleanup here.)
+            pass
+
+
 def make_video(input_directory_1, result_type):
     np = import_optional("numpy")
     rasterio = import_optional("rasterio")
