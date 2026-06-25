@@ -284,6 +284,13 @@ def _make_resource_sampler(scratch_dir, *, control_server, ids):
         except ValueError:
             pass
 
+    # Sub-phase attribution (TASK-1910): wire run_anuga's Django-free phase
+    # tracker into the sampler so each periodic RSS sample is tagged with the
+    # build phase run.py set, and the mesh-size features ride onto the summary.
+    # The sampler stays tool-agnostic — phase tagging is opt-in via injection,
+    # so terrain-merge / IDF (no provider) are unaffected.
+    from run_anuga import phase_tracker
+
     try:
         return ResourceSampler(
             scratch_dir,
@@ -291,6 +298,8 @@ def _make_resource_sampler(scratch_dir, *, control_server, ids):
             control_server=control_server,
             ids=ids,
             request=request or None,
+            phase_provider=phase_tracker.get_phase,
+            mesh_features_provider=phase_tracker.get_mesh_features,
         )
     except Exception:
         logger.warning(
