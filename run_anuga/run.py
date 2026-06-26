@@ -14,6 +14,7 @@ from run_anuga.run_utils import is_dir_check, setup_input_data, create_anuga_mes
     build_time_boundary_function, apply_inflows_to_domain, \
     assert_raster_has_no_nodata_inside_boundary, make_raised_elevation_pairs
 from run_anuga import defaults
+from run_anuga import phase_tracker
 from run_anuga.callbacks import NullCallback, HydrataCallback
 from run_anuga._logging import install_mname_filter
 
@@ -73,6 +74,10 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
     from anuga import distribute, finalize, barrier, Inlet_operator
     from anuga.utilities import quantity_setting_functions as qs
     from anuga.operators.rate_operators import Polygonal_rate_operator
+
+    # Clear any phase/mesh-feature state from a prior run on this process — a
+    # localhost celery-anuga worker is long-lived and reused (TASK-1910).
+    phase_tracker.reset()
 
     # Keep run_args for backward compat with update_web_interface in main() error handler.
     run_args = RunContext(package_dir, username, password)
@@ -145,29 +150,56 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
             logger.info("Building domain...")
             logger.info('No checkpoint file found. Starting new Simulation')
             callback.on_status('building mesh')
-            if not os.path.isfile(input_data['mesh_filepath']):
-                create_anuga_mesh(input_data)
-            domain = anuga.Domain(
-                mesh_filename=input_data['mesh_filepath'],
-                use_cache=False,
-                verbose=False,
-            )
+            # Sub-phase attribution (TASK-1910): tag the mesh-GENERATION window so
+            # the resource sampler attributes its peak RSS to 'mesh-gen' (run 1260
+            # / 8.16M tri OOM'd HERE). create_anuga_mesh returns the mesh; capture
+            # the triangle count as a corpus feature joining peak memory to size.
+            with phase_tracker.phase(phase_tracker.PHASE_MESH_GEN):
+                if not os.path.isfile(input_data['mesh_filepath']):
+                    _, anuga_mesh = create_anuga_mesh(input_data)
+                    try:
+                        phase_tracker.set_mesh_features(
+                            mesh_triangle_count=len(anuga_mesh.tri_mesh.triangles),
+                            mesh_node_count=len(anuga_mesh.tri_mesh.vertices),
+                        )
+                    except Exception:
+                        logger.warning("could not record mesh-size features", exc_info=True)
+                domain = anuga.Domain(
+                    mesh_filename=input_data['mesh_filepath'],
+                    use_cache=False,
+                    verbose=False,
+                )
+            # Fallback feature source for the pre-existing-mesh path (a checkpoint
+            # rebuild reuses the .msh, so create_anuga_mesh is skipped): read the
+            # element count straight off the built Domain's mesh.
+            try:
+                if not phase_tracker.get_mesh_features().get("mesh_triangle_count"):
+                    phase_tracker.set_mesh_features(
+                        mesh_triangle_count=int(domain.mesh.number_of_triangles),
+                    )
+            except Exception:
+                logger.debug("domain.mesh.number_of_triangles unavailable", exc_info=True)
             # PRE-FLIGHT (TASK-1138): surface nodata-under-mesh as a clear,
             # actionable error here rather than as an opaque exception deep
             # inside composite_quantity_setting_function. nan_treatment stays
             # 'exception' — we never silently fabricate bed elevation.
-            assert_raster_has_no_nodata_inside_boundary(
-                input_data['elevation_filename'],
-                input_data['boundary_polygon'],
-                quantity_name='elevation',
-            )
-            poly_fun_pairs = [['Extent', input_data['elevation_filename']]]
-            elevation_function = qs.composite_quantity_setting_function(
-                poly_fun_pairs,
-                domain,
-                nan_treatment='exception',
-            )
-            domain.set_quantity('elevation', elevation_function, verbose=False, alpha=0.99, location='centroids')
+            # Sub-phase attribution (TASK-1910): the elevation raster read window.
+            # assert_raster_has_no_nodata_inside_boundary + set_quantity both pull
+            # the full DEM into memory (spatialInputUtil.py full-DEM read — a named
+            # build-phase OOM consumer), so the sampler attributes its peak here.
+            with phase_tracker.phase(phase_tracker.PHASE_RASTER_READ):
+                assert_raster_has_no_nodata_inside_boundary(
+                    input_data['elevation_filename'],
+                    input_data['boundary_polygon'],
+                    quantity_name='elevation',
+                )
+                poly_fun_pairs = [['Extent', input_data['elevation_filename']]]
+                elevation_function = qs.composite_quantity_setting_function(
+                    poly_fun_pairs,
+                    domain,
+                    nan_treatment='exception',
+                )
+                domain.set_quantity('elevation', elevation_function, verbose=False, alpha=0.99, location='centroids')
 
             # TASK-1299: post-mesh Raised structure elevation correction.
             # Apply per-structure height additions AFTER the base DEM is seated.
@@ -213,17 +245,21 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
                  if len(pair) == 2 and pair[0] == 'Extent'),
                 None,
             )
-            if friction_raster_pair is not None:
-                assert_raster_has_no_nodata_inside_boundary(
-                    friction_raster_pair[1],
-                    input_data['boundary_polygon'],
-                    quantity_name='friction',
+            # Sub-phase attribution (TASK-1910): the friction raster read window
+            # (same full-raster pull as elevation). Disjoint from the elevation
+            # window above — the sampler max-accumulates both into 'raster-read'.
+            with phase_tracker.phase(phase_tracker.PHASE_RASTER_READ):
+                if friction_raster_pair is not None:
+                    assert_raster_has_no_nodata_inside_boundary(
+                        friction_raster_pair[1],
+                        input_data['boundary_polygon'],
+                        quantity_name='friction',
+                    )
+                friction_function = qs.composite_quantity_setting_function(
+                    frictions,
+                    domain
                 )
-            friction_function = qs.composite_quantity_setting_function(
-                frictions,
-                domain
-            )
-            domain.set_quantity('friction', friction_function, verbose=False)
+                domain.set_quantity('friction', friction_function, verbose=False)
             domain.set_quantity('stage', 0.0, verbose=False)
             domain.set_name(input_data['run_label'])
             domain.set_datadir(input_data['output_directory'])
@@ -234,7 +270,13 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
             domain = None
         if batch_number == 1:
             barrier()
-            domain = distribute(domain, verbose=True)
+            # Sub-phase attribution (TASK-1910): distribute() partitions the mesh
+            # on rank 0 then scatters sub-domains to the worker ranks — the named
+            # build-phase OOM consumer that killed run 1253 (4.35M tri). Tagged as
+            # 'distribute' (the partition step lives inside distribute() in
+            # anuga_core, which is out of scope to split finer here).
+            with phase_tracker.phase(phase_tracker.PHASE_DISTRIBUTE):
+                domain = distribute(domain, verbose=True)
 
             # Inflow.make_file() resolved each feature's `data` via
             # FeatureDataMixin (TASK-820). Per-feature shapes (None / list /
@@ -287,16 +329,44 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
         if yieldstep > defaults.MAX_YIELDSTEP_S:
             yieldstep = defaults.MAX_YIELDSTEP_S
         checkpoint_directory = input_data['checkpoint_directory']
+        # W2 (TASK-1919) — Disable checkpoint WRITING on the Batch/no-resume path.
+        # TASK-1048 confirmed there is no checkpoint-resume on AWS Batch (spot loss
+        # accepted); the pickles are pure scratch, filling the root volume linearly
+        # at checkpoint_step=1 (one full-domain pickle per rank per yieldstep).
+        # On Batch (AWS_BATCH_JOB_ID present) disable writing entirely.
+        # Explicit override env RUN_ANUGA_CHECKPOINTS={"on","off"} lets operators
+        # force either way and makes the behaviour unit-testable.
+        _ckpt_env = os.environ.get("RUN_ANUGA_CHECKPOINTS", "").strip().lower()
+        _on_batch = bool(os.environ.get("AWS_BATCH_JOB_ID"))
+        if _ckpt_env == "on":
+            _enable_checkpoints = True
+        elif _ckpt_env == "off":
+            _enable_checkpoints = False
+        else:
+            # Default: OFF on Batch, ON locally.
+            _enable_checkpoints = not _on_batch
+        if _enable_checkpoints:
+            logger.info("run_sim: checkpointing ENABLED (checkpoint_dir=%s)", checkpoint_directory)
+        else:
+            logger.info(
+                "run_sim: checkpointing DISABLED on %s path (RUN_ANUGA_CHECKPOINTS=%r)",
+                "Batch" if _on_batch else "forced-off",
+                _ckpt_env or "(default)",
+            )
         domain.set_checkpointing(
-            checkpoint=True,
+            checkpoint=_enable_checkpoints,
             checkpoint_dir=checkpoint_directory,
-            checkpoint_step=1
+            checkpoint_step=1,
         )
         barrier()
         # W6 (TASK-1044) — `simulation_start` is the absolute wall-clock anchor used
         # for ETA estimation; `start` is the per-tick reference reset every iteration.
         simulation_start = time.time()
         start = simulation_start
+        # Sub-phase attribution (TASK-1910): the timestepping solver loop. Set
+        # (not context-managed) because the loop is the last build phase before
+        # post-processing; the phase is cleared after the trailing barrier below.
+        phase_tracker.set_phase(phase_tracker.PHASE_EVOLVE)
         for t in domain.evolve(yieldstep=yieldstep, finaltime=duration, skip_initial_step=skip_initial_step):
             if anuga.myid == 0:
                 stop = time.time()
@@ -317,6 +387,9 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
                 memory_usage_logs.append(memory_usage)
                 logger.info(f'{percentage_done}% | {minutes}m {seconds}s | mem: {memory_percent}% | disk: {psutil.disk_usage("/").percent}% | {domain.get_datetime().isoformat()}')
                 start = time.time()
+        # Evolve done — clear the phase so post-processing (sww_merge / result
+        # publish) isn't attributed to 'evolve' (TASK-1910).
+        phase_tracker.set_phase(None)
         barrier()
         domain.sww_merge(verbose=True, delete_old=True)
         barrier()

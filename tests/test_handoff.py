@@ -28,11 +28,14 @@ from unittest import mock
 import pytest
 
 from run_anuga._handoff import (
+    COLD_ARCHIVE_PREFIX_FIELD,
     RESULT_PACKAGE_KEY_FIELD,
+    make_cold_archive_prefix,
     make_result_key,
     report_error,
     report_result,
     run_and_report,
+    upload_cold_archive,
     zip_outputs,
 )
 
@@ -278,18 +281,22 @@ class TestRunAndReportOrchestration:
         # `run_sim` is imported lazily inside run_and_report (`from run_anuga.run
         # import run_sim`) so patch the source module, not _handoff.
         with mock.patch("run_anuga.run.run_sim", mock_run_sim), \
+             mock.patch.object(_handoff, "upload_cold_archive") as mock_archive, \
              mock.patch.object(_handoff, "upload_result_to_s3") as mock_upload, \
              mock.patch.object(_handoff, "report_result", return_value=post_response) as mock_post, \
              mock.patch.object(_handoff, "report_error") as mock_err:
             result = run_and_report(package, result_bucket="bucket")
 
         mock_run_sim.assert_called_once()
+        mock_archive.assert_called_once()
         mock_upload.assert_called_once()
         upload_args = mock_upload.call_args[0]
         assert upload_args[1] == "bucket"
         assert upload_args[2] == "601_384_1243_results.zip"
+        # W2 (TASK-1920): report_result now carries cold_archive_prefix kwarg.
         mock_post.assert_called_once_with(
-            "https://hydrata.com/", 1243, "test-token", "601_384_1243_results.zip"
+            "https://hydrata.com/", 1243, "test-token", "601_384_1243_results.zip",
+            cold_archive_prefix="cold-archive/601_384_1243/",
         )
         # No /error/ POST on the happy path — a future regression that POSTed
         # /error/ on success would otherwise silently slip through.
@@ -324,3 +331,271 @@ class TestRunAndReportOrchestration:
                 run_and_report(package, result_bucket="bucket")
 
         mock_err.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# W2 (TASK-1920) — Cold archive tests
+# ---------------------------------------------------------------------------
+
+class TestMakeColdArchivePrefix:
+    def test_prefix_format(self):
+        """Prefix must be distinct from the result key and target cold-archive/."""
+        prefix = make_cold_archive_prefix(601, 384, 1243)
+        assert prefix == "cold-archive/601_384_1243/"
+        assert prefix.startswith("cold-archive/")
+        assert prefix.endswith("/")
+
+    def test_prefix_differs_from_result_key(self):
+        """Cold archive prefix must not collide with the slim result zip key."""
+        result_key = make_result_key(601, 384, 1243)
+        prefix = make_cold_archive_prefix(601, 384, 1243)
+        assert not prefix.startswith(result_key)
+        assert not result_key.startswith("cold-archive/")
+
+    def test_cold_archive_prefix_field_constant(self):
+        """Wire-field constant value must match what the BE receiver reads."""
+        assert COLD_ARCHIVE_PREFIX_FIELD == "cold_archive_prefix"
+
+
+class TestUploadColdArchive:
+    """upload_cold_archive() uploads the .sww directly (no combined zip) plus
+    package.zip, scenario.json, and 3 *_max.tif files via upload_file calls.
+    Mirrors the existing mock pattern in TestUploadResultToS3.
+    """
+
+    def _make_package(self, tmp_path: Path) -> Path:
+        """Create a minimal package directory mirroring a real ANUGA output."""
+        run_label = "601_384_1243"
+        output_dir = tmp_path / f"outputs_{run_label}"
+        output_dir.mkdir()
+        (output_dir / f"{run_label}.sww").write_bytes(b"fake sww bytes")
+        (output_dir / f"run_{run_label}_depth_max.tif").write_bytes(b"depth")
+        (output_dir / f"run_{run_label}_velocity_max.tif").write_bytes(b"velocity")
+        (output_dir / f"run_{run_label}_depthIntegratedVelocity_max.tif").write_bytes(b"div")
+        (tmp_path / "package.zip").write_bytes(b"input zip")
+        (tmp_path / "scenario.json").write_text("{}")
+        return tmp_path
+
+    def test_uploads_sww_directly_not_combined_zip(self, tmp_path: Path):
+        """The .sww is uploaded via upload_file directly — NO combined zip created."""
+        package = self._make_package(tmp_path)
+        from run_anuga import _handoff
+
+        with mock.patch.object(_handoff, "import_optional") as mock_import:
+            mock_s3 = mock.MagicMock()
+            mock_import.return_value.client.return_value = mock_s3
+            upload_cold_archive(
+                package,
+                "test-bucket",
+                "cold-archive/601_384_1243/",
+                project_id=601,
+                scenario_id=384,
+                run_id=1243,
+            )
+
+        # upload_file called (not put_object or create_multipart_upload directly)
+        assert mock_s3.upload_file.called, "upload_file must be called"
+        # No combined zip file was created (the pre-seeded package.zip is the only zip)
+        import glob
+        zip_files = [f for f in glob.glob(str(tmp_path / "*.zip"))
+                     if not f.endswith("package.zip")]
+        assert len(zip_files) == 0, (
+            f"Unexpected combined zip files created: {zip_files}"
+        )
+
+    def test_uploads_correct_number_of_objects(self, tmp_path: Path):
+        """upload_file called for .sww + package.zip + scenario.json + 3 *_max.tif = 6."""
+        package = self._make_package(tmp_path)
+        from run_anuga import _handoff
+
+        with mock.patch.object(_handoff, "import_optional") as mock_import:
+            mock_s3 = mock.MagicMock()
+            mock_import.return_value.client.return_value = mock_s3
+            upload_cold_archive(
+                package,
+                "test-bucket",
+                "cold-archive/601_384_1243/",
+                project_id=601,
+                scenario_id=384,
+                run_id=1243,
+            )
+
+        call_count = mock_s3.upload_file.call_count
+        assert call_count == 6, f"Expected 6 upload_file calls, got {call_count}"
+
+    def test_uploads_under_correct_prefix(self, tmp_path: Path):
+        """All S3 keys must be under the cold-archive prefix."""
+        package = self._make_package(tmp_path)
+        from run_anuga import _handoff
+
+        with mock.patch.object(_handoff, "import_optional") as mock_import:
+            mock_s3 = mock.MagicMock()
+            mock_import.return_value.client.return_value = mock_s3
+            upload_cold_archive(
+                package,
+                "test-bucket",
+                "cold-archive/601_384_1243/",
+                project_id=601,
+                scenario_id=384,
+                run_id=1243,
+            )
+
+        for call in mock_s3.upload_file.call_args_list:
+            _, bucket, key = call.args
+            assert bucket == "test-bucket"
+            assert key.startswith("cold-archive/601_384_1243/"), (
+                f"Key {key!r} not under cold-archive prefix"
+            )
+
+    def test_rank0_gate_in_run_and_report(self, tmp_path: Path, monkeypatch):
+        """upload_cold_archive is called from run_and_report ONLY on rank 0.
+
+        Non-rank-0 processes return early before the cold-archive step.
+        """
+        from run_anuga import _handoff
+
+        monkeypatch.setenv("HYDRATA_INTERNAL_COMPUTE_TOKEN", "test-token")
+        config = {
+            "id": 384, "project": 601, "run_id": 1243,
+            "control_server": "https://hydrata.com/",
+        }
+        (tmp_path / "scenario.json").write_text(json.dumps(config))
+
+        with mock.patch("run_anuga.run.run_sim"), \
+             mock.patch.object(_handoff, "_is_mpi_rank_zero", return_value=False), \
+             mock.patch.object(_handoff, "upload_cold_archive") as mock_archive, \
+             mock.patch.object(_handoff, "upload_result_to_s3"), \
+             mock.patch.object(_handoff, "report_result"):
+            result = run_and_report(tmp_path, result_bucket="bucket")
+
+        # Non-rank-0: returns early, cold archive NOT called.
+        mock_archive.assert_not_called()
+        assert result["result_key"] is None
+
+    def test_cold_archive_best_effort_does_not_fail_run(self, tmp_path: Path, monkeypatch):
+        """A cold archive failure is logged but must NOT raise out of run_and_report."""
+        from run_anuga import _handoff
+
+        monkeypatch.setenv("HYDRATA_INTERNAL_COMPUTE_TOKEN", "test-token")
+        config = {
+            "id": 384, "project": 601, "run_id": 1243,
+            "control_server": "https://hydrata.com/",
+        }
+        (tmp_path / "scenario.json").write_text(json.dumps(config))
+        outputs = tmp_path / "outputs_601_384_1243"
+        outputs.mkdir()
+        (outputs / "result_depth_max.tif").write_bytes(b"fake tif")
+
+        post_response = mock.MagicMock(status_code=202, text="")
+        with mock.patch("run_anuga.run.run_sim"), \
+             mock.patch.object(_handoff, "upload_cold_archive",
+                               side_effect=RuntimeError("S3 cold archive boom")), \
+             mock.patch.object(_handoff, "upload_result_to_s3"), \
+             mock.patch.object(_handoff, "report_result",
+                               return_value=post_response) as mock_post, \
+             mock.patch.object(_handoff, "report_error") as mock_err:
+            # Must NOT raise even though cold archive failed.
+            result = run_and_report(tmp_path, result_bucket="bucket")
+
+        # The run completed successfully despite the archive failure.
+        assert result["process_result_status"] == 202
+        # No /error/ call for the cold-archive failure (best-effort).
+        mock_err.assert_not_called()
+
+    def test_cold_archive_prefix_passed_to_report_result(self, tmp_path: Path, monkeypatch):
+        """When cold archive succeeds, report_result carries the prefix."""
+        from run_anuga import _handoff
+
+        monkeypatch.setenv("HYDRATA_INTERNAL_COMPUTE_TOKEN", "test-token")
+        config = {
+            "id": 384, "project": 601, "run_id": 1243,
+            "control_server": "https://hydrata.com/",
+        }
+        (tmp_path / "scenario.json").write_text(json.dumps(config))
+        outputs = tmp_path / "outputs_601_384_1243"
+        outputs.mkdir()
+        (outputs / "result_depth_max.tif").write_bytes(b"fake tif")
+
+        post_response = mock.MagicMock(status_code=202, text="")
+        with mock.patch("run_anuga.run.run_sim"), \
+             mock.patch.object(_handoff, "upload_cold_archive") as mock_archive, \
+             mock.patch.object(_handoff, "upload_result_to_s3"), \
+             mock.patch.object(_handoff, "report_result",
+                               return_value=post_response) as mock_post:
+            run_and_report(tmp_path, result_bucket="bucket")
+
+        # The cold_archive_prefix kwarg must be the expected prefix.
+        mock_archive.assert_called_once()
+        call_kwargs = mock_post.call_args.kwargs
+        assert call_kwargs.get("cold_archive_prefix") == "cold-archive/601_384_1243/"
+
+    def test_cold_archive_prefix_none_when_archive_fails(self, tmp_path: Path, monkeypatch):
+        """When cold archive fails, report_result carries cold_archive_prefix=None."""
+        from run_anuga import _handoff
+
+        monkeypatch.setenv("HYDRATA_INTERNAL_COMPUTE_TOKEN", "test-token")
+        config = {
+            "id": 384, "project": 601, "run_id": 1243,
+            "control_server": "https://hydrata.com/",
+        }
+        (tmp_path / "scenario.json").write_text(json.dumps(config))
+        outputs = tmp_path / "outputs_601_384_1243"
+        outputs.mkdir()
+        (outputs / "result_depth_max.tif").write_bytes(b"fake tif")
+
+        post_response = mock.MagicMock(status_code=202, text="")
+        with mock.patch("run_anuga.run.run_sim"), \
+             mock.patch.object(_handoff, "upload_cold_archive",
+                               side_effect=RuntimeError("boom")), \
+             mock.patch.object(_handoff, "upload_result_to_s3"), \
+             mock.patch.object(_handoff, "report_result",
+                               return_value=post_response) as mock_post:
+            run_and_report(tmp_path, result_bucket="bucket")
+
+        call_kwargs = mock_post.call_args.kwargs
+        assert call_kwargs.get("cold_archive_prefix") is None
+
+
+class TestReportResultColdArchivePrefix:
+    """report_result includes cold_archive_prefix in the POST body when provided."""
+
+    def test_posts_cold_archive_prefix_when_provided(self, monkeypatch):
+        monkeypatch.setenv("HYDRATA_INTERNAL_COMPUTE_TOKEN", "test-token")
+        session = mock.MagicMock()
+        session.headers = {}
+        response = mock.MagicMock(status_code=202, text="")
+        session.post.return_value = response
+
+        with mock.patch("run_anuga._http.import_optional") as mock_import:
+            mock_import.return_value.Session.return_value = session
+            report_result(
+                "https://hydrata.com/",
+                run_id=99,
+                token="test-token",
+                result_key="1_2_3_results.zip",
+                cold_archive_prefix="cold-archive/1_2_3/",
+            )
+
+        _, called_kwargs = session.post.call_args[0], session.post.call_args[1]
+        assert called_kwargs["data"][COLD_ARCHIVE_PREFIX_FIELD] == "cold-archive/1_2_3/"
+        assert called_kwargs["data"][RESULT_PACKAGE_KEY_FIELD] == "1_2_3_results.zip"
+
+    def test_omits_cold_archive_prefix_when_none(self, monkeypatch):
+        """report_result does NOT include cold_archive_prefix in the body when None."""
+        monkeypatch.setenv("HYDRATA_INTERNAL_COMPUTE_TOKEN", "test-token")
+        session = mock.MagicMock()
+        session.headers = {}
+        response = mock.MagicMock(status_code=202, text="")
+        session.post.return_value = response
+
+        with mock.patch("run_anuga._http.import_optional") as mock_import:
+            mock_import.return_value.Session.return_value = session
+            report_result(
+                "https://hydrata.com/",
+                run_id=99,
+                token="test-token",
+                result_key="1_2_3_results.zip",
+            )
+
+        _, called_kwargs = session.post.call_args[0], session.post.call_args[1]
+        assert COLD_ARCHIVE_PREFIX_FIELD not in called_kwargs["data"]
