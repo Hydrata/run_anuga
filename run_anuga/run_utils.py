@@ -651,6 +651,9 @@ def compute_mesh_qa(anuga_mesh):
             'aspect_ratio_max': 0.0,
             'duplicate_node_count': 0,
             'has_degenerate_triangles': False,
+            # W3 (TASK-1923) — area metrics
+            'min_triangle_area': 0.0,
+            'area_histogram': [],
         }
 
     # Gather vertex coordinates for each triangle corner
@@ -708,6 +711,34 @@ def compute_mesh_qa(anuga_mesh):
     unique_rows = numpy.unique(rounded, axis=0)
     duplicate_node_count = int(n_nodes - len(unique_rows))
 
+    # Triangle areas via 2-D cross product (exact for flat triangles).
+    # area = 0.5 * |e0 × e2| = 0.5 * |e0x*e2y - e0y*e2x|
+    cross = numpy.abs(e0[:, 0] * (-e2[:, 1]) - e0[:, 1] * (-e2[:, 0]))
+    areas = 0.5 * cross
+    min_triangle_area = float(numpy.min(areas))
+
+    # Log-spaced area histogram over 7+ decades (min_area – 10 M m²).
+    # Edges span from 10x below the observed minimum up to 10 M m² so ALL
+    # triangles fall within the first/last bin (no under- or overflow losses).
+    # We clamp to a floor of 1e-3 m² to avoid log10(0) on degenerate meshes.
+    _area_floor = max(float(min_triangle_area) * 0.1, 1e-3)
+    HIST_HI = 1.0e7    # upper bound (m²), > MAX_TRIANGLE_AREA 10 M m²
+    N_BINS = 22        # 22 edges → 21 log-spaced bins
+    log_edges = numpy.logspace(
+        numpy.log10(_area_floor), numpy.log10(HIST_HI), N_BINS
+    )
+    # Clamp areas into [log_edges[0], log_edges[-1]] so np.histogram counts all.
+    clamped = numpy.clip(areas, log_edges[0], log_edges[-1] * (1 - 1e-12))
+    counts, _ = numpy.histogram(clamped, bins=log_edges)
+    area_histogram = [
+        {
+            "bin_lo": round(float(log_edges[i]), 4),
+            "bin_hi": round(float(log_edges[i + 1]), 4),
+            "count": int(counts[i]),
+        }
+        for i in range(len(counts))
+    ]
+
     return {
         'triangle_count': n_triangles,
         'node_count': n_nodes,
@@ -717,7 +748,26 @@ def compute_mesh_qa(anuga_mesh):
         'aspect_ratio_max': round(aspect_ratio_max, 2),
         'duplicate_node_count': duplicate_node_count,
         'has_degenerate_triangles': has_degenerate,
+        # W3 (TASK-1923) — area metrics
+        'min_triangle_area': round(min_triangle_area, 4),
+        'area_histogram': area_histogram,
     }
+
+
+def extract_boundary_condition_types(domain) -> list:
+    """Return the SORTED unique set of boundary-condition type names in use.
+
+    ``domain.boundary`` is a dict mapping ``(edge_index, ...)`` segment keys
+    to type-name strings (e.g. ``"exterior"``, ``"Reflective"``, ``"Time"``).
+    Returns a sorted list so the value is stable for corpus grouping.
+
+    W3 (TASK-1923).
+    """
+    try:
+        bc_values = domain.boundary.values()
+        return sorted(set(str(v) for v in bc_values))
+    except Exception:
+        return []
 
 
 def correction_for_polar_quadrants(base, height):

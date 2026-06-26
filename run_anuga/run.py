@@ -12,7 +12,8 @@ from run_anuga._imports import import_optional
 from run_anuga.run_utils import is_dir_check, setup_input_data, create_anuga_mesh, \
     make_frictions, post_process_sww, setup_logger, RunContext, \
     build_time_boundary_function, apply_inflows_to_domain, \
-    assert_raster_has_no_nodata_inside_boundary, make_raised_elevation_pairs
+    assert_raster_has_no_nodata_inside_boundary, make_raised_elevation_pairs, \
+    compute_mesh_qa, extract_boundary_condition_types  # W3 (TASK-1923)
 from run_anuga import defaults
 from run_anuga import phase_tracker
 from run_anuga.callbacks import NullCallback, HydrataCallback
@@ -158,9 +159,18 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
                 if not os.path.isfile(input_data['mesh_filepath']):
                     _, anuga_mesh = create_anuga_mesh(input_data)
                     try:
+                        # W3 (TASK-1923): route compute_mesh_qa shape + area metrics
+                        # into the features bag so the corpus joins peak memory to
+                        # mesh quality. compute_mesh_qa is numpy-only, no ANUGA import.
+                        qa = compute_mesh_qa(anuga_mesh)
                         phase_tracker.set_mesh_features(
-                            mesh_triangle_count=len(anuga_mesh.tri_mesh.triangles),
-                            mesh_node_count=len(anuga_mesh.tri_mesh.vertices),
+                            mesh_triangle_count=qa['triangle_count'],
+                            mesh_node_count=qa['node_count'],
+                            min_triangle_area=qa['min_triangle_area'],
+                            area_histogram=qa['area_histogram'],
+                            min_angle_deg=qa['min_angle_deg'],
+                            sliver_count=qa['sliver_count'],
+                            aspect_ratio_max=qa['aspect_ratio_max'],
                         )
                     except Exception:
                         logger.warning("could not record mesh-size features", exc_info=True)
@@ -320,6 +330,20 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
         for tag in domain.boundary.values():
             boundaries[tag] = default_boundary_maps[tag]
         domain.set_boundary(boundaries)
+
+        # W3 (TASK-1923): record BC types + scenario denorms AFTER set_boundary
+        # so domain.boundary reflects the actual tags used for this run.
+        try:
+            bc_types = extract_boundary_condition_types(domain)
+            sc = input_data.get('scenario_config') or {}
+            phase_tracker.set_mesh_features(
+                boundary_condition_types=bc_types,
+                resolution=sc.get('resolution'),
+                duration=duration,
+            )
+        except Exception:
+            logger.warning("could not record BC/scenario features", exc_info=True)
+
         max_yieldsteps = defaults.MAX_YIELDSTEPS
         temporal_resolution_seconds = defaults.MIN_YIELDSTEP_S
         base_temporal_resolution_seconds = math.floor(duration/max_yieldsteps)
