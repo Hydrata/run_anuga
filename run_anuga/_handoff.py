@@ -272,6 +272,26 @@ def upload_cold_archive(
         else:
             logger.warning("upload_cold_archive: %s not found in %s", filename, package_dir)
 
+    # --- W3 (TASK-1925): provenance.json — code_shas block for reproducibility ---
+    # Written from the CODE_SHAS_JSON env var injected by _dispatch_batch at
+    # submit time; absent on a localhost run (env var unset → no file written).
+    _code_shas_raw = os.environ.get("CODE_SHAS_JSON", "")
+    if _code_shas_raw:
+        try:
+            import tempfile as _tf
+            _prov_content = _code_shas_raw.encode()
+            with _tf.NamedTemporaryFile(
+                suffix=".json", delete=False, mode='wb'
+            ) as _pf:
+                _pf.write(_prov_content)
+                _pf_name = _pf.name
+            s3.upload_file(_pf_name, bucket, f"{prefix}provenance.json")
+            import os as _os
+            _os.unlink(_pf_name)
+            logger.info("upload_cold_archive: provenance.json uploaded")
+        except Exception:
+            logger.warning("upload_cold_archive: provenance.json upload failed", exc_info=True)
+
     # --- 3 *_max.tif rasters ---
     for quantity in ("depth", "velocity", "depthIntegratedVelocity"):
         tif_name = f"run_{run_label}_{quantity}_max.tif"
