@@ -344,6 +344,15 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
         except Exception:
             logger.warning("could not record BC/scenario features", exc_info=True)
 
+        # W3 (TASK-1924): emit an early PARTIAL resource_summary now that all
+        # mesh features are stamped but before the long evolve loop begins.
+        # An evolve crash (OOM mid-run) will still leave a ledger row with mesh
+        # features. The final run-end report_resource_summary supersedes this.
+        try:
+            callback.on_mesh_features_ready()
+        except Exception:
+            logger.warning("on_mesh_features_ready failed; suppressed", exc_info=True)
+
         max_yieldsteps = defaults.MAX_YIELDSTEPS
         temporal_resolution_seconds = defaults.MIN_YIELDSTEP_S
         base_temporal_resolution_seconds = math.floor(duration/max_yieldsteps)

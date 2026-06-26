@@ -470,6 +470,59 @@ def report_resource_summary(control_server: str, token: str, sampler) -> None:
         )
 
 
+def emit_early_resource_partial(sampler, *, control_server: str, token: str) -> None:
+    """Best-effort POST an early PARTIAL resource_summary after mesh-gen (TASK-1924).
+
+    Called right after mesh features (area/shape/BC types) are stamped into the
+    phase_tracker but BEFORE the evolve loop begins, so an evolve crash still
+    leaves a ledger row with mesh features.
+
+    The sampler's current ``summary()`` is taken as a base and the
+    ``outcome.partial`` flag is forced ``True`` — the run has not finished and
+    peak-memory/wall-time are unknown at this point.  A subsequent clean run-end
+    ``report_resource_summary`` will SUPERSEDE this partial (same ``job_id``,
+    richer row wins via ``record_resource_summary``'s idempotent merge logic).
+
+    Skips silently when:
+    * ``sampler`` is ``None`` (localhost / non-Batch image).
+    * No ``AWS_BATCH_JOB_ID`` is set (empty job_id → BE would 400).
+    * ``gn_anuga.batch_common.emit`` is not staged.
+
+    NEVER raises — a ledger failure must not interrupt the run.
+    """
+    if sampler is None:
+        return
+    try:
+        try:
+            from gn_anuga.batch_common.emit import emit_resource_summary
+        except ImportError:
+            return
+
+        summary = dict(sampler.summary())
+        # Force partial=True regardless of the sampler's current completion state.
+        outcome = dict(summary.get("outcome") or {})
+        outcome["partial"] = True
+        summary["outcome"] = outcome
+
+        # Skip if no job_id — a localhost run has no Batch record to write.
+        if not summary.get("job_id"):
+            return
+
+        from run_anuga._http import make_internal_session
+
+        url = f"{control_server.rstrip('/')}/api/v2/anuga/jobs/resource-report/"
+        session = make_internal_session(token)
+        try:
+            emit_resource_summary(summary, session=session, resource_report_url=url)
+        finally:
+            session.close()
+    except Exception:
+        logger.warning(
+            "emit_early_resource_partial: suppressed failure (best-effort ledger)",
+            exc_info=True,
+        )
+
+
 def _read_scenario_config(package_dir: Path) -> dict:
     """Read ``scenario.json`` from a package directory.
 
@@ -586,12 +639,54 @@ def run_and_report(
             },
         )
 
+    # W3 (TASK-1924): wrap the caller's callback so on_mesh_features_ready()
+    # fires the early partial emit.  The wrapper is transparent to all other
+    # callback methods — it just adds the pre-evolve ledger write.
+    class _EarlyPartialCallback:
+        """Thin callback wrapper that emits an early partial on mesh_features_ready."""
+
+        def __init__(self, inner, sampler_ref, cs, tok):
+            self._inner = inner
+            self._sampler = sampler_ref
+            self._control_server = cs
+            self._token = tok
+
+        def on_status(self, status, **kwargs):
+            return self._inner.on_status(status, **kwargs) if self._inner else None
+
+        def on_metric(self, key, value):
+            return self._inner.on_metric(key, value) if self._inner else None
+
+        def on_file(self, key, filepath):
+            return self._inner.on_file(key, filepath) if self._inner else None
+
+        def on_progress(self, pct, eta_seconds=None):
+            return self._inner.on_progress(pct, eta_seconds) if self._inner else None
+
+        def on_mesh_features_ready(self):
+            if self._inner:
+                try:
+                    self._inner.on_mesh_features_ready()
+                except Exception:
+                    pass
+            if self._sampler is not None:
+                emit_early_resource_partial(
+                    self._sampler,
+                    control_server=self._control_server,
+                    token=self._token,
+                )
+
+        def close(self):
+            return self._inner.close() if self._inner else None
+
+    wrapped_callback = _EarlyPartialCallback(callback, sampler, control_server, token)
+
     try:
         # A None sampler (non-rank-0 / localhost / non-Batch) degrades to
         # nullcontext so the run_sim call lives once.
         import contextlib
         with (sampler if sampler is not None else contextlib.nullcontext()):
-            run_sim(str(package_dir), callback=callback)
+            run_sim(str(package_dir), callback=wrapped_callback)
     except Exception as exc:
         if _is_mpi_rank_zero():
             # the sampler context already exited on the raise (its summary reflects

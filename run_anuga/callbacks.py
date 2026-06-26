@@ -49,6 +49,14 @@ class SimulationCallback(Protocol):
         """
         ...
 
+    def on_mesh_features_ready(self) -> None:
+        """Called after mesh-gen + feature stamping, before the evolve loop (TASK-1924).
+
+        Used to emit an early PARTIAL resource_summary so an evolve crash still
+        leaves a ledger row with mesh features. Default is a no-op.
+        """
+        ...
+
 
 class NullCallback:
     """Callback that silently discards all events.  Default for standalone use."""
@@ -63,6 +71,9 @@ class NullCallback:
         pass
 
     def on_progress(self, pct: float, eta_seconds: int | None = None) -> None:
+        pass
+
+    def on_mesh_features_ready(self) -> None:
         pass
 
     def close(self) -> None:
@@ -87,6 +98,9 @@ class LoggingCallback:
 
     def on_progress(self, pct: float, eta_seconds: int | None = None) -> None:
         self._logger.info('progress: %.1f%% eta=%ss', pct, eta_seconds)
+
+    def on_mesh_features_ready(self) -> None:
+        self._logger.info('mesh features ready (pre-evolve)')
 
     def close(self) -> None:
         """No-op so ``run_sim`` can always call ``callback.close()`` in ``finally``."""
@@ -259,6 +273,13 @@ class HydrataCallback:
             })
         except Exception:
             logger.exception('on_progress POST failed')
+
+    def on_mesh_features_ready(self) -> None:
+        """No-op on HydrataCallback — the early partial emit is wired by run_and_report.
+
+        The sampler is not accessible here; ``run_and_report`` wraps the callback
+        with an ``_EarlyPartialCallback`` that has the sampler reference (TASK-1924).
+        """
 
     @classmethod
     def from_config(
