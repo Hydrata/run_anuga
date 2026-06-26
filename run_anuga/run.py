@@ -337,10 +337,9 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
         # (injected by _dispatch_batch when run.experiment_tag is set). Absent for
         # ad-hoc runs; the corpus export will see None for those rows.
         try:
-            import os as _os
             bc_types = extract_boundary_condition_types(domain)
             sc = input_data.get('scenario_config') or {}
-            _exp_tag = _os.environ.get('ANUGA_EXPERIMENT_TAG') or None
+            _exp_tag = os.environ.get('ANUGA_EXPERIMENT_TAG') or None
             phase_tracker.set_mesh_features(
                 boundary_condition_types=bc_types,
                 resolution=sc.get('resolution'),
