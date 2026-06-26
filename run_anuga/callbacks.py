@@ -153,6 +153,14 @@ class HydrataCallback:
 
     _TOKEN_ENV = 'HYDRATA_INTERNAL_COMPUTE_TOKEN'
 
+    # W3 (TASK-1926) — heartbeat interval: POST a log line every N seconds during
+    # on_progress calls even when no metric/status change occurs. A 21h run with
+    # no status changes would otherwise leave no recent DB log before an OOM kill.
+    # Default = 15 minutes; overridable via RUN_ANUGA_HEARTBEAT_INTERVAL_S env.
+    HEARTBEAT_INTERVAL_S: float = float(
+        os.environ.get('RUN_ANUGA_HEARTBEAT_INTERVAL_S', '900')  # 15 min
+    )
+
     def __init__(
         self,
         control_server: str,
@@ -173,6 +181,8 @@ class HydrataCallback:
         self.scenario = scenario
         self.run_id = run_id
         self.session = make_internal_session(token)
+        # W3 (TASK-1926): track last heartbeat time for periodic log-flush.
+        self._last_heartbeat_t: float = time.time()
 
     @property
     def _log_url(self) -> str:
@@ -265,6 +275,11 @@ class HydrataCallback:
 
         Pass ``eta_seconds=None`` when ETA is unknown (e.g. pct==0); the V2
         endpoint accepts null per ``api_v2.py:1110-1116``.
+
+        W3 (TASK-1926): also emits a periodic HEARTBEAT log-flush every
+        ``HEARTBEAT_INTERVAL_S`` seconds so a long run (e.g. 21h) that dies
+        near completion still leaves a recent partial log in ``Run.log`` — today
+        the log only flushes on explicit status/metric callbacks.
         """
         try:
             self._post(self._progress_url, {
@@ -273,6 +288,22 @@ class HydrataCallback:
             })
         except Exception:
             logger.exception('on_progress POST failed')
+
+        # W3 (TASK-1926): periodic heartbeat
+        now = time.time()
+        if now - self._last_heartbeat_t >= self.HEARTBEAT_INTERVAL_S:
+            try:
+                self._post(self._log_url, {
+                    'message': (
+                        f"heartbeat: {pct:.1f}% complete"
+                        + (f", eta={eta_seconds}s" if eta_seconds is not None else '')
+                    ),
+                    'levelname': 'DEBUG',
+                    'created': now,
+                })
+                self._last_heartbeat_t = now
+            except Exception:
+                logger.debug('on_progress heartbeat POST failed', exc_info=True)
 
     def on_mesh_features_ready(self) -> None:
         """No-op on HydrataCallback — the early partial emit is wired by run_and_report.
