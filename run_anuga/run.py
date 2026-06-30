@@ -331,6 +331,32 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
             boundaries[tag] = default_boundary_maps[tag]
         domain.set_boundary(boundaries)
 
+        # TASK-1954 (epic 1952): GPU-mode flag — read multiprocessor_mode from
+        # scenario.json (default 1 = OpenMP, preserves today's behaviour exactly).
+        # Called AFTER set_boundary (ordering constraint: boundaries must be set
+        # before the solver mode is configured) and BEFORE evolve.
+        # Mode 2 = GPU offload via NVIDIA HPC SDK (nvc -mp=gpu); mode 1 = OpenMP.
+        # ScenarioConfig allows extra fields (model_config extra=allow) so
+        # multiprocessor_mode passes through unvalidated when absent.
+        _multiprocessor_mode = 1
+        try:
+            _multiprocessor_mode = int(
+                input_data['scenario_config'].get('multiprocessor_mode', 1) or 1
+            )
+        except (TypeError, ValueError):
+            logger.warning(
+                "run_sim: invalid multiprocessor_mode in scenario_config; defaulting to 1"
+            )
+            _multiprocessor_mode = 1
+        try:
+            domain.set_multiprocessor_mode(_multiprocessor_mode)
+            logger.info("run_sim: multiprocessor_mode=%s", _multiprocessor_mode)
+        except Exception:
+            logger.warning(
+                "run_sim: set_multiprocessor_mode(%s) failed; continuing",
+                _multiprocessor_mode, exc_info=True,
+            )
+
         # W3 (TASK-1923): record BC types + scenario denorms AFTER set_boundary
         # so domain.boundary reflects the actual tags used for this run.
         # W3 (TASK-1927): also stamp experiment_tag from ANUGA_EXPERIMENT_TAG env
@@ -435,7 +461,12 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
             max_memory_usage = int(round(max(memory_usage_logs)))
             callback.on_metric('memory_used', max_memory_usage)
             logger.info("Processing results...")
-            post_process_sww(package_dir, run_args=run_args)
+            # TASK-1954: tag post_process_sww as the 'cog-export' phase so
+            # observed.phase_durations_s captures the publish taxonomy
+            # (build = mesh-gen + raster-read + distribute, solve = evolve,
+            # publish = cog-export + archive).
+            with phase_tracker.phase(phase_tracker.PHASE_COG_EXPORT):
+                post_process_sww(package_dir, run_args=run_args)
     except Exception:
         callback.on_status('error')
         logger.error(f"{traceback.format_exc()}")

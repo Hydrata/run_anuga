@@ -502,6 +502,7 @@ def _make_resource_sampler(scratch_dir, *, control_server, ids):
             ids=ids,
             request=request or None,
             phase_provider=phase_tracker.get_phase,
+            phase_durations_provider=phase_tracker.get_phase_durations,
             mesh_features_provider=phase_tracker.get_mesh_features,
         )
     except Exception:
@@ -810,10 +811,14 @@ def run_and_report(
                 logger.exception("run_and_report: /error/ POST failed; suppressed")
         raise
 
-    # Sim succeeded: emit the success ledger (rank-0 only; no-op when sampler None).
-    report_resource_summary(control_server, token, sampler)
+    # Sim succeeded — rank-0 post-sim handoff: archive + zip + upload.
+    # TASK-1954: wrap with PHASE_ARCHIVE so observed.phase_durations_s captures
+    # the full publish taxonomy (cog-export tagged in run.py, archive here).
+    # report_resource_summary is called AFTER the archive so that the lazy
+    # phase_durations_provider snapshot includes these durations.
 
     if not _is_mpi_rank_zero():
+        report_resource_summary(control_server, token, sampler)
         return {"result_key": None, "process_result_status": None}
 
     result_key = make_result_key(project_id, scenario_id, run_id)
@@ -825,29 +830,58 @@ def run_and_report(
     # the archive succeeded).
     cold_prefix = make_cold_archive_prefix(project_id, scenario_id, run_id)
     completed_cold_prefix: str | None = None
+
+    # PHASE_ARCHIVE timing seam (TASK-1954): tag the archive + zip/upload window
+    # so phase_tracker accumulates their durations into 'archive'.
+    from run_anuga import phase_tracker as _pt
+    _pt.set_phase(_pt.PHASE_ARCHIVE)
     try:
-        upload_cold_archive(
-            package_dir,
-            bucket,
-            cold_prefix,
-            project_id=project_id,
-            scenario_id=scenario_id,
-            run_id=run_id,
-        )
-        completed_cold_prefix = cold_prefix
-        logger.info(
-            "run_and_report: cold archive uploaded to s3://%s/%s", bucket, cold_prefix
-        )
-    except Exception:
-        logger.exception(
-            "run_and_report: cold archive FAILED (best-effort — run continues); "
-            "prefix=%s bucket=%s",
-            cold_prefix, bucket,
-        )
+        try:
+            upload_cold_archive(
+                package_dir,
+                bucket,
+                cold_prefix,
+                project_id=project_id,
+                scenario_id=scenario_id,
+                run_id=run_id,
+            )
+            completed_cold_prefix = cold_prefix
+            logger.info(
+                "run_and_report: cold archive uploaded to s3://%s/%s", bucket, cold_prefix
+            )
+        except Exception:
+            logger.exception(
+                "run_and_report: cold archive FAILED (best-effort — run continues); "
+                "prefix=%s bucket=%s",
+                cold_prefix, bucket,
+            )
+
+        try:
+            zip_outputs(package_dir, result_zip_path)
+            upload_result_to_s3(result_zip_path, bucket, result_key)
+        except Exception as exc:
+            _pt.set_phase(None)
+            report_resource_summary(control_server, token, sampler)
+            try:
+                report_error(
+                    control_server,
+                    run_id,
+                    token,
+                    message=f"run_and_report handoff failed: {exc}",
+                    source="run_and_report",
+                )
+            except Exception:
+                logger.exception("run_and_report: /error/ POST failed; suppressed")
+            raise
+    finally:
+        # Always end the archive phase timing (idempotent if already cleared).
+        _pt.set_phase(None)
+
+    # All archive phases done. Emit the complete resource summary (includes
+    # cog-export + archive durations via lazy phase_durations_provider).
+    report_resource_summary(control_server, token, sampler)
 
     try:
-        zip_outputs(package_dir, result_zip_path)
-        upload_result_to_s3(result_zip_path, bucket, result_key)
         response = report_result(
             control_server,
             run_id,
