@@ -64,6 +64,53 @@ COLD_ARCHIVE_PREFIX_FIELD = "cold_archive_prefix"
 RESOURCE_REPORT_TOOL = "anuga"
 
 
+def _make_s3_client():
+    """Return a boto3 S3 client hardened against IncompleteBody/UploadPart failures.
+
+    TASK-2033 (epic 1952): prod run-1266 FAILED with ``S3UploadFailedError`` —
+    ``IncompleteBody`` on ``UploadPart`` for the slim results zip.  Primary cause:
+    botocore's default ``request_checksum_calculation='when_supported'`` emits an
+    aws-chunked multipart ``UploadPart`` whose trailer can misframe the
+    ``Content-Length`` header on certain payload sizes, producing ``IncompleteBody``
+    in the S3 multipart completion step.
+
+    Setting ``request_checksum_calculation='when_required'`` disables the
+    flexible-checksum aws-chunked trailer so ``Content-Length`` is always honoured
+    for every part.
+
+    NUANCE: run-1266's 944 MB cold-archive ``.sww`` succeeded via the same
+    ``upload_file`` multipart path that failed for the slim results zip — the
+    failure is payload-size-sensitive, so BOTH ``upload_result_to_s3`` and
+    ``upload_cold_archive`` route through this factory.  A regression test asserts
+    both functions call it, so a future bare ``boto3.client("s3")`` is caught
+    immediately.
+
+    ``boto3`` is pulled lazily via ``import_optional`` so this module remains
+    importable on pure-disk OSS installs that did not pull the ``[platform]`` extra.
+    Credentials come from the standard boto3 chain (env vars, instance profile,
+    ``~/.aws/credentials``); the factory deliberately does NOT accept explicit keys.
+    """
+    boto3 = import_optional("boto3")
+    try:
+        # botocore.config.Config accepts request_checksum_calculation as a kwarg
+        # (botocore >= 1.34, confirmed on fleet version 1.39.11).  The bare import
+        # (not via import_optional) is guarded so the module stays importable even
+        # when botocore is absent from the test / OSS environment.
+        from botocore.config import Config as _BotocoreConfig
+
+        config = _BotocoreConfig(request_checksum_calculation="when_required")
+    except (ImportError, TypeError):
+        # Older botocore (< ~1.34) does not accept request_checksum_calculation as
+        # a named kwarg (TypeError on unexpected keyword) or botocore is absent
+        # (ImportError).  Fall back to the botocore env-var config chain so at
+        # least processes started after this setdefault pick up the safe default.
+        import os as _os
+
+        _os.environ.setdefault("AWS_REQUEST_CHECKSUM_CALCULATION", "when_required")
+        config = None
+    return boto3.client("s3", config=config) if config is not None else boto3.client("s3")
+
+
 def make_result_key(project_id: int, scenario_id: int, run_id: int) -> str:
     """Return the canonical S3 key for a run's result zip.
 
@@ -185,19 +232,27 @@ def upload_result_to_s3(
     bucket: str,
     key: str,
 ) -> None:
-    """Upload ``zip_path`` to ``s3://<bucket>/<key>`` via boto3.
+    """Upload ``zip_path`` to ``s3://<bucket>/<key>`` via the hardened S3 client.
 
-    ``boto3`` is pulled lazily so this module remains importable on pure-disk
-    OSS installs that did not pull the ``[platform]`` extra.
+    Uses ``_make_s3_client()`` (``request_checksum_calculation=when_required``) and
+    an explicit ``TransferConfig`` so multipart settings are never silently defaulted.
 
-    Credentials come from the standard boto3 chain (env vars, instance
-    profile, ``~/.aws/credentials``); the function deliberately does NOT
-    accept explicit keys — Batch uses the task role and localhost uses the
-    site IAM user (see ``rules/credentials.md``).
+    See ``_make_s3_client`` for the TASK-2033 IncompleteBody/UploadPart rationale.
+    Credentials come from the standard boto3 chain (env vars, instance profile,
+    ``~/.aws/credentials``); the function deliberately does NOT accept explicit
+    keys — Batch uses the task role and localhost uses the site IAM user (see
+    ``rules/credentials.md``).
     """
-    boto3 = import_optional("boto3")
-    s3 = boto3.client("s3")
-    s3.upload_file(str(zip_path), bucket, key)
+    s3 = _make_s3_client()
+    s3_transfer = import_optional("boto3.s3.transfer")
+    # Explicit TransferConfig: multipart_threshold and multipart_chunksize match
+    # the boto3 defaults (8 MB) so behaviour is unchanged, but the settings are
+    # now auditable here rather than hidden inside boto3 internals.
+    transfer_config = s3_transfer.TransferConfig(
+        multipart_threshold=8 * 1024 * 1024,
+        multipart_chunksize=8 * 1024 * 1024,
+    )
+    s3.upload_file(str(zip_path), bucket, key, Config=transfer_config)
 
 
 def upload_cold_archive(
@@ -241,8 +296,16 @@ def upload_cold_archive(
     """
     import glob
 
-    boto3 = import_optional("boto3")
-    s3 = boto3.client("s3")
+    # TASK-2033: use the hardened factory (request_checksum_calculation=when_required)
+    # so the cold-archive .sww multipart path shares the same IncompleteBody protection
+    # as the slim results zip.  See _make_s3_client for rationale.
+    s3 = _make_s3_client()
+    s3_transfer = import_optional("boto3.s3.transfer")
+    # Explicit TransferConfig mirrors boto3 defaults so multipart settings are auditable.
+    _transfer_cfg = s3_transfer.TransferConfig(
+        multipart_threshold=8 * 1024 * 1024,
+        multipart_chunksize=8 * 1024 * 1024,
+    )
     package_dir = Path(package_dir).resolve()
     run_label = f"{project_id}_{scenario_id}_{run_id}"
     output_dir = package_dir / f"outputs_{run_label}"
@@ -253,7 +316,7 @@ def upload_cold_archive(
             "upload_cold_archive: uploading %s -> s3://%s/%s",
             local_path.name, bucket, key,
         )
-        s3.upload_file(str(local_path), bucket, key)
+        s3.upload_file(str(local_path), bucket, key, Config=_transfer_cfg)
 
     # --- .sww (may be very large; boto3 multipart is automatic) ---
     sww_pattern = str(output_dir / "*.sww")
@@ -285,7 +348,7 @@ def upload_cold_archive(
             ) as _pf:
                 _pf.write(_prov_content)
                 _pf_name = _pf.name
-            s3.upload_file(_pf_name, bucket, f"{prefix}provenance.json")
+            s3.upload_file(_pf_name, bucket, f"{prefix}provenance.json", Config=_transfer_cfg)
             import os as _os
             _os.unlink(_pf_name)
             logger.info("upload_cold_archive: provenance.json uploaded")
