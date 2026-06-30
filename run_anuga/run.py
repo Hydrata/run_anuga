@@ -340,9 +340,12 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
         # multiprocessor_mode passes through unvalidated when absent.
         _multiprocessor_mode = 1
         try:
+            # `or 1` applies to the *coerced* int so a falsy mode (0 / '0')
+            # defaults to 1 (OpenMP), matching the documented intent — `'0' or 1`
+            # would otherwise stay truthy '0' and yield mode 0 (TASK-1954 review).
             _multiprocessor_mode = int(
-                input_data['scenario_config'].get('multiprocessor_mode', 1) or 1
-            )
+                input_data['scenario_config'].get('multiprocessor_mode', 1)
+            ) or 1
         except (TypeError, ValueError):
             logger.warning(
                 "run_sim: invalid multiprocessor_mode in scenario_config; defaulting to 1"
