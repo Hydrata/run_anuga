@@ -624,22 +624,45 @@ def _required_env(name: str) -> str:
     return value
 
 
+_MPI_RANK_ENV_VARS = ("OMPI_COMM_WORLD_RANK", "PMIX_RANK", "PMI_RANK")
+
+
 def _is_mpi_rank_zero() -> bool:
     """Return True on the only rank that should run the handoff stages.
 
-    The handoff (zip + upload + POST) must run exactly once. When run under
-    ``mpirun -np N`` all N ranks reach this code; only rank 0 does the I/O.
-    When no MPI is loaded (a localhost CLI run), there is one process and it
-    IS rank 0.
+    The handoff (zip + upload + POST) must run exactly once. Under
+    ``mpirun -np N`` all N ranks reach this code; only rank 0 may do the I/O.
+    When no launcher is involved (a localhost CLI run), the lone process IS
+    rank 0.
+
+    The rank is read from the launcher-provided environment FIRST
+    (``OMPI_COMM_WORLD_RANK`` for Open MPI; ``PMIX_RANK``/``PMI_RANK`` for the
+    PMIx / PMI launchers). This is authoritative and survives ``MPI_FINALIZE``.
+
+    TASK-1952: anuga's ``run_sim`` finalizes MPI internally *before* this
+    handoff runs, so ``MPI.COMM_WORLD.Get_rank()`` is illegal post-finalize and
+    ``MPI.Is_finalized()`` is True on EVERY rank. The previous
+    ``if Is_finalized(): return True`` (TASK-1182, added only to dodge the
+    post-finalize Get_rank crash) therefore made all N ranks look like rank 0,
+    so every rank ran the upload + ``/process-result/`` POST and raced — the
+    S3 multipart ``UploadPart`` failed intermittently with
+    ``XAmzContentSHA256Mismatch`` / ``IncompleteBody`` and the surviving ranks
+    got HTTP 409 ("run already terminal"). Reading the launcher env up front
+    keeps the handoff on rank 0 alone and is correct whether or not MPI has been
+    finalized.
     """
+    for _var in _MPI_RANK_ENV_VARS:
+        _val = os.environ.get(_var)
+        if _val is not None and _val.strip() != "":
+            return _val.strip() == "0"
+
+    # No launcher env: a genuine single-process run (localhost CLI), or an
+    # unrecognised launcher. Fall back to mpi4py, tolerating the finalized state
+    # (a lone process that auto-init'd mpi4py and was finalized by anuga IS
+    # rank 0).
     try:
         from mpi4py import MPI
 
-        # anuga's run_sim finalizes MPI internally; calling Get_rank() after
-        # MPI_FINALIZE is illegal and aborts the process. In the single-process
-        # CLI case mpi4py auto-inits on import but anuga then finalizes, so
-        # post-sim callers see Is_finalized()=True. A single-process run is
-        # always rank 0.
         if MPI.Is_finalized():
             return True
         return MPI.COMM_WORLD.Get_rank() == 0
