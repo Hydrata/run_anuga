@@ -124,6 +124,69 @@ def test_make_resource_sampler_none_without_batch_common():
     assert sampler is None
 
 
+def _capture_sampler_kwargs(code_shas_json):
+    """Call ``_make_resource_sampler`` with a staged fake ``ResourceSampler`` that
+    records its constructor kwargs, driving ``CODE_SHAS_JSON`` from the env.
+
+    ``code_shas_json=None`` means the env var is unset (empty string).
+    Returns the captured kwargs dict.
+    """
+    import os as _os
+
+    captured: dict = {}
+
+    def _factory(scratch_dir, **kwargs):
+        captured.update(kwargs)
+        return _FakeSampler({"tool": "anuga", "job_id": "j"})
+
+    fake_mod = types.ModuleType("gn_anuga.batch_common.resource_sampler")
+    fake_mod.ResourceSampler = _factory
+    module_patch = {
+        "gn_anuga": types.ModuleType("gn_anuga"),
+        "gn_anuga.batch_common": types.ModuleType("gn_anuga.batch_common"),
+        "gn_anuga.batch_common.resource_sampler": fake_mod,
+    }
+    env_patch = {"CODE_SHAS_JSON": "" if code_shas_json is None else code_shas_json}
+    with mock.patch.dict(sys.modules, module_patch), \
+            mock.patch.dict(_os.environ, env_patch, clear=False):
+        _make_resource_sampler(
+            "/tmp",
+            control_server="https://hydrata.com",
+            ids={"run_id": 1, "project_id": 2, "scenario_id": 3},
+        )
+    return captured
+
+
+def test_make_resource_sampler_parses_code_shas_into_sampler():
+    """TASK-2105: CODE_SHAS_JSON is parsed and handed to the sampler's code_shas
+    kwarg, so it lands in summary()['ids']['code_shas'] for the staff API."""
+    import json as _json
+
+    shas = {"hydrata": "abc1234", "geonode": "def5678", "run_anuga": "9900aab"}
+    captured = _capture_sampler_kwargs(_json.dumps(shas))
+    assert captured["code_shas"] == shas
+
+
+def test_make_resource_sampler_code_shas_none_when_env_absent():
+    """No CODE_SHAS_JSON in the env → code_shas is None (never fabricated)."""
+    captured = _capture_sampler_kwargs(None)
+    assert captured["code_shas"] is None
+
+
+def test_make_resource_sampler_code_shas_none_when_env_malformed():
+    """A malformed CODE_SHAS_JSON → code_shas None, but the sampler is still built
+    (a bad provenance env must not cost us the whole resource ledger)."""
+    captured = _capture_sampler_kwargs("{not valid json")
+    assert captured.get("code_shas") is None
+    assert "ids" in captured  # sampler still constructed
+
+
+def test_make_resource_sampler_code_shas_none_when_env_not_a_dict():
+    """A non-object CODE_SHAS_JSON (e.g. a JSON list) → code_shas None."""
+    captured = _capture_sampler_kwargs("[1, 2, 3]")
+    assert captured.get("code_shas") is None
+
+
 @_with_emit
 def test_report_resource_summary_posts_with_anuga_tool():
     """A summary carrying a job_id is POSTed to /jobs/resource-report/ as 'anuga'."""
