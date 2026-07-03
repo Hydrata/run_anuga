@@ -487,6 +487,26 @@ def _make_resource_sampler(scratch_dir, *, control_server, ids):
         except ValueError:
             pass
 
+    # code_shas (TASK-2105): the cross-repo git SHAs this run executed at, from
+    # the CODE_SHAS_JSON env _dispatch_batch injects at submit time (the same var
+    # that seeds provenance.json in upload_cold_archive). Passed into the sampler
+    # so it surfaces at summary()['ids']['code_shas'] for the staff run-actuals
+    # API. Absent/empty/malformed env -> None -> the field stays null; NEVER
+    # fabricated (no-vaporware).
+    code_shas = None
+    _code_shas_raw = os.environ.get("CODE_SHAS_JSON", "")
+    if _code_shas_raw:
+        try:
+            _parsed = json.loads(_code_shas_raw)
+        except (ValueError, TypeError):
+            _parsed = None
+            logger.warning(
+                "run_and_report: CODE_SHAS_JSON is not valid JSON; "
+                "code_shas omitted from the resource summary",
+            )
+        if isinstance(_parsed, dict) and _parsed:
+            code_shas = _parsed
+
     # Sub-phase attribution (TASK-1910): wire run_anuga's Django-free phase
     # tracker into the sampler so each periodic RSS sample is tagged with the
     # build phase run.py set, and the mesh-size features ride onto the summary.
@@ -500,6 +520,7 @@ def _make_resource_sampler(scratch_dir, *, control_server, ids):
             tool=RESOURCE_REPORT_TOOL,
             control_server=control_server,
             ids=ids,
+            code_shas=code_shas,
             request=request or None,
             phase_provider=phase_tracker.get_phase,
             phase_durations_provider=phase_tracker.get_phase_durations,
