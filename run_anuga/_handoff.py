@@ -502,6 +502,7 @@ def _make_resource_sampler(scratch_dir, *, control_server, ids):
             ids=ids,
             request=request or None,
             phase_provider=phase_tracker.get_phase,
+            phase_durations_provider=phase_tracker.get_phase_durations,
             mesh_features_provider=phase_tracker.get_mesh_features,
         )
     except Exception:
@@ -624,22 +625,45 @@ def _required_env(name: str) -> str:
     return value
 
 
+_MPI_RANK_ENV_VARS = ("OMPI_COMM_WORLD_RANK", "PMIX_RANK", "PMI_RANK")
+
+
 def _is_mpi_rank_zero() -> bool:
     """Return True on the only rank that should run the handoff stages.
 
-    The handoff (zip + upload + POST) must run exactly once. When run under
-    ``mpirun -np N`` all N ranks reach this code; only rank 0 does the I/O.
-    When no MPI is loaded (a localhost CLI run), there is one process and it
-    IS rank 0.
+    The handoff (zip + upload + POST) must run exactly once. Under
+    ``mpirun -np N`` all N ranks reach this code; only rank 0 may do the I/O.
+    When no launcher is involved (a localhost CLI run), the lone process IS
+    rank 0.
+
+    The rank is read from the launcher-provided environment FIRST
+    (``OMPI_COMM_WORLD_RANK`` for Open MPI; ``PMIX_RANK``/``PMI_RANK`` for the
+    PMIx / PMI launchers). This is authoritative and survives ``MPI_FINALIZE``.
+
+    TASK-1952: anuga's ``run_sim`` finalizes MPI internally *before* this
+    handoff runs, so ``MPI.COMM_WORLD.Get_rank()`` is illegal post-finalize and
+    ``MPI.Is_finalized()`` is True on EVERY rank. The previous
+    ``if Is_finalized(): return True`` (TASK-1182, added only to dodge the
+    post-finalize Get_rank crash) therefore made all N ranks look like rank 0,
+    so every rank ran the upload + ``/process-result/`` POST and raced — the
+    S3 multipart ``UploadPart`` failed intermittently with
+    ``XAmzContentSHA256Mismatch`` / ``IncompleteBody`` and the surviving ranks
+    got HTTP 409 ("run already terminal"). Reading the launcher env up front
+    keeps the handoff on rank 0 alone and is correct whether or not MPI has been
+    finalized.
     """
+    for _var in _MPI_RANK_ENV_VARS:
+        _val = os.environ.get(_var)
+        if _val is not None and _val.strip() != "":
+            return _val.strip() == "0"
+
+    # No launcher env: a genuine single-process run (localhost CLI), or an
+    # unrecognised launcher. Fall back to mpi4py, tolerating the finalized state
+    # (a lone process that auto-init'd mpi4py and was finalized by anuga IS
+    # rank 0).
     try:
         from mpi4py import MPI
 
-        # anuga's run_sim finalizes MPI internally; calling Get_rank() after
-        # MPI_FINALIZE is illegal and aborts the process. In the single-process
-        # CLI case mpi4py auto-inits on import but anuga then finalizes, so
-        # post-sim callers see Is_finalized()=True. A single-process run is
-        # always rank 0.
         if MPI.Is_finalized():
             return True
         return MPI.COMM_WORLD.Get_rank() == 0
@@ -787,10 +811,14 @@ def run_and_report(
                 logger.exception("run_and_report: /error/ POST failed; suppressed")
         raise
 
-    # Sim succeeded: emit the success ledger (rank-0 only; no-op when sampler None).
-    report_resource_summary(control_server, token, sampler)
+    # Sim succeeded — rank-0 post-sim handoff: archive + zip + upload.
+    # TASK-1954: wrap with PHASE_ARCHIVE so observed.phase_durations_s captures
+    # the full publish taxonomy (cog-export tagged in run.py, archive here).
+    # report_resource_summary is called AFTER the archive so that the lazy
+    # phase_durations_provider snapshot includes these durations.
 
     if not _is_mpi_rank_zero():
+        report_resource_summary(control_server, token, sampler)
         return {"result_key": None, "process_result_status": None}
 
     result_key = make_result_key(project_id, scenario_id, run_id)
@@ -802,29 +830,58 @@ def run_and_report(
     # the archive succeeded).
     cold_prefix = make_cold_archive_prefix(project_id, scenario_id, run_id)
     completed_cold_prefix: str | None = None
+
+    # PHASE_ARCHIVE timing seam (TASK-1954): tag the archive + zip/upload window
+    # so phase_tracker accumulates their durations into 'archive'.
+    from run_anuga import phase_tracker as _pt
+    _pt.set_phase(_pt.PHASE_ARCHIVE)
     try:
-        upload_cold_archive(
-            package_dir,
-            bucket,
-            cold_prefix,
-            project_id=project_id,
-            scenario_id=scenario_id,
-            run_id=run_id,
-        )
-        completed_cold_prefix = cold_prefix
-        logger.info(
-            "run_and_report: cold archive uploaded to s3://%s/%s", bucket, cold_prefix
-        )
-    except Exception:
-        logger.exception(
-            "run_and_report: cold archive FAILED (best-effort — run continues); "
-            "prefix=%s bucket=%s",
-            cold_prefix, bucket,
-        )
+        try:
+            upload_cold_archive(
+                package_dir,
+                bucket,
+                cold_prefix,
+                project_id=project_id,
+                scenario_id=scenario_id,
+                run_id=run_id,
+            )
+            completed_cold_prefix = cold_prefix
+            logger.info(
+                "run_and_report: cold archive uploaded to s3://%s/%s", bucket, cold_prefix
+            )
+        except Exception:
+            logger.exception(
+                "run_and_report: cold archive FAILED (best-effort — run continues); "
+                "prefix=%s bucket=%s",
+                cold_prefix, bucket,
+            )
+
+        try:
+            zip_outputs(package_dir, result_zip_path)
+            upload_result_to_s3(result_zip_path, bucket, result_key)
+        except Exception as exc:
+            _pt.set_phase(None)
+            report_resource_summary(control_server, token, sampler)
+            try:
+                report_error(
+                    control_server,
+                    run_id,
+                    token,
+                    message=f"run_and_report handoff failed: {exc}",
+                    source="run_and_report",
+                )
+            except Exception:
+                logger.exception("run_and_report: /error/ POST failed; suppressed")
+            raise
+    finally:
+        # Always end the archive phase timing (idempotent if already cleared).
+        _pt.set_phase(None)
+
+    # All archive phases done. Emit the complete resource summary (includes
+    # cog-export + archive durations via lazy phase_durations_provider).
+    report_resource_summary(control_server, token, sampler)
 
     try:
-        zip_outputs(package_dir, result_zip_path)
-        upload_result_to_s3(result_zip_path, bucket, result_key)
         response = report_result(
             control_server,
             run_id,

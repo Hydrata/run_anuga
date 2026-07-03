@@ -483,6 +483,44 @@ class TestUploadColdArchive:
         mock_archive.assert_not_called()
         assert result["result_key"] is None
 
+    def test_is_mpi_rank_zero_reads_launcher_env(self, monkeypatch):
+        """_is_mpi_rank_zero MUST read the launcher rank env (survives MPI_FINALIZE).
+
+        Regression for TASK-1952: anuga's run_sim finalizes MPI *before* the
+        handoff runs, so the old ``if MPI.Is_finalized(): return True`` short
+        circuit (TASK-1182) made EVERY rank look like rank 0 — under
+        ``mpirun -np N`` all N ranks then ran the zip + S3 upload +
+        /process-result/ POST concurrently and raced (XAmzContentSHA256Mismatch
+        / IncompleteBody on UploadPart, then HTTP 409 'run already terminal').
+        Open MPI sets ``OMPI_COMM_WORLD_RANK`` (PMIx sets ``PMIX_RANK``) per rank
+        at spawn; those survive finalize and are the authoritative rank source.
+        """
+        from run_anuga._handoff import _is_mpi_rank_zero
+
+        for var in ("OMPI_COMM_WORLD_RANK", "PMIX_RANK", "PMI_RANK"):
+            monkeypatch.delenv(var, raising=False)
+
+        # Non-zero rank under Open MPI -> NOT the handoff rank (the bug: was True).
+        monkeypatch.setenv("OMPI_COMM_WORLD_RANK", "5")
+        assert _is_mpi_rank_zero() is False
+
+        # Rank 0 under Open MPI -> the handoff rank.
+        monkeypatch.setenv("OMPI_COMM_WORLD_RANK", "0")
+        assert _is_mpi_rank_zero() is True
+
+        # PMIx launcher (Open MPI 5 / Slurm PMIx), non-zero rank.
+        monkeypatch.delenv("OMPI_COMM_WORLD_RANK", raising=False)
+        monkeypatch.setenv("PMIX_RANK", "3")
+        assert _is_mpi_rank_zero() is False
+
+    def test_is_mpi_rank_zero_single_process_cli(self, monkeypatch):
+        """With no launcher env (a localhost CLI run) the lone process IS rank 0."""
+        from run_anuga._handoff import _is_mpi_rank_zero
+
+        for var in ("OMPI_COMM_WORLD_RANK", "PMIX_RANK", "PMI_RANK"):
+            monkeypatch.delenv(var, raising=False)
+        assert _is_mpi_rank_zero() is True
+
     def test_cold_archive_best_effort_does_not_fail_run(self, tmp_path: Path, monkeypatch):
         """A cold archive failure is logged but must NOT raise out of run_and_report."""
         from run_anuga import _handoff
