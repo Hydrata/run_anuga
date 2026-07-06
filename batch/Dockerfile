@@ -41,7 +41,7 @@ RUN pip install --no-cache-dir \
     scipy matplotlib "meshpy==2025.1.1" "pymetis==2025.2.2" netcdf4 dill utm pyproj affine \
     mpi4py cython pybind11 requests boto3 awscli && \
     pip install --no-cache-dir \
-    "anuga @ git+https://github.com/Hydrata/anuga_core.git@4ae0ec0de652ce0af34c185f59b7809a594fded9"
+    "anuga @ git+https://github.com/Hydrata/anuga_core.git@b09d47bb523e963eb604eea88dcfb2a20a5412d5"
 
 # Unbuffered stdout/stderr so CloudWatch shows every print/logger output as
 # it happens, not in 4KB chunks. Placed after the heavy pip-install layers so
