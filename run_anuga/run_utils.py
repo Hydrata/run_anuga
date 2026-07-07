@@ -209,11 +209,17 @@ def create_anuga_mesh(input_data):
     REMOVED here. Only the Raised method applies an elevation change, and that
     happens post-mesh as a Domain quantity correction (TASK-1299).
 
-    NOTE: mesh_geo_reference is NOT passed — ANUGA computes the local offset from
-    the bounding polygon's lower-left corner, keeping coordinates small. Passing
-    absolute UTM coordinates (~380000, ~6350000) causes Triangle's float32
-    arithmetic to produce degenerate near-zero-area triangles near hole
-    boundaries (observed in 5604fc1 investigation).
+    Mesh geo-reference (TASK-2149): for the NO-HOLE path we pass an absolute-UTM
+    mesh_geo_reference (via get_utm_geo_reference); for the WITH-HOLE path we pass
+    None and let ANUGA compute a local lower-left offset. Triangle's triangulation
+    is float-rounding-sensitive to the coordinate ORIGIN, so the two choices yield
+    slightly different tilings. Absolute-UTM is field-validated against the Merewether
+    ARR benchmark (local offset mis-placed nodes onto knife-edge DEM walls → failed
+    ARR + stability). The local offset is retained for hole-bearing meshes only,
+    because absolute coordinates near Reflective hole boundaries produced degenerate
+    near-zero-area triangles in the 5604fc1 investigation. (That was NOT a float32
+    problem — ANUGA/Triangle coordinates are float64 — the hole-sliver mitigation is
+    the unary_union sliver-merge in make_interior_holes_and_tags.)
     """
     anuga = import_optional("anuga")
     mesh_filepath = input_data['mesh_filepath']
@@ -239,14 +245,22 @@ def create_anuga_mesh(input_data):
     # offset) reproduces the field-validated result exactly (ARR 5/5, stable).
     #
     # EXCEPTION: when interior holes are present (Reflective structures), KEEP the
-    # local offset — absolute UTM there drives Triangle's arithmetic into degenerate
-    # near-zero-area triangles at the hole boundaries (the 5604fc1 investigation that
-    # originally motivated dropping mesh_geo_reference). Holes are rare in rain-on-
-    # grid; the common no-hole path is what the benchmark validates.
+    # local offset — absolute coordinates near the hole boundaries produced degenerate
+    # near-zero-area triangles in the 5604fc1 investigation. Holes are rare in
+    # rain-on-grid; the common no-hole path is what the benchmark validates.
     mesh_geo_reference = None
     if not interior_holes:
         epsg = input_data['scenario_config'].get('epsg')
-        mesh_geo_reference = anuga.Geo_reference(zone=int(str(epsg)[-2:]))
+        if epsg:
+            # Robust EPSG -> UTM-zone via pyproj (handles bare/prefixed/MGA codes and
+            # raises a CLEAR error on a non-UTM CRS) — NOT the fragile int(epsg[-2:])
+            # slice that TASK-1260 already retired.
+            mesh_geo_reference = get_utm_geo_reference(epsg)
+        else:
+            # No epsg -> keep the local offset (pre-fix behaviour). Don't crash a
+            # hole-free run that otherwise georeferences fine from the boundary CRS;
+            # the absolute-UTM path simply needs a UTM/MGA epsg to engage.
+            logger.warning("create_anuga_mesh: no epsg in scenario_config — mesh uses local offset")
     logger.critical(
         f"creating anuga_mesh (mesh_geo_reference="
         f"{'absolute-UTM' if mesh_geo_reference is not None else 'local-offset'})"
