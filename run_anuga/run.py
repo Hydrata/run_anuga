@@ -12,6 +12,7 @@ from run_anuga.run_utils import is_dir_check, setup_input_data, create_anuga_mes
     make_frictions, post_process_sww, setup_logger, RunContext, \
     build_time_boundary_function, apply_inflows_to_domain, \
     assert_raster_has_no_nodata_inside_boundary, make_raised_elevation_pairs, \
+    apply_raised_elevation_correction, \
     compute_mesh_qa, extract_boundary_condition_types, compute_yieldstep  # W3 (TASK-1923)
 from run_anuga import defaults
 from run_anuga import phase_tracker
@@ -220,18 +221,12 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
             if raised_pairs:
                 logger.critical(f"Applying raised elevation for {len(raised_pairs)} Raised structure(s)")
                 try:
-                    from anuga.geometry.polygon import inside_polygon
-                    # Domain centroids (local coords relative to geo_reference offset)
-                    centroids = domain.get_centroid_coordinates(absolute=False)
-                    elev = domain.get_quantity('elevation').get_values(location='centroids')
-                    for poly_coords, height_m in raised_pairs:
-                        if not poly_coords:
-                            continue
-                        inside_idx = inside_polygon(centroids, poly_coords)
-                        if len(inside_idx) > 0:
-                            elev[inside_idx] += height_m
-                    domain.set_quantity('elevation', elev, location='centroids')
-                    logger.critical(f"Raised elevation applied for {len(raised_pairs)} structure(s)")
+                    # TASK-2149 F1: seat Raised heights via ABSOLUTE centroids so the
+                    # point-in-polygon test matches the absolute-UTM Raised polygons
+                    # regardless of the mesh geo_reference offset (previously absolute=False
+                    # silently dropped every Raised structure on any local-offset mesh).
+                    applied = apply_raised_elevation_correction(domain, raised_pairs)
+                    logger.critical(f"Raised elevation applied for {applied}/{len(raised_pairs)} structure(s)")
                 except Exception as e:
                     logger.error(f"Failed to apply raised elevation: {e} — continuing without Raised correction")
 

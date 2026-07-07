@@ -573,6 +573,34 @@ def make_raised_elevation_pairs(input_data):
     return pairs
 
 
+def apply_raised_elevation_correction(domain, raised_pairs):
+    """Add per-structure Raised heights to a built domain's centroid elevation.
+
+    TASK-2149 (F1): the point-in-polygon test MUST use ABSOLUTE centroid coordinates
+    — make_raised_elevation_pairs returns polygons in absolute UTM. Testing LOCAL
+    centroids (get_centroid_coordinates(absolute=False)) silently returned zero hits
+    whenever the mesh carried a nonzero geo_reference offset (every local-offset mesh,
+    i.e. every prod sim before the mesh geo-ref fix), so Raised heights were never
+    applied. Using absolute=True makes the correction offset-independent — it works on
+    both the absolute-UTM no-hole mesh and the local-offset hole mesh.
+
+    Returns the number of Raised structures that matched at least one centroid.
+    """
+    from anuga.geometry.polygon import inside_polygon
+    centroids = domain.get_centroid_coordinates(absolute=True)
+    elev = domain.get_quantity('elevation').get_values(location='centroids')
+    applied = 0
+    for poly_coords, height_m in raised_pairs:
+        if not poly_coords:
+            continue
+        inside_idx = inside_polygon(centroids, poly_coords)
+        if len(inside_idx) > 0:
+            elev[inside_idx] += height_m
+            applied += 1
+    domain.set_quantity('elevation', elev, location='centroids')
+    return applied
+
+
 def assert_raster_has_no_nodata_inside_boundary(raster_path, boundary_polygon, *, quantity_name):
     """Pre-flight guard: raise a clear error if a raster has nodata cells inside the model boundary.
 
