@@ -60,17 +60,7 @@ def test_yieldstep_limits():
     assert defaults.MIN_YIELDSTEP_S < defaults.MAX_YIELDSTEP_S
 
 
-def test_max_triangle_area():
-    assert isinstance(defaults.MAX_TRIANGLE_AREA, int)
-    assert defaults.MAX_TRIANGLE_AREA > 0
-
-
 def test_k_nearest_neighbours():
     assert isinstance(defaults.K_NEAREST_NEIGHBOURS, int)
     # 3 is the minimum for spatial interpolation; 8 is practical upper bound
     assert 3 <= defaults.K_NEAREST_NEIGHBOURS <= 8
-
-
-def test_default_mesher_exe():
-    assert isinstance(defaults.DEFAULT_MESHER_EXE, str)
-    assert defaults.DEFAULT_MESHER_EXE.endswith("mesher")

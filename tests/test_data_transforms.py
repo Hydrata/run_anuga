@@ -230,22 +230,6 @@ class TestMakeInteriorHolesAndTags:
         assert holes is None
         assert tags is None
 
-    def test_holes_structure(self):
-        input_data = {
-            "structure": {
-                "features": [
-                    {
-                        "geometry": {"coordinates": [[[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]]]},
-                        "properties": {"method": "Holes"}
-                    }
-                ]
-            }
-        }
-        holes, tags = make_interior_holes_and_tags(input_data)
-        assert holes is not None
-        assert len(holes) == 1
-        assert tags[0] is None  # Holes have None tag
-
     def test_reflective_structure(self):
         input_data = {
             "structure": {
@@ -264,6 +248,10 @@ class TestMakeInteriorHolesAndTags:
         assert tags[0] == {"reflective": [0, 1, 2, 3]}
 
     def test_mixed_structures(self):
+        # ADR-4 / TASK-1270: only 'Reflective' produces an interior hole;
+        # 'Mannings' is a friction zone (skipped here). The two non-touching
+        # Reflective structures each become a hole with matching tags, so the
+        # holes and tags lists must stay length-parity aligned.
         input_data = {
             "structure": {
                 "features": [
@@ -273,7 +261,7 @@ class TestMakeInteriorHolesAndTags:
                     },
                     {
                         "geometry": {"coordinates": [[[2, 2], [3, 2], [3, 3], [2, 2]]]},
-                        "properties": {"method": "Holes"}
+                        "properties": {"method": "Reflective"}
                     },
                     {
                         "geometry": {"coordinates": [[[4, 4], [5, 4], [5, 5], [4, 4]]]},
@@ -283,8 +271,8 @@ class TestMakeInteriorHolesAndTags:
             }
         }
         holes, tags = make_interior_holes_and_tags(input_data)
-        # Mannings skipped, 2 holes remain; tags list length must match holes list length
+        # Mannings skipped, 2 Reflective holes remain; tags length must match holes length
         assert len(holes) == 2
         assert len(tags) == 2
-        assert tags[0] is None  # Holes → None tag
-        assert tags[1] == {"reflective": [0, 1, 2, 3]}  # Reflective → exact tag
+        assert tags[0] == {"reflective": [0, 1, 2, 3]}
+        assert tags[1] == {"reflective": [0, 1, 2, 3]}

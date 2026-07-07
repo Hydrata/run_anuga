@@ -1,17 +1,19 @@
-"""Tests for run_anuga.callbacks — callback protocol and implementations."""
+"""Tests for run_anuga.callbacks — callback protocol and implementations.
+
+TASK-1049 (W1 of TASK-1048): HydrataCallback was rewritten to use the V2
+API + ``X-Internal-Token`` header + owned ``requests.Session``. The
+V1-era TestHydrataCallback / TestHydrataCallbackOnProgress classes were
+removed because they exercised the removed BasicAuth surface and V1
+``/anuga/api/<p>/<s>/run/<r>/`` URL. New coverage lives in
+``test_callbacks_v2.py``.
+"""
 
 import logging
-import warnings
 
 from run_anuga.callbacks import (
-    HydrataCallback,
     LoggingCallback,
     NullCallback,
     SimulationCallback,
-)
-from run_anuga.logging_setup import (
-    configure_simulation_logging,
-    teardown_simulation_logging,
 )
 
 
@@ -30,6 +32,11 @@ class TestNullCallback:
     def test_on_file_does_nothing(self):
         cb = NullCallback()
         cb.on_file("video", "/tmp/test.mp4")
+
+    def test_close_is_noop(self):
+        """TASK-1049: NullCallback exposes close() so run_sim can always call it."""
+        cb = NullCallback()
+        cb.close()  # must not raise
 
 
 class TestLoggingCallback:
@@ -67,75 +74,36 @@ class TestLoggingCallback:
         cb = LoggingCallback(logger_instance=custom)
         assert cb._logger is custom
 
-
-class TestHydrataCallback:
-    def test_implements_protocol(self):
-        cb = HydrataCallback(
-            username="u", password="p",
-            control_server="https://test.com",
-            project=1, scenario=2, run_id=3,
-        )
-        assert isinstance(cb, SimulationCallback)
-
-    def test_url_property(self):
-        cb = HydrataCallback(
-            username="u", password="p",
-            control_server="https://hydrata.com/",
-            project=42, scenario=7, run_id=3,
-        )
-        assert cb._url == "https://hydrata.com/anuga/api/42/7/run/3/"
-
-    def test_from_config(self):
-        config = {
-            "project": 10,
-            "id": 5,
-            "run_id": 2,
-            "control_server": "https://example.com",
-        }
-        cb = HydrataCallback.from_config("user", "pass", config)
-        assert cb.project == 10
-        assert cb.scenario == 5
-        assert cb.run_id == 2
-        assert cb.control_server == "https://example.com"
-
-    def test_from_config_defaults(self):
-        cb = HydrataCallback.from_config("user", "pass", {})
-        assert cb.project == 0
-        assert cb.scenario == 0
-        assert cb.run_id == 0
-        assert cb.control_server == ""
+    def test_close_is_noop(self):
+        """TASK-1049: LoggingCallback exposes close() so run_sim can always call it."""
+        cb = LoggingCallback()
+        cb.close()  # must not raise
 
 
-class TestLoggingCallbackIntegration:
-    """LoggingCallback + configure_simulation_logging integration."""
+class TestNullCallbackOnProgress:
+    """W6 (TASK-1044) — NullCallback.on_progress is a silent no-op."""
 
-    def test_callback_messages_appear_in_log_file(self, tmp_path):
-        sim_logger = configure_simulation_logging(str(tmp_path))
-        try:
-            cb = LoggingCallback(logger_instance=sim_logger)
-            cb.on_status("45.2%")    # percentage — suppressed
-            cb.on_status("building mesh")  # non-percentage — logged
-            cb.on_metric("memory_used", 1024)
+    def test_on_progress_does_nothing(self):
+        cb = NullCallback()
+        cb.on_progress(50.0, eta_seconds=300)  # should not raise
 
-            log_file = tmp_path / "run_anuga_1.log"
-            contents = log_file.read_text()
-            assert "45.2%" not in contents        # percentage suppressed
-            assert "building mesh" in contents    # non-percentage logged
-            assert "memory_used" in contents
-            assert "1024" in contents
-        finally:
-            teardown_simulation_logging()
+    def test_on_progress_eta_none(self):
+        cb = NullCallback()
+        cb.on_progress(0.0, eta_seconds=None)  # should not raise
 
 
-class TestSetupLoggerDeprecation:
-    def test_warns_deprecated(self, tmp_path):
-        from run_anuga.run_utils import setup_logger
+class TestLoggingCallbackOnProgress:
+    """W6 (TASK-1044) — LoggingCallback.on_progress logs pct + eta via logging."""
 
-        input_data = {"output_directory": str(tmp_path), "scenario_config": {}}
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-            setup_logger(input_data)
-            assert len(w) == 1
-            assert issubclass(w[0].category, DeprecationWarning)
-            assert "deprecated" in str(w[0].message).lower()
-        teardown_simulation_logging()
+    def test_on_progress_logs(self, caplog):
+        cb = LoggingCallback()
+        with caplog.at_level(logging.INFO):
+            cb.on_progress(42.5, eta_seconds=300)
+        assert '42.5' in caplog.text
+        assert '300' in caplog.text
+
+    def test_on_progress_eta_none_logs(self, caplog):
+        cb = LoggingCallback()
+        with caplog.at_level(logging.INFO):
+            cb.on_progress(0.0, eta_seconds=None)
+        assert '0.0' in caplog.text

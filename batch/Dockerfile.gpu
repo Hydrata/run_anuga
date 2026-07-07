@@ -1,0 +1,52 @@
+# GPU variant of the ANUGA Batch image (TASK-1956 / epic 1952).
+#
+# FROM the multi-arch GPU dev base (anuga-gpu-dev:multiarch — NVIDIA HPC SDK +
+# upstream-develop ANUGA compiled with OpenMP-target offload for cc70/75/86/89,
+# MPI on, spatial deps + GPU debug toolchain baked; built by the deploy repo's
+# scripts/gpu-dev/build-gpu-dev-image.sh --multi-arch). This layer adds ONLY the
+# Batch dispatch surface — entrypoint.sh + the gn_anuga.batch_common overlay +
+# run_anuga itself — mirroring batch/Dockerfile so the GPU image is
+# dispatch-compatible with the CPU images (same entrypoint contract, same
+# resource_summary ledger emit).
+#
+# anuga is NOT reinstalled here: the base's editable develop install (with the
+# GPU kernels) IS the simulator. run_anuga's [sim,platform] extras do not
+# depend on anuga, so the pip install below cannot clobber it.
+#
+# The base bakes OMP_TARGET_OFFLOAD=MANDATORY: a mode-2 run that cannot reach
+# the GPU fails LOUD (never a silent CPU fallback). Mode-1 legacy runs are
+# unaffected (they execute no OpenMP target region).
+#
+# Build via the deploy repo's scripts/gpu-dev/build-gpu-batch-image.sh — it
+# stages the gn_anuga overlay into the build context exactly like
+# rebuild-batch-image.sh --tool anuga does for the CPU image.
+ARG GPU_BASE=anuga-gpu-dev:multiarch
+FROM ${GPU_BASE}
+
+# curl: entrypoint.sh's terminal /error/ POST safety net (absent from the nvhpc
+# base). awscli: the entrypoint's S3 package/result ops (base has boto3 only).
+RUN apt-get update && apt-get install -y --no-install-recommends curl \
+    && rm -rf /var/lib/apt/lists/* \
+    && pip install --no-cache-dir awscli
+
+# Unbuffered stdout/stderr so CloudWatch shows every line live (the base sets
+# this too — repeated here so a base change can't silently drop it).
+ENV PYTHONUNBUFFERED=1
+
+# entrypoint.sh BEFORE the source-tree COPY so its layer stays cached when only
+# run_anuga/*.py changes.
+COPY batch/entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
+
+# Staged Django-free gn_anuga.batch_common leaf (same overlay contract as the
+# CPU image, TASK-1846): PYTHONPATH=/app resolves run_anuga._handoff's guarded
+# `from gn_anuga.batch_common.resource_sampler import ResourceSampler`.
+ENV PYTHONPATH=/app
+COPY gn_anuga /app/gn_anuga
+
+# Source tree + local-package install (into the base's /opt/venv).
+COPY . /app/run_anuga_src/
+RUN pip install --no-cache-dir "/app/run_anuga_src[sim,platform]"
+
+WORKDIR /app
+ENTRYPOINT ["/app/entrypoint.sh"]

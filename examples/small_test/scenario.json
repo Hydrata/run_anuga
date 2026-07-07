@@ -17,7 +17,6 @@
     "catchment": null,
     "nodes": null,
     "links": null,
-    "simplify_mesh": false,
     "resolution": 5,
     "max_rmse_tolerance": 1.0,
     "model_start": "2024-01-01T00:00:00Z",

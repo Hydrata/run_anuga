@@ -127,24 +127,6 @@ class TestMakeInteriorHolesGeo:
         expected_tag = {"reflective": list(range(len(coords)))}
         assert tags[0] == expected_tag
 
-    def test_holes_structure_has_none_tag(self):
-        """Holes method produces a None tag (simple hole, no boundary condition)."""
-        coords = _polygon_coords(321040, 5812040, 20)
-        input_data = {
-            "structure": {
-                "features": [
-                    {
-                        "geometry": {"coordinates": [coords]},
-                        "properties": {"method": "Holes"}
-                    }
-                ]
-            }
-        }
-        holes, tags = make_interior_holes_and_tags(input_data)
-        assert holes is not None
-        assert len(holes) == 1
-        assert tags[0] is None
-
     def test_mannings_not_in_holes(self):
         """Mannings structures are friction polygons, not interior holes."""
         coords = _polygon_coords(321040, 5812040, 20)

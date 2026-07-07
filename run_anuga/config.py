@@ -35,17 +35,21 @@ class ScenarioConfig(BaseModel):
     elevation: Optional[str] = None
     friction: Optional[str] = None
     inflow: Optional[str] = None
+    rainfall: Optional[str] = None
     structure: Optional[str] = None
     mesh_region: Optional[str] = None
     hydrology_status: Optional[str] = None
     catchment: Optional[str] = None
     nodes: Optional[str] = None
     links: Optional[str] = None
-    simplify_mesh: bool = False
     store_mesh: bool = False
     resolution: Optional[float] = None
     max_rmse_tolerance: Optional[float] = None
     model_start: Optional[str] = None
+    # TASK-1271 W4.3 — breaklines for mesh edge conformance
+    breakline: Optional[str] = None
+    # Default near-spacing (m) for breakline grading when no per-line value set.
+    default_near_spacing: Optional[float] = 2.0
 
     model_config = {"extra": "allow"}
 
