@@ -32,6 +32,8 @@ RUN pip install --no-cache-dir "numpy>=2.0" setuptools wheel && \
 # ANUGA from Hydrata fork (has lazy pymetis fix). Pinned to a specific
 # anuga_core SHA for reproducible builds; bump intentionally via operator
 # workflow, do NOT use @main.
+# Pin 8abd3aef = fork main synced to upstream anuga-community/main @2d3696ea
+# (epic 2147 W1.1 / TASK-2152; PR #5). Prev: b09d47bb.
 #
 # TASK-1261: meshpy, pymetis, GDAL are pinned to the versions proven to work
 # on the sandbox/prod venv (meshpy==2025.1.1, pymetis==2025.2.2, GDAL==3.8.4).
@@ -41,7 +43,7 @@ RUN pip install --no-cache-dir \
     scipy matplotlib "meshpy==2025.1.1" "pymetis==2025.2.2" netcdf4 dill utm pyproj affine \
     mpi4py cython pybind11 requests boto3 awscli && \
     pip install --no-cache-dir \
-    "anuga @ git+https://github.com/Hydrata/anuga_core.git@b09d47bb523e963eb604eea88dcfb2a20a5412d5"
+    "anuga @ git+https://github.com/Hydrata/anuga_core.git@8abd3aefcc6df808372043a7ce1fbe523f5abbf3"
 
 # Unbuffered stdout/stderr so CloudWatch shows every print/logger output as
 # it happens, not in 4KB chunks. Placed after the heavy pip-install layers so
