@@ -1,10 +1,13 @@
 name: CI
 
+# TASK-2147 W0.4: run_anuga is unified onto a single canonical `main` branch, so CI
+# triggers on main only (the divergent 5.x lineage was merged in — see the 6ab2549
+# single-main merge). Feature work rides epic/** branches and gates on the PR to main.
 on:
   push:
-    branches: [5.x, main]
+    branches: [main]
   pull_request:
-    branches: [5.x, main]
+    branches: [main]
 
 jobs:
   test:
@@ -46,6 +49,38 @@ jobs:
 
       - name: Run geo component tests
         run: pytest tests/ -v -m "requires_geo and not requires_anuga"
+
+  # TASK-2147 W0.4 — REQUIRED physics gate. The field-validated Merewether ARR
+  # urban-flood benchmark (± 0.3 m at 5 gauges) is the trust anchor for the whole
+  # rain-on-grid chain: a green unit suite does NOT prove the water is right. This
+  # gate runs the full ANUGA stack and must pass on every push/PR to main. It is
+  # deliberately slow-and-trusted (the Merewether e2e is ~9 min) — do not make it
+  # non-blocking or move it to a nightly. See TASK-2149 for the mesh geo-reference
+  # bug this benchmark caught (silently-wrong flood levels on the production path).
+  test-anuga-e2e:
+    name: ANUGA e2e — Merewether field benchmark (required)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install system GDAL
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gdal-bin libgdal-dev
+
+      - name: Install package with full deps (includes ANUGA)
+        run: |
+          pip install --upgrade pip
+          pip install -e ".[full,dev]"
+
+      - name: Merewether ARR benchmark + ANUGA integration tests
+        run: pytest tests/ -v -m requires_anuga --timeout=1800
 
   lint:
     runs-on: ubuntu-latest
