@@ -227,7 +227,30 @@ def create_anuga_mesh(input_data):
     interior_holes, hole_tags = make_interior_holes_and_tags(input_data)
     bounding_polygon = input_data['boundary_polygon']
     boundary_tags = input_data['boundary_tags']
-    logger.critical("creating anuga_mesh")
+    # TASK-2149 — mesh geo-reference, field-validated against the Merewether ARR
+    # urban-flood benchmark. Triangle's triangulation is float-rounding-sensitive
+    # to the coordinate ORIGIN: the local lower-left offset that ANUGA applies when
+    # mesh_geo_reference is None places mesh nodes slightly differently than
+    # absolute-UTM coordinates do. On a knife-edge urban DEM (sharp ~3 m building
+    # walls beside street-level gauges) that node shift lands nodes on the WALL
+    # instead of the STREET, inflating peak stage at the gauges (Merewether ID0
+    # +0.37 m, ID3 +0.55 m) — failing ARR validation AND tripping the CFL/implied-
+    # speed stability heuristic. Feeding Triangle ABSOLUTE-UTM coordinates (no local
+    # offset) reproduces the field-validated result exactly (ARR 5/5, stable).
+    #
+    # EXCEPTION: when interior holes are present (Reflective structures), KEEP the
+    # local offset — absolute UTM there drives Triangle's arithmetic into degenerate
+    # near-zero-area triangles at the hole boundaries (the 5604fc1 investigation that
+    # originally motivated dropping mesh_geo_reference). Holes are rare in rain-on-
+    # grid; the common no-hole path is what the benchmark validates.
+    mesh_geo_reference = None
+    if not interior_holes:
+        epsg = input_data['scenario_config'].get('epsg')
+        mesh_geo_reference = anuga.Geo_reference(zone=int(str(epsg)[-2:]))
+    logger.critical(
+        f"creating anuga_mesh (mesh_geo_reference="
+        f"{'absolute-UTM' if mesh_geo_reference is not None else 'local-offset'})"
+    )
     # TASK-1270: universal burn removed. Only Raised structures apply a height
     # change (post-mesh, in run.py). Reflective is a mesh void; Mannings is friction-only.
     anuga_mesh = anuga.pmesh.mesh_interface.create_mesh_from_regions(
@@ -237,6 +260,7 @@ def create_anuga_mesh(input_data):
         interior_regions=interior_regions,
         interior_holes=interior_holes,
         hole_tags=hole_tags,
+        mesh_geo_reference=mesh_geo_reference,
         filename=mesh_filepath,
         use_cache=False,
         verbose=False,
