@@ -1255,6 +1255,27 @@ def apply_inflows_to_domain(
         inflow_dataframe = pd.merge(inflow_dataframe, new_dataframe, how='left', on='timestamp')
         inflow_dataframe.ffill(inplace=True)
 
+        # TASK-2155 (epic 2147 W2) — a series whose timestamps don't overlap
+        # the model window AT ALL (e.g. a decades-old model_start mismatch)
+        # left-merges to every row NaN; ffill can't invent values before the
+        # first real sample, so the column stays entirely NaN. That silently
+        # applies ZERO rain/inflow for the whole run with no error or log.
+        # Operator decision: ERROR the run, NEVER warn-and-continue. A
+        # PARTIAL lead-in gap (series starts partway through the window) is
+        # NOT this failure mode and must not raise — only ALL-NaN does.
+        if inflow_dataframe[name].isna().all():
+            series_start = new_dataframe['timestamp'].min()
+            series_end = new_dataframe['timestamp'].max()
+            window_start = inflow_dataframe['timestamp'].min()
+            window_end = inflow_dataframe['timestamp'].max()
+            raise ValueError(
+                f"Series '{name}' has ZERO overlap with the model window: "
+                f"series spans [{series_start}, {series_end}] but the model "
+                f"window is [{window_start}, {window_end}]. Applying this "
+                f"series would silently yield zero rain/inflow for the "
+                f"entire simulation — aborting instead."
+            )
+
     for inflow_polygon in rainfall_inflow_polygons:
         polygon_name = inflow_polygon.get('id')
         data = inflow_polygon.get('properties').get('data')
