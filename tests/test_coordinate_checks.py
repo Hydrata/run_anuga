@@ -56,6 +56,33 @@ class TestCheckCoordinatesAreInPolygon:
         assert check_coordinates_are_in_polygon([[321050, 5812050]], polygon) is True
         assert check_coordinates_are_in_polygon([[320000, 5812050]], polygon) is False
 
+    def test_closed_ring_raises_clear_error_not_shapely_crash(self):
+        """TASK-2187 (epic 2147 W2) — a CLOSED RING (e.g. a Rainfall Polygon's
+        outer ring mistakenly routed through the Surface-inflow geometry
+        path, ~run_utils.py:1340) must raise a CLEAR, named error instead of
+        the opaque shapely 'Point() takes only scalar or 1-size vector
+        arguments' crash. Silently returning False is NOT acceptable either
+        (that would silently skip registering the operator with no signal —
+        the same 'never warn-and-continue' guard as the 2155 NaN guard)."""
+        polygon = [[0, 0], [10, 0], [10, 10], [0, 10]]
+        closed_ring = [
+            [251000.0, 6271800.0], [251200.0, 6271800.0], [251200.0, 6272000.0],
+            [251000.0, 6272000.0], [251000.0, 6271800.0],
+        ]
+        nested_ring = [closed_ring]  # e.g. a raw GeoJSON Polygon.coordinates fallthrough
+        with pytest.raises(ValueError) as excinfo:
+            check_coordinates_are_in_polygon(nested_ring, polygon)
+        # A controlled, named error — NOT the raw shapely ValueError.
+        assert 'Point()' not in str(excinfo.value)
+
+    def test_multilinestring_flattened_points_still_work(self):
+        """No regression in the TASK-1113 MultiLineString inflow path: a
+        flattened list of flat [x, y] points (what _flatten_line_coordinates
+        returns for MultiLineString/LineString) still checks fine."""
+        polygon = [[0, 0], [10, 0], [10, 10], [0, 10]]
+        flattened_multilinestring_points = [[1, 1], [2, 2], [3, 3], [9, 9]]
+        assert check_coordinates_are_in_polygon(flattened_multilinestring_points, polygon) is True
+
 
 @pytest.mark.requires_geo
 class TestCheckCoordinatesProperty:

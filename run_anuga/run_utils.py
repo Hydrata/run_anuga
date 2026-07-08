@@ -11,6 +11,7 @@ import shutil
 import subprocess
 from copy import deepcopy
 from dataclasses import dataclass
+from numbers import Real
 from pathlib import Path
 from typing import Optional
 from urllib.parse import urlparse
@@ -1953,14 +1954,44 @@ def add_inflow_to_file(inflow_object, filepath):
 
 
 def check_coordinates_are_in_polygon(coordinates, polygon):
+    """
+    TASK-2187 (epic 2147 W2): a caller can hand this a CLOSED RING (e.g. a
+    Rainfall Polygon's outer ring mistakenly routed through the Surface-
+    inflow geometry path — ``_flatten_line_coordinates`` falls through to
+    ``coords`` unchanged for a non-LineString geometry type, ~run_utils.py:
+    892) or another nested/GeoJSON-shaped ``coordinates`` list. Passing that
+    straight to ``shapely.geometry.Point()`` raises an opaque
+    "Point() takes only scalar or 1-size vector arguments" crash that gives
+    the operator no idea which feature or file caused it.
+
+    Every entry of ``coordinates`` (after the single-point normalisation
+    below) MUST be a flat ``[x, y]`` / ``[x, y, z]`` pair of real numbers —
+    exactly what ``_flatten_line_coordinates`` produces for the supported
+    LineString/MultiLineString inflow shapes (TASK-1113). Anything else
+    raises a CLEAR, named ``ValueError`` instead of either crashing
+    opaquely or silently returning False (a silent False would skip
+    registering the operator with no signal at all — the same
+    never-warn-and-continue guard as the TASK-2155 NaN guard).
+    """
     if not coordinates:
         return False
     shapely_geometry = import_optional("shapely.geometry")
     Point, Polygon = shapely_geometry.Point, shapely_geometry.Polygon
     shapely_polgyon = Polygon(polygon)
-    if isinstance(coordinates[0], float):
+    if isinstance(coordinates[0], Real):
         coordinates = [coordinates]
     for point in coordinates:
+        if not (
+            isinstance(point, (list, tuple))
+            and len(point) in (2, 3)
+            and all(isinstance(c, Real) for c in point)
+        ):
+            raise ValueError(
+                f"check_coordinates_are_in_polygon: expected a flat [x, y] "
+                f"point but got {point!r} — coordinates looks like a nested "
+                f"ring/polygon was passed where a flat point list was "
+                f"expected (full coordinates={coordinates!r})."
+            )
         shapely_point = Point(point)
         if not shapely_polgyon.contains(shapely_point):
             return False
