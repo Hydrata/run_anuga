@@ -38,7 +38,7 @@ examples/
     inputs/
       dem.tif
       boundary.geojson
-      inflow.geojson
+      rainfall.geojson
 ```
 
 > **Windows SmartScreen:** You'll likely get a "Windows protected your PC" warning on first run.
@@ -110,7 +110,7 @@ runs ANUGA's shallow water equation solver, then post-processes the results to G
 flowchart TD
     DEM["dem.tif<br/>elevation"]
     BDY["boundary.geojson<br/>domain edges + BCs"]
-    INF["inflow.geojson<br/>rainfall"]
+    INF["rainfall.geojson<br/>rainfall"]
     SJ["scenario.json<br/>duration, resolution, EPSG"]
 
     MESH["Build triangular mesh"]
@@ -210,9 +210,11 @@ property. The lines must connect end-to-end to form a closed polygon.
 
 ### Rainfall
 
-Defined in `inflow.geojson` as a single Polygon feature covering the full domain.
+Defined in `rainfall.geojson` as a single Polygon feature covering the full domain.
 Properties: `"type": "Rainfall"`, `"data": "50.0"` (mm/hr).
-Applied as a uniform source term for the full simulation duration.
+Applied as a uniform source term for the full simulation duration. (Rainfall and
+inflow are SEPARATE files — a Rainfall Polygon must live in `rainfall.geojson`,
+not `inflow.geojson`, which carries Surface inflow LineStrings.)
 
 ### Input file formats
 
@@ -221,13 +223,14 @@ Applied as a uniform source term for the full simulation duration.
 | `scenario.json` | JSON | References all other files, sets simulation parameters. |
 | `inputs/dem.tif` | GeoTIFF | Ground elevation raster. Must match the scenario's EPSG. |
 | `inputs/boundary.geojson` | GeoJSON (LineStrings) | Domain edges. Each feature needs `"boundary"` property. Must form closed polygon. |
-| `inputs/inflow.geojson` | GeoJSON (Polygons) | Rainfall/inflow zones. `"type": "Rainfall"`, `"data"` = rate in mm/hr. |
+| `inputs/rainfall.geojson` | GeoJSON (Polygons) | Rainfall zones. `"type": "Rainfall"`, `"data"` = rate in mm/hr (scalar) or a `{timestamp, value}` list. |
+| `inputs/inflow.geojson` | GeoJSON (LineStrings) | Surface inflow lines (hydrographs). `"type": "Surface"`, `"data"` = discharge (scalar) or a `{timestamp, value}` list. Optional — omit for a rain-only scenario. |
 
 ### Viewing in QGIS
 
 1. Set project CRS to **EPSG:28356** (Project > Properties > CRS).
 2. Drag `inputs/dem.tif` onto the map to see the elevation surface.
-3. Drag `inputs/boundary.geojson` and `inputs/inflow.geojson` to see the domain outline and rainfall zone.
+3. Drag `inputs/boundary.geojson` and `inputs/rainfall.geojson` to see the domain outline and rainfall zone.
 4. After running, drag the `*_max.tif` files from `outputs_1_1_1/`:
    - `depth_max.tif` — blue colour ramp works well
    - `velocity_max.tif` — red/yellow ramp
@@ -296,7 +299,7 @@ production design work.
 
 ### Hydrology & loading
 
-- **Time-varying rainfall is supported** — pass `"data"` as a list of `{"timestamp", "value"}` objects in `inflow.geojson` instead of a scalar. IFD hyetographs can be expressed this way but require manual conversion to the list format. The test model only demonstrates constant-rate rainfall.
+- **Time-varying rainfall is supported** — pass `"data"` as a list of `{"timestamp", "value"}` objects in `rainfall.geojson` instead of a scalar. IFD hyetographs can be expressed this way but require manual conversion to the list format. The test model only demonstrates constant-rate rainfall.
 - **Hydrograph inflows are supported** — use LineString features with `"type": "Surface"` in `inflow.geojson`. Time-varying Q(t) uses the same `{"timestamp", "value"}` list format. Not yet documented or demonstrated in the test model.
 - **No time-varying boundary levels** — Dirichlet boundaries are hardcoded to 0 m stage. No tidal curves or time-dependent water levels at boundaries.
 
