@@ -14,12 +14,18 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-sim = [
-    "numpy>=1.24",
-    "pandas>=1.5",
+# Pure-Python sim deps. Wheels available on bare CI runners (no apt needed).
+# Split out from [sim] so [dev] can pull them in without dragging GDAL/rasterio.
+sim-light = [
+    "numpy>=2.0",
+    "pandas>=2.0",
     "dill>=0.3",
     "psutil>=5.9",
     "shapely>=2.0",
+]
+sim = [
+    "run_anuga[sim-light]",
+    "GDAL",
     "rasterio>=1.3",
     "geopandas>=0.13",
 ]
@@ -36,15 +42,18 @@ full = [
     "run_anuga[sim]",
     "run_anuga[viz]",
     "run_anuga[platform]",
-    "anuga",
+    # anuga-community/anuga_core declares numpy>=2.0.0 since v3.3.0 (2026-03-30).
+    "anuga>=3.3.0",
     "celery>=5.2",
     "django>=4.2",
 ]
 dev = [
+    "run_anuga[sim-light]",
     "pytest>=7.0",
     "ruff>=0.1",
     "jsonschema>=4.17",
     "hypothesis>=6.0",
+    "requests>=2.28",
 ]
 
 [project.scripts]

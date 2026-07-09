@@ -26,8 +26,6 @@ def cmd_validate(args):
         config = ScenarioConfig.from_package(args.package_dir)
         print(f"Valid scenario: {config.run_label}")
         print(f"  Duration: {config.duration}s, EPSG: {config.epsg}")
-        if config.simplify_mesh:
-            print("  Mesh: adaptive (mesher)")
         if config.resolution:
             print(f"  Resolution: {config.resolution}m")
     except Exception as e:
@@ -69,13 +67,38 @@ def cmd_run(args):
             args.batch_number,
             args.checkpoint_time,
         )
-    else:
-        run_sim(
-            args.package_dir,
-            callback=LoggingCallback(),
-            batch_number=args.batch_number,
-            checkpoint_time=args.checkpoint_time,
-        )
+        return
+
+    # TASK-1160 (F1b): leave the callback unset by default so run_sim's env-based
+    # auto-construct kicks in — when HYDRATA_INTERNAL_COMPUTE_TOKEN is present
+    # and scenario.json carries a control_server, a HydrataCallback streams
+    # /log/ + /progress/ to the control server (matching bare ``python run.py``).
+    # When neither is set, run_sim falls back to NullCallback (silent).
+    # --log-to-stdout forces LoggingCallback regardless of the env, for
+    # standalone debugging or when the token IS set but you want stdout output.
+    callback = LoggingCallback() if args.log_to_stdout else None
+    run_sim(
+        args.package_dir,
+        callback=callback,
+        batch_number=args.batch_number,
+        checkpoint_time=args.checkpoint_time,
+    )
+
+
+def cmd_run_and_report(args):
+    """Run a simulation and hand the results back to the Hydrata control server.
+
+    TASK-1159 (F1): one entry point for both Batch (via mpirun) and the F2
+    localhost dispatcher. Reads scenario.json + env (HYDRATA_INTERNAL_COMPUTE_TOKEN,
+    RESULT_S3_BUCKET), runs the sim, zips outputs, uploads to S3, POSTs
+    /process-result/. POSTs /error/ on any failure.
+    """
+    from run_anuga._handoff import run_and_report
+
+    result = run_and_report(args.package_dir, result_bucket=args.result_bucket)
+    if result.get("result_key"):
+        print(f"result_key: {result['result_key']}")
+        print(f"process_result_status: {result['process_result_status']}")
 
 
 def cmd_post_process(args):
@@ -134,6 +157,24 @@ def main():
     )
     run_parser.add_argument(
         "--checkpoint-time", "-ct", type=float, default=None
+    )
+    run_parser.add_argument(
+        "--log-to-stdout",
+        action="store_true",
+        help="Force LoggingCallback (stdout-only) even when the token env is set; for standalone debugging.",
+    )
+
+    # --- run-and-report ---
+    rar_parser = subparsers.add_parser(
+        "run-and-report",
+        help="Run a simulation, zip + upload results, and POST /process-result/ (TASK-1159 F1)",
+    )
+    rar_parser.add_argument(
+        "package_dir", help="Path to scenario package directory"
+    )
+    rar_parser.add_argument(
+        "--result-bucket",
+        help="S3 bucket for the result zip (defaults to RESULT_S3_BUCKET env var)",
     )
 
     # --- validate ---
@@ -202,6 +243,7 @@ def main():
 
     commands = {
         "run": cmd_run,
+        "run-and-report": cmd_run_and_report,
         "validate": cmd_validate,
         "info": cmd_info,
         "post-process": cmd_post_process,
