@@ -423,7 +423,9 @@ class SimulationMonitor:
             else 0.0
         )
         collapse_ratio = (min_dt_ms / first_dt_ms) if first_dt_ms > 0 else 1.0
-        stable = max_implied_ms < INSTABILITY_SPEED_THRESHOLD_MS
+        # bool() because max_implied_ms may be a numpy scalar (prod domains),
+        # making this comparison an np.bool that json.dump refuses (run 1284).
+        stable = bool(max_implied_ms < INSTABILITY_SPEED_THRESHOLD_MS)
 
         # Outcome
         completed = (
@@ -515,7 +517,7 @@ class SimulationMonitor:
         finished_at = datetime.now(tz=timezone.utc)
         summary = self._build_summary(finished_at)
         with open(self._json_path, "w") as f:
-            json.dump(summary, f, indent=2)
+            json.dump(summary, f, indent=2, default=_json_default)
         logger.info("Run summary written to: %s", self._json_path)
 
     # ------------------------------------------------------------------
@@ -542,3 +544,30 @@ class SimulationMonitor:
         self._write_summary()
         self._csv_file.close()
         logger.info("Diagnostics written to: %s", self._csv_path)
+
+
+def _json_default(o):
+    """Coerce numpy scalars (np.bool/np.integer/np.floating expose .item())
+    so the run summary can never crash on domain-derived values (TASK-2033,
+    run 1284: np.bool in `stability` killed the container post-evolve)."""
+    item = getattr(o, "item", None)
+    if callable(item):
+        try:
+            return o.item()
+        except Exception:
+            pass
+    return str(o)
+
+
+def finalize_monitor_safely(monitor) -> None:
+    """finalize() writes telemetry only — it must never kill a completed run
+    (TASK-2033, run 1284: a summary-serialization TypeError after a 100%
+    evolve exited the container before the handoff could upload anything)."""
+    if monitor is None:
+        return
+    try:
+        monitor.finalize()
+    except Exception:
+        logger.warning(
+            "diagnostics finalize failed; continuing to handoff", exc_info=True
+        )

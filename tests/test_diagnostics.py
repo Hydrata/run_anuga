@@ -689,3 +689,52 @@ class TestRunSummaryJSON:
         assert run["project"] == 0
         assert run["scenario"] == 0
         assert run["name"] == ""
+
+
+class TestNumpySafetyAndFinalizeGuard:
+    """TASK-2033 (run 1284): telemetry must never kill a completed run.
+
+    On the baked x32 image (numpy 2.x) the domain quantities yield numpy
+    scalars in the per-yieldstep records, so `stable` (a numpy comparison)
+    and the rounded implied speeds reach json.dump as np.bool/np.float64 —
+    which crashed _write_summary AFTER a 100%-complete evolve and took the
+    whole container (and the handoff) down with exit 1.
+    """
+
+    def test_finalize_survives_numpy_scalars_in_records(self, tmp_path):
+        domain = _make_mock_domain(n=4)
+        mon = SimulationMonitor(domain, str(tmp_path), 1, yieldstep=60, duration_s=60.0)
+        mon.record(60.0, wall_time_s=16.0)
+        # Reproduce the prod record shape: numpy scalars, not Python floats.
+        for rec in mon._records:
+            rec["implied_max_speed_ms"] = np.float64(rec["implied_max_speed_ms"])
+            rec["sim_time_s"] = np.float64(rec["sim_time_s"])
+            rec["max_speed_ms"] = np.float64(rec["max_speed_ms"])
+            rec["max_depth_m"] = np.float64(rec["max_depth_m"])
+        mon.finalize()
+        data = json.loads((tmp_path / "run_summary_1.json").read_text())
+        assert isinstance(data["stability"]["stable"], bool)
+        assert isinstance(data["stability"]["max_implied_speed_ms"], float)
+
+    def test_finalize_monitor_safely_swallows_exceptions(self, tmp_path):
+        from run_anuga.diagnostics import finalize_monitor_safely
+
+        class ExplodingMonitor:
+            def finalize(self):
+                raise TypeError("Object of type bool is not JSON serializable")
+
+        # Must not raise — a telemetry failure downgrades to a warning.
+        finalize_monitor_safely(ExplodingMonitor())
+        finalize_monitor_safely(None)
+
+    def test_finalize_monitor_safely_calls_finalize(self, tmp_path):
+        from run_anuga.diagnostics import finalize_monitor_safely
+
+        calls = []
+
+        class OkMonitor:
+            def finalize(self):
+                calls.append(1)
+
+        finalize_monitor_safely(OkMonitor())
+        assert calls == [1]
