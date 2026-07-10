@@ -111,33 +111,48 @@ def _resolve_multiprocessor_mode(input_data):
         return _MULTIPROCESSOR_OPENMP
 
 
+def _get_module_offload_probe():
+    """The process-wide offload probe. Upstream anuga develop exports
+    ``gpu_offload_enabled`` at package level (anuga/__init__.py); the fork
+    predates it. Returns the callable, or None on engines without it.
+    Separate helper so tests can monkeypatch it hermetically."""
+    try:
+        from anuga import gpu_offload_enabled
+    except Exception:
+        return None
+    return gpu_offload_enabled
+
+
 def _assert_gpu_engaged(domain, requested_mode):
     """FAIL the run if mode 2 (GPU) was requested but did not actually engage
-    (TASK-2197, epic 2190 W4.1).
+    (TASK-2197, epic 2190 W4.1; signal set corrected by the W4 adversarial
+    review P0, verified against upstream anuga develop@57a64abf — the engine
+    the GPU image actually bakes).
 
-    Today ``domain.set_multiprocessor_mode``'s GPU-unavailable path (missing
-    cupy / missing OMP-target device) is warn-and-continue: it silently falls
-    back to mode 1 and the run completes as an ordinary CPU run with no
-    signal that GPU hardware was never used. ``OMP_TARGET_OFFLOAD=MANDATORY``
-    (baked into the GPU image) only fail-louds the OpenMP-target CODE PATH
-    itself — it says nothing about a mode-1 fallback happening one layer up,
-    inside ``set_multiprocessor_mode``. This closes that hole.
+    Two DISTINCT fallbacks must both fail the run:
 
-    getattr-defensive so it degrades across engine variants — the fork
-    installed on this box has none of these signals; the GPU image bakes
-    upstream anuga ``develop``, whose exact probe surface this box cannot
-    introspect:
+    * MODE fallback — the engine downgraded mode 2 to mode 1 ('legacy'):
+      upstream does this under MPI without an MPI-enabled gpu_ext build; the
+      fork does it (via a ``set_multiprocessor_mode`` exception that run_sim
+      catches) when cupy/GPU is missing. Caught by the mode-retention check.
+    * OFFLOAD fallback — upstream develop >= 9c409229 KEEPS
+      ``multiprocessor_mode=2`` when 'unified' resolves to CPU-multicore
+      (offload unsupported / disabled / no device): mode retention reads 2 on
+      a run that never touches the GPU. Caught only by the offload signals:
+      ``domain.gpu_offload_active`` (stamped at gpu-interface init from the
+      process-wide state), a per-domain ``gpu_offload_enabled()`` method if
+      an engine variant exposes one, or the package-level
+      ``anuga.gpu_offload_enabled()`` (upstream exports it; the fork does
+      not). The package probe is consulted only when the domain exposes no
+      offload signal (e.g. upstream's CUDA/CuPy interface path never stamps
+      ``gpu_offload_active``).
 
-      1. ``domain.gpu_offload_enabled()`` — the richest signal, if the engine
-         exposes one. Present-but-``False`` or a raising probe is a hard
-         failure (a probe that exists but can't confirm engagement must not
-         be treated as silent success).
-      2. ``domain.get_multiprocessor_mode()`` / ``domain.multiprocessor_mode``
-         — did the mode actually STICK at 2, or did ``set_multiprocessor_mode``
-         silently downgrade it to 1 (the fork's real behaviour today when
-         cupy/GPU is unavailable)?
-      3. Neither signal available at all -> FAIL CLOSED. Mode 2 was
-         requested; "cannot prove engagement" must never read as "engaged".
+    Every signal the engine exposes must AGREE; any exposed signal reporting
+    "not engaged" fails the run. An engine exposing NO signal at all fails
+    closed. An engine exposing only the mode signal (the fork) passes on
+    retention alone — pre-offload-selector engines have no silent CPU-mode-2:
+    their mode 2 IS the GPU path, and their GPU-unavailable path drops the
+    mode (caught above).
 
     No-op when ``requested_mode`` is not 2 — a CPU image has no GPU probe at
     all, so this must never be reached (let alone raise) on the CPU path.
@@ -145,37 +160,79 @@ def _assert_gpu_engaged(domain, requested_mode):
     if requested_mode != _MULTIPROCESSOR_GPU:
         return
 
+    failures = []
+    checked = []
+
+    # Mode retention — catches both engines' mode-1 fallbacks.
+    getter = getattr(domain, 'get_multiprocessor_mode', None)
+    actual_mode = getter() if callable(getter) else getattr(domain, 'multiprocessor_mode', None)
+    if actual_mode is not None:
+        checked.append(f"multiprocessor_mode={actual_mode!r}")
+        if actual_mode != _MULTIPROCESSOR_GPU:
+            failures.append(
+                f"the engine's active multiprocessor_mode is {actual_mode!r} "
+                "— GPU offload did not engage (silent CPU fallback)"
+            )
+
+    # Per-domain resolved offload state (upstream: stamped at gpu-interface
+    # init from the process-wide gpu_offload_enabled()).
+    offload_checked = False
+    active = getattr(domain, 'gpu_offload_active', None)
+    if active is not None:
+        offload_checked = True
+        checked.append(f"gpu_offload_active={bool(active)!r}")
+        if not active:
+            failures.append(
+                "domain.gpu_offload_active is False — 'unified' is running "
+                "CPU-multicore with no GPU offload"
+            )
+
+    # Per-domain probe method, if an engine variant exposes one.
     probe = getattr(domain, 'gpu_offload_enabled', None)
     if callable(probe):
+        offload_checked = True
         try:
             engaged = bool(probe())
         except Exception as exc:
-            raise RuntimeError(
-                f"GPU offload requested (mode={_MULTIPROCESSOR_GPU}) but "
-                f"gpu_offload_enabled() raised: {exc!r}"
-            ) from exc
-        if not engaged:
-            raise RuntimeError(
-                f"GPU offload requested (mode={_MULTIPROCESSOR_GPU}) but "
-                "gpu_offload_enabled() reports False — refusing to run "
-                "silently in CPU mode."
-            )
-        return
+            failures.append(f"gpu_offload_enabled() raised: {exc!r}")
+        else:
+            checked.append(f"domain.gpu_offload_enabled()={engaged!r}")
+            if not engaged:
+                failures.append("gpu_offload_enabled() reports False")
 
-    getter = getattr(domain, 'get_multiprocessor_mode', None)
-    actual_mode = getter() if callable(getter) else getattr(domain, 'multiprocessor_mode', None)
-    if actual_mode is None:
+    # Package-level probe — only when the domain exposed no offload signal.
+    if not offload_checked:
+        module_probe = _get_module_offload_probe()
+        if callable(module_probe):
+            try:
+                engaged = bool(module_probe())
+            except Exception as exc:
+                failures.append(f"anuga.gpu_offload_enabled() raised: {exc!r}")
+            else:
+                checked.append(f"anuga.gpu_offload_enabled()={engaged!r}")
+                if not engaged:
+                    failures.append(
+                        "anuga.gpu_offload_enabled() reports False — "
+                        "process-wide GPU offload is off (unsupported build, "
+                        "no device, or disabled at launch)"
+                    )
+
+    if failures:
+        raise RuntimeError(
+            f"GPU offload requested (mode={_MULTIPROCESSOR_GPU}) but did not "
+            f"engage: {'; '.join(failures)} — refusing to run silently in "
+            "CPU mode."
+        )
+
+    if not checked:
         raise RuntimeError(
             f"GPU offload requested (mode={_MULTIPROCESSOR_GPU}) but the "
-            "engine exposes no gpu_offload_enabled()/multiprocessor_mode "
-            "signal to verify it — refusing to run unverified."
+            "engine exposes no gpu_offload_enabled()/gpu_offload_active/"
+            "multiprocessor_mode signal to verify it — refusing to run "
+            "unverified."
         )
-    if actual_mode != _MULTIPROCESSOR_GPU:
-        raise RuntimeError(
-            f"GPU offload requested (mode={_MULTIPROCESSOR_GPU}) but the "
-            f"engine's active multiprocessor_mode is {actual_mode!r} — GPU "
-            "offload did not engage (silent CPU fallback)."
-        )
+
+    logger.info("run_sim: GPU engagement verified via %s", ", ".join(checked))
 
 
 def _capture_gpu_model():
@@ -504,6 +561,14 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
             _gpu_model = _capture_gpu_model()
             if _gpu_model:
                 _gpu_features['gpu_model'] = _gpu_model
+            # Per-domain resolved offload state (upstream engines stamp it at
+            # gpu-interface init) — the carrier's hardware proof reads this
+            # alongside gpu_model. bool() cast: never a numpy/engine type in
+            # the summary JSON (the 2033 telemetry lesson). Omitted (not
+            # fabricated) when the engine doesn't expose it.
+            _offload_active = getattr(domain, 'gpu_offload_active', None)
+            if _offload_active is not None:
+                _gpu_features['gpu_offload_active'] = bool(_offload_active)
         phase_tracker.set_mesh_features(**_gpu_features)
 
         # W3 (TASK-1923): record BC types + scenario denorms AFTER set_boundary

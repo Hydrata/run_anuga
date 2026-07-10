@@ -125,26 +125,94 @@ def test_noop_when_mode_not_gpu():
 
 
 def test_passes_when_gpu_offload_enabled_true():
-    domain = mock.Mock()
+    domain = mock.Mock(spec=["gpu_offload_enabled", "get_multiprocessor_mode"])
     domain.gpu_offload_enabled.return_value = True
+    domain.get_multiprocessor_mode.return_value = _MULTIPROCESSOR_GPU
     _assert_gpu_engaged(domain, _MULTIPROCESSOR_GPU)  # must not raise
 
 
 def test_raises_when_gpu_offload_enabled_false():
-    domain = mock.Mock()
+    domain = mock.Mock(spec=["gpu_offload_enabled", "get_multiprocessor_mode"])
     domain.gpu_offload_enabled.return_value = False
+    domain.get_multiprocessor_mode.return_value = _MULTIPROCESSOR_GPU
     with pytest.raises(RuntimeError, match="gpu_offload_enabled"):
         _assert_gpu_engaged(domain, _MULTIPROCESSOR_GPU)
 
 
 def test_raises_when_gpu_offload_enabled_probe_itself_raises():
-    domain = mock.Mock()
+    domain = mock.Mock(spec=["gpu_offload_enabled", "get_multiprocessor_mode"])
     domain.gpu_offload_enabled.side_effect = RuntimeError("device query failed")
+    domain.get_multiprocessor_mode.return_value = _MULTIPROCESSOR_GPU
     with pytest.raises(RuntimeError, match="gpu_offload_enabled"):
         _assert_gpu_engaged(domain, _MULTIPROCESSOR_GPU)
 
 
-def test_falls_back_to_get_multiprocessor_mode_when_no_probe():
+def test_falls_back_to_get_multiprocessor_mode_when_no_probe(monkeypatch):
+    """Retention-only pass is legal ONLY on engines exposing no offload signal
+    at all (the fork): pre-offload-selector engines have no silent CPU-mode-2
+    — their mode 2 IS the GPU path. Hermetic: force the module probe absent
+    (this box's fork genuinely lacks it, but don't depend on that)."""
+    import run_anuga.run as run_module
+    monkeypatch.setattr(run_module, "_get_module_offload_probe",
+                        lambda: None, raising=False)
+    domain = mock.Mock(spec=["get_multiprocessor_mode"])
+    domain.get_multiprocessor_mode.return_value = _MULTIPROCESSOR_GPU
+    _assert_gpu_engaged(domain, _MULTIPROCESSOR_GPU)  # must not raise
+
+
+# --- W4 adversarial-review P0: upstream develop >= 9c409229 semantics -------
+# set_compute_mode('unified') KEEPS multiprocessor_mode=2 even when GPU offload
+# is unavailable and the unified kernels run CPU-multicore — mode retention
+# alone reads "engaged" on a silent CPU fallback. The per-domain truth is
+# domain.gpu_offload_active (stamped at gpu-interface init from the
+# process-wide gpu_offload_enabled()); the package-level probe backs it up.
+
+
+def test_upstream_unified_cpu_multicore_fallback_fails():
+    """THE P0 scenario: mode retained at 2, offload NOT active — must fail."""
+    domain = mock.Mock(spec=["get_multiprocessor_mode", "gpu_offload_active"])
+    domain.get_multiprocessor_mode.return_value = _MULTIPROCESSOR_GPU
+    domain.gpu_offload_active = False
+    with pytest.raises(RuntimeError, match="gpu_offload_active"):
+        _assert_gpu_engaged(domain, _MULTIPROCESSOR_GPU)
+
+
+def test_upstream_unified_offload_active_passes():
+    domain = mock.Mock(spec=["get_multiprocessor_mode", "gpu_offload_active"])
+    domain.get_multiprocessor_mode.return_value = _MULTIPROCESSOR_GPU
+    domain.gpu_offload_active = True
+    _assert_gpu_engaged(domain, _MULTIPROCESSOR_GPU)  # must not raise
+
+
+def test_mode_fallback_fails_even_when_offload_signal_reads_true():
+    """Upstream's 'unified'-under-MPI fallback drops to 'legacy' (mode 1)
+    while the process-wide offload state can still read enabled — every
+    exposed signal must agree; mode 1 fails regardless."""
+    domain = mock.Mock(spec=["get_multiprocessor_mode", "gpu_offload_active"])
+    domain.get_multiprocessor_mode.return_value = _MULTIPROCESSOR_OPENMP
+    domain.gpu_offload_active = True
+    with pytest.raises(RuntimeError, match="did not engage"):
+        _assert_gpu_engaged(domain, _MULTIPROCESSOR_GPU)
+
+
+def test_module_probe_false_fails_when_domain_has_no_offload_signal(monkeypatch):
+    """Upstream's CUDA/CuPy interface path never stamps gpu_offload_active —
+    the package-level anuga.gpu_offload_enabled() is then the only offload
+    signal, and False must fail the run (W4 review P1: the original code
+    probed a domain METHOD that upstream never defines)."""
+    import run_anuga.run as run_module
+    monkeypatch.setattr(run_module, "_get_module_offload_probe",
+                        lambda: (lambda: False), raising=False)
+    domain = mock.Mock(spec=["get_multiprocessor_mode"])
+    domain.get_multiprocessor_mode.return_value = _MULTIPROCESSOR_GPU
+    with pytest.raises(RuntimeError, match="gpu_offload_enabled"):
+        _assert_gpu_engaged(domain, _MULTIPROCESSOR_GPU)
+
+
+def test_module_probe_true_passes_when_domain_has_no_offload_signal(monkeypatch):
+    import run_anuga.run as run_module
+    monkeypatch.setattr(run_module, "_get_module_offload_probe",
+                        lambda: (lambda: True), raising=False)
     domain = mock.Mock(spec=["get_multiprocessor_mode"])
     domain.get_multiprocessor_mode.return_value = _MULTIPROCESSOR_GPU
     _assert_gpu_engaged(domain, _MULTIPROCESSOR_GPU)  # must not raise
