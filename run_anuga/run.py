@@ -68,6 +68,204 @@ def _finalize_with_timeout(finalize, timeout_seconds=None):
         signal.signal(signal.SIGALRM, previous_handler)
 
 
+# TASK-2197 (epic 2190 W4.1) — multiprocessor-mode vocabulary. Mode 2 = GPU
+# offload; mode 1 = OpenMP (CPU). Named constants (were magic 1/2 literals).
+_MULTIPROCESSOR_OPENMP = 1
+_MULTIPROCESSOR_GPU = 2
+
+
+def _resolve_multiprocessor_mode(input_data):
+    """Resolve multiprocessor_mode: env OVERRIDES scenario.json (TASK-2197).
+
+    ``RUN_ANUGA_MULTIPROCESSOR_MODE`` is how the dispatcher
+    (``gn_anuga.services.resolve_target_dispatch``) drives mode=2 for the
+    ``batch-gpu-a10g`` compute target — via a container-override env var, so
+    the (immutable) scenario package never has to be mutated per-target.
+    ``scenario_config['multiprocessor_mode']`` remains the fallback for an
+    ad-hoc / non-dispatcher-driven run (e.g. a local GPU benchmark).
+
+    A present-but-invalid env value logs a warning and falls through to the
+    scenario_config source (same precedence as "env absent"); an absent/blank
+    env is silently treated as absent. Both sources apply the TASK-1954-review
+    falsy-mode->1 coercion (5d5328f): ``'0' or 1`` would otherwise stay the
+    truthy string ``'0'`` and yield mode 0 — coercing to ``int`` FIRST then
+    ``or 1`` fixes that.
+    """
+    env_raw = os.environ.get('RUN_ANUGA_MULTIPROCESSOR_MODE', '').strip()
+    if env_raw:
+        try:
+            return int(env_raw) or _MULTIPROCESSOR_OPENMP
+        except (TypeError, ValueError):
+            logger.warning(
+                "run_sim: invalid RUN_ANUGA_MULTIPROCESSOR_MODE=%r; "
+                "falling back to scenario_config", env_raw,
+            )
+    try:
+        return int(
+            input_data['scenario_config'].get('multiprocessor_mode', _MULTIPROCESSOR_OPENMP)
+        ) or _MULTIPROCESSOR_OPENMP
+    except (TypeError, ValueError):
+        logger.warning(
+            "run_sim: invalid multiprocessor_mode in scenario_config; defaulting to 1"
+        )
+        return _MULTIPROCESSOR_OPENMP
+
+
+def _get_module_offload_probe():
+    """The process-wide offload probe. Upstream anuga develop exports
+    ``gpu_offload_enabled`` at package level (anuga/__init__.py); the fork
+    predates it. Returns the callable, or None on engines without it.
+    Separate helper so tests can monkeypatch it hermetically."""
+    try:
+        from anuga import gpu_offload_enabled
+    except Exception:
+        return None
+    return gpu_offload_enabled
+
+
+def _assert_gpu_engaged(domain, requested_mode):
+    """FAIL the run if mode 2 (GPU) was requested but did not actually engage
+    (TASK-2197, epic 2190 W4.1; signal set corrected by the W4 adversarial
+    review P0, verified against upstream anuga develop@57a64abf — the engine
+    the GPU image actually bakes).
+
+    Two DISTINCT fallbacks must both fail the run:
+
+    * MODE fallback — the engine downgraded mode 2 to mode 1 ('legacy'):
+      upstream does this under MPI without an MPI-enabled gpu_ext build; the
+      fork does it (via a ``set_multiprocessor_mode`` exception that run_sim
+      catches) when cupy/GPU is missing. Caught by the mode-retention check.
+    * OFFLOAD fallback — upstream develop >= 9c409229 KEEPS
+      ``multiprocessor_mode=2`` when 'unified' resolves to CPU-multicore
+      (offload unsupported / disabled / no device): mode retention reads 2 on
+      a run that never touches the GPU. Caught only by the offload signals:
+      ``domain.gpu_offload_active`` (stamped at gpu-interface init from the
+      process-wide state), a per-domain ``gpu_offload_enabled()`` method if
+      an engine variant exposes one, or the package-level
+      ``anuga.gpu_offload_enabled()`` (upstream exports it; the fork does
+      not). The package probe is consulted only when the domain exposes no
+      offload signal (e.g. upstream's CUDA/CuPy interface path never stamps
+      ``gpu_offload_active``).
+
+    Every signal the engine exposes must AGREE; any exposed signal reporting
+    "not engaged" fails the run. An engine exposing NO signal at all fails
+    closed. An engine exposing only the mode signal (the fork) passes on
+    retention alone — pre-offload-selector engines have no silent CPU-mode-2:
+    their mode 2 IS the GPU path, and their GPU-unavailable path drops the
+    mode (caught above).
+
+    No-op when ``requested_mode`` is not 2 — a CPU image has no GPU probe at
+    all, so this must never be reached (let alone raise) on the CPU path.
+    """
+    if requested_mode != _MULTIPROCESSOR_GPU:
+        return
+
+    failures = []
+    checked = []
+
+    # Mode retention — catches both engines' mode-1 fallbacks.
+    getter = getattr(domain, 'get_multiprocessor_mode', None)
+    actual_mode = getter() if callable(getter) else getattr(domain, 'multiprocessor_mode', None)
+    if actual_mode is not None:
+        checked.append(f"multiprocessor_mode={actual_mode!r}")
+        if actual_mode != _MULTIPROCESSOR_GPU:
+            failures.append(
+                f"the engine's active multiprocessor_mode is {actual_mode!r} "
+                "— GPU offload did not engage (silent CPU fallback)"
+            )
+
+    # Per-domain resolved offload state (upstream: stamped at gpu-interface
+    # init from the process-wide gpu_offload_enabled()).
+    offload_checked = False
+    active = getattr(domain, 'gpu_offload_active', None)
+    if active is not None:
+        offload_checked = True
+        checked.append(f"gpu_offload_active={bool(active)!r}")
+        if not active:
+            failures.append(
+                "domain.gpu_offload_active is False — 'unified' is running "
+                "CPU-multicore with no GPU offload"
+            )
+
+    # Per-domain probe method, if an engine variant exposes one.
+    probe = getattr(domain, 'gpu_offload_enabled', None)
+    if callable(probe):
+        offload_checked = True
+        try:
+            engaged = bool(probe())
+        except Exception as exc:
+            failures.append(f"gpu_offload_enabled() raised: {exc!r}")
+        else:
+            checked.append(f"domain.gpu_offload_enabled()={engaged!r}")
+            if not engaged:
+                failures.append("gpu_offload_enabled() reports False")
+
+    # Package-level probe — only when the domain exposed no offload signal.
+    if not offload_checked:
+        module_probe = _get_module_offload_probe()
+        if callable(module_probe):
+            try:
+                engaged = bool(module_probe())
+            except Exception as exc:
+                failures.append(f"anuga.gpu_offload_enabled() raised: {exc!r}")
+            else:
+                checked.append(f"anuga.gpu_offload_enabled()={engaged!r}")
+                if not engaged:
+                    failures.append(
+                        "anuga.gpu_offload_enabled() reports False — "
+                        "process-wide GPU offload is off (unsupported build, "
+                        "no device, or disabled at launch)"
+                    )
+
+    if failures:
+        raise RuntimeError(
+            f"GPU offload requested (mode={_MULTIPROCESSOR_GPU}) but did not "
+            f"engage: {'; '.join(failures)} — refusing to run silently in "
+            "CPU mode."
+        )
+
+    if not checked:
+        raise RuntimeError(
+            f"GPU offload requested (mode={_MULTIPROCESSOR_GPU}) but the "
+            "engine exposes no gpu_offload_enabled()/gpu_offload_active/"
+            "multiprocessor_mode signal to verify it — refusing to run "
+            "unverified."
+        )
+
+    logger.info("run_sim: GPU engagement verified via %s", ", ".join(checked))
+
+
+def _capture_gpu_model():
+    """Best-effort GPU model string (TASK-2197) — NVML (pynvml) first, then
+    the ``nvidia-smi`` CLI. Import/getattr-defensive; NEVER raises. Runs on
+    every mode-2 request, so a probe failure here must degrade to ``None``,
+    not become a second failure mode alongside :func:`_assert_gpu_engaged`.
+    """
+    try:
+        import pynvml
+        pynvml.nvmlInit()
+        try:
+            handle = pynvml.nvmlDeviceGetHandleByIndex(0)
+            name = pynvml.nvmlDeviceGetName(handle)
+            return name.decode() if isinstance(name, bytes) else name
+        finally:
+            pynvml.nvmlShutdown()
+    except Exception:
+        pass
+    try:
+        import subprocess
+        result = subprocess.run(
+            ['nvidia-smi', '--query-gpu=name', '--format=csv,noheader'],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode == 0:
+            name = result.stdout.strip().splitlines()[0].strip()
+            return name or None
+    except Exception:
+        pass
+    return None
+
+
 def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoint_time=None, callback=None):
     # Lazy imports — these are only needed when actually running a simulation.
     anuga = import_optional("anuga")
@@ -336,19 +534,9 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
         # Mode 2 = GPU offload via NVIDIA HPC SDK (nvc -mp=gpu); mode 1 = OpenMP.
         # ScenarioConfig allows extra fields (model_config extra=allow) so
         # multiprocessor_mode passes through unvalidated when absent.
-        _multiprocessor_mode = 1
-        try:
-            # `or 1` applies to the *coerced* int so a falsy mode (0 / '0')
-            # defaults to 1 (OpenMP), matching the documented intent — `'0' or 1`
-            # would otherwise stay truthy '0' and yield mode 0 (TASK-1954 review).
-            _multiprocessor_mode = int(
-                input_data['scenario_config'].get('multiprocessor_mode', 1)
-            ) or 1
-        except (TypeError, ValueError):
-            logger.warning(
-                "run_sim: invalid multiprocessor_mode in scenario_config; defaulting to 1"
-            )
-            _multiprocessor_mode = 1
+        # TASK-2197 (epic 2190 W4.1): env now beats scenario.json (see
+        # _resolve_multiprocessor_mode) — the package stays immutable.
+        _multiprocessor_mode = _resolve_multiprocessor_mode(input_data)
         try:
             domain.set_multiprocessor_mode(_multiprocessor_mode)
             logger.info("run_sim: multiprocessor_mode=%s", _multiprocessor_mode)
@@ -357,6 +545,31 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
                 "run_sim: set_multiprocessor_mode(%s) failed; continuing",
                 _multiprocessor_mode, exc_info=True,
             )
+        # TASK-2197 — a mode-2 request that did not actually engage GPU
+        # offload now FAILS the run (was silent). No-op for mode 1.
+        _assert_gpu_engaged(domain, _multiprocessor_mode)
+        # TASK-2197 — capture the actual mode + (best-effort) GPU model into
+        # the resource-summary feature bag alongside mesh_triangle_count etc,
+        # so BatchJobResourceRecord carries per-run hardware proof.
+        # AdminRunResourceRecordSerializer.get_mode/get_gpu_model already read
+        # raw['features'] (TASK-2195) — this is the write side. gpu_model is
+        # omitted entirely (never a fabricated None) on the CPU path.
+        _gpu_features = {
+            'mode': 'gpu' if _multiprocessor_mode == _MULTIPROCESSOR_GPU else 'cpu',
+        }
+        if _multiprocessor_mode == _MULTIPROCESSOR_GPU:
+            _gpu_model = _capture_gpu_model()
+            if _gpu_model:
+                _gpu_features['gpu_model'] = _gpu_model
+            # Per-domain resolved offload state (upstream engines stamp it at
+            # gpu-interface init) — the carrier's hardware proof reads this
+            # alongside gpu_model. bool() cast: never a numpy/engine type in
+            # the summary JSON (the 2033 telemetry lesson). Omitted (not
+            # fabricated) when the engine doesn't expose it.
+            _offload_active = getattr(domain, 'gpu_offload_active', None)
+            if _offload_active is not None:
+                _gpu_features['gpu_offload_active'] = bool(_offload_active)
+        phase_tracker.set_mesh_features(**_gpu_features)
 
         # W3 (TASK-1923): record BC types + scenario denorms AFTER set_boundary
         # so domain.boundary reflects the actual tags used for this run.
