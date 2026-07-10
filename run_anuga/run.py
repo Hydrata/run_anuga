@@ -17,7 +17,7 @@ from run_anuga.run_utils import is_dir_check, setup_input_data, create_anuga_mes
 from run_anuga import defaults
 from run_anuga import phase_tracker
 from run_anuga.callbacks import NullCallback, HydrataCallback
-from run_anuga.diagnostics import SimulationMonitor
+from run_anuga.diagnostics import SimulationMonitor, finalize_monitor_safely
 from run_anuga._logging import install_mname_filter
 
 try:
@@ -479,8 +479,8 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
         barrier()
         if anuga.myid == 0:
             # Write run_diagnostics_N.csv + run_summary_N.json (stability/outcome).
-            if monitor is not None:
-                monitor.finalize()
+            # Guarded: telemetry failure must not abort the handoff (TASK-2033).
+            finalize_monitor_safely(monitor)
             max_memory_usage = int(round(max(memory_usage_logs)))
             callback.on_metric('memory_used', max_memory_usage)
             logger.info("Processing results...")
