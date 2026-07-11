@@ -284,20 +284,41 @@ def create_anuga_mesh(input_data):
     )
     # TASK-1270: universal burn removed. Only Raised structures apply a height
     # change (post-mesh, in run.py). Reflective is a mesh void; Mannings is friction-only.
-    anuga_mesh = anuga.pmesh.mesh_interface.create_mesh_from_regions(
-        bounding_polygon=bounding_polygon,
-        boundary_tags=boundary_tags,
-        maximum_triangle_area=triangle_resolution,
-        interior_regions=interior_regions,
-        interior_holes=interior_holes,
-        hole_tags=hole_tags,
-        mesh_geo_reference=mesh_geo_reference,
-        filename=mesh_filepath,
-        breaklines=breaklines if breaklines else None,
-        use_cache=False,
-        verbose=False,
-        fail_if_polygons_outside=False
-    )
+    def _build_mesh(bl):
+        return anuga.pmesh.mesh_interface.create_mesh_from_regions(
+            bounding_polygon=bounding_polygon,
+            boundary_tags=boundary_tags,
+            maximum_triangle_area=triangle_resolution,
+            interior_regions=interior_regions,
+            interior_holes=interior_holes,
+            hole_tags=hole_tags,
+            mesh_geo_reference=mesh_geo_reference,
+            filename=mesh_filepath,
+            breaklines=bl,
+            use_cache=False,
+            verbose=False,
+            fail_if_polygons_outside=False
+        )
+
+    # TASK-1715: a conditioned breakline is normally a valid Triangle PSLG, but the
+    # conditioner cannot GUARANTEE every hand-drawn line yields a Triangle-acceptable
+    # constraint (e.g. a line coincident with a boundary edge, or a crossing the noder
+    # could not fully resolve). If Triangle rejects the conformed build, DEGRADE to
+    # grading-only (breaklines=None — the pre-1715 behaviour; density is still graded
+    # by the make_breaklines buffer rings above) rather than aborting the whole run at
+    # mesh-gen. Only the with-breaklines attempt is guarded; a failure of the plain
+    # build (OOM, bad boundary, …) still propagates.
+    try:
+        anuga_mesh = _build_mesh(breaklines if breaklines else None)
+    except Exception as exc:
+        if not breaklines:
+            raise
+        logger.critical(
+            f"create_anuga_mesh: Triangle rejected the conformed breaklines "
+            f"({exc!r}); retrying grading-only (breaklines=None) so the run proceeds "
+            f"without edge conformance."
+        )
+        anuga_mesh = _build_mesh(None)
     logger.critical(f"mesh_triangle_count={len(anuga_mesh.tri_mesh.triangles)}")
     return mesh_filepath, anuga_mesh
 

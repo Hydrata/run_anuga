@@ -278,3 +278,47 @@ class TestConformanceGuardrails:
             f"conformed mesh triangle count {n_bl} blew past budget "
             f"(5x plain baseline {n_plain})"
         )
+
+
+# ---------------------------------------------------------------------------
+# FALLBACK — a Triangle-rejected breakline degrades to grading-only, never crashes
+# ---------------------------------------------------------------------------
+
+class TestBreaklineTriangleRejectionFallback:
+
+    def test_triangle_rejection_degrades_to_grading_only(self, monkeypatch):
+        """If create_mesh_from_regions raises on the conformed build, create_anuga_mesh
+        retries once with breaklines=None (grading-only) and does NOT propagate — a
+        pathological breakline can never abort the sim at mesh-gen (TASK-1715 fallback)."""
+        import anuga.pmesh.mesh_interface as mi
+        real = mi.create_mesh_from_regions
+        calls = {'with_bl': 0, 'without_bl': 0}
+
+        def flaky(*args, **kwargs):
+            if kwargs.get('breaklines') is not None:
+                calls['with_bl'] += 1
+                raise RuntimeError("simulated Triangle PSLG rejection")
+            calls['without_bl'] += 1
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(mi, 'create_mesh_from_regions', flaky)
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            input_data = _build_input_data(tmp_dir, breakline_lines=[[BREAKLINE_A, BREAKLINE_B]])
+            _, anuga_mesh = create_anuga_mesh(input_data)  # must NOT raise
+        assert calls['with_bl'] == 1, "should have attempted the conformed build exactly once"
+        assert calls['without_bl'] == 1, "should have retried grading-only after rejection"
+        assert len(anuga_mesh.tri_mesh.triangles) > 0, "grading-only fallback still yields a mesh"
+
+    def test_plain_build_failure_still_propagates(self, monkeypatch):
+        """A failure on a build that had NO breaklines is NOT swallowed (the guard is
+        breakline-specific, not a blanket mesh-gen try/except)."""
+        import anuga.pmesh.mesh_interface as mi
+
+        def always_fail(*args, **kwargs):
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(mi, 'create_mesh_from_regions', always_fail)
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            input_data = _build_input_data(tmp_dir, breakline_lines=None)
+            with pytest.raises(RuntimeError, match="boom"):
+                create_anuga_mesh(input_data)
