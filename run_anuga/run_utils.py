@@ -602,6 +602,39 @@ def apply_raised_elevation_correction(domain, raised_pairs):
     return applied
 
 
+def apply_negative_depth_protection(domain):
+    """Run ANUGA's own negative-depth protection on ``domain`` iff any centroid
+    is dry-above-stage (stage < elevation). Returns True if protection ran.
+
+    TASK-2226 — defense-in-depth for run 1283's negative-inlet-volume assert.
+    ANUGA's serial evolve calls protect_against_infinitesimal_and_negative_
+    heights() before any operator's first ``__call__``, so a serial
+    Inlet_operator never sees a negative inlet volume even when a Raised
+    structure (or any bed cell above stage=0.0) leaves the inlet region
+    dry-above-stage. The PARALLEL path's Parallel_Inlet_operator asserts on that
+    negative volume at the FIRST evolve step — BEFORE the scattered sub-domains
+    ever reach protect (run 1283: MPI_ABORT rank 10,
+    anuga/parallel/parallel_inlet_operator.py:121). Calling this on the whole
+    rank-0 domain, pre-distribute(), makes the serial and parallel paths clip
+    identically.
+
+    It is idempotent with evolve's own protect — a successful run is unchanged;
+    the only observable effect is preventing that first-step assert. The
+    gn_anuga build-time guard (assert_inflow_does_not_overlap_raised_structure,
+    epic 2204 W4) blocks the KNOWN geometry conflict at build time; this closes
+    the residual class the guard cannot see — any mechanism that leaves an inlet
+    region dry-above-stage.
+    """
+    stage_centroids = domain.quantities['stage'].centroid_values
+    elevation_centroids = domain.quantities['elevation'].centroid_values
+    # centroid_values are numpy arrays; use the array's own .any() so run_utils
+    # needs no module-level numpy import.
+    if (stage_centroids < elevation_centroids).any():
+        domain.protect_against_infinitesimal_and_negative_heights()
+        return True
+    return False
+
+
 def assert_raster_has_no_nodata_inside_boundary(raster_path, boundary_polygon, *, quantity_name):
     """Pre-flight guard: raise a clear error if a raster has nodata cells inside the model boundary.
 

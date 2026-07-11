@@ -12,7 +12,7 @@ from run_anuga.run_utils import is_dir_check, setup_input_data, create_anuga_mes
     make_frictions, post_process_sww, setup_logger, RunContext, \
     build_time_boundary_function, apply_inflows_to_domain, \
     assert_raster_has_no_nodata_inside_boundary, make_raised_elevation_pairs, \
-    apply_raised_elevation_correction, \
+    apply_raised_elevation_correction, apply_negative_depth_protection, \
     compute_mesh_qa, extract_boundary_condition_types, compute_yieldstep  # W3 (TASK-1923)
 from run_anuga import defaults
 from run_anuga import phase_tracker
@@ -464,6 +464,26 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
                 )
                 domain.set_quantity('friction', friction_function, verbose=False)
             domain.set_quantity('stage', 0.0, verbose=False)
+
+            # TASK-2226 — defense-in-depth for the run-1283 negative-inlet-volume
+            # class. Re-run ANUGA's own protection on the whole rank-0 domain,
+            # AFTER the Raised-structure correction + stage=0.0 init and BEFORE
+            # distribute(), so the PARALLEL Parallel_Inlet_operator never asserts
+            # on a negative inlet volume at the first evolve step (the serial path
+            # already got this for free from evolve). Idempotent with evolve's own
+            # protect; wrapped so a protection failure never introduces a NEW way
+            # to kill a run that would otherwise proceed (evolve still protects).
+            try:
+                if apply_negative_depth_protection(domain):
+                    logger.info(
+                        "Applied pre-distribute negative-depth protection "
+                        "(run-1283 defense-in-depth, TASK-2226)"
+                    )
+            except Exception as e:
+                logger.error(
+                    f"pre-distribute negative-depth protection skipped: {e} "
+                    "— continuing (evolve will still protect on the first step)"
+                )
             domain.set_name(input_data['run_label'])
             domain.set_datadir(input_data['output_directory'])
             domain.set_minimum_storable_height(defaults.MINIMUM_STORABLE_HEIGHT_M)
