@@ -107,26 +107,36 @@ def _point_on_segment(p, a, b, tol=1e-3):
     return cross <= tol
 
 
+def _mesh_offset(anuga_mesh):
+    """(xll, yll) of the mesh geo_reference. Adding it to a mesh-local vertex
+    recovers ABSOLUTE coordinates in either frame:
+      - absolute-UTM path (TASK-2149, epsg + no holes) -> xll=yll=0, verts already absolute;
+      - ANUGA local lower-left offset (None geo_reference) -> xll/yll = boundary corner.
+    Comparing in absolute coords makes the conformance check independent of which
+    mesh_geo_reference create_anuga_mesh chose (the branch that de94f00 predates).
+    """
+    gr = anuga_mesh.geo_reference
+    return gr.get_xllcorner(), gr.get_yllcorner()
+
+
 def _constrained_segments_along_line(anuga_mesh, a, b, tol=1e-3):
     """Count output constrained segments whose BOTH endpoints lie on segment a->b.
 
     tri_mesh.segments holds only the constrained (PSLG) edges — boundary + breaklines
     — so a colinear constrained segment is direct evidence the breakline conformed a
-    mesh edge.  Vertices are in mesh-local coords (offset from boundary lower-left),
-    so the comparison line is offset by the same lower-left corner.
+    mesh edge.  Vertices are lifted to ABSOLUTE coords via the mesh geo_reference so
+    the comparison line (a, b — absolute) matches regardless of the mesh frame.
     """
     verts = anuga_mesh.tri_mesh.vertices
     segs = anuga_mesh.tri_mesh.segments
-    xll = min(p[0] for p in BOUNDARY_POLYGON)
-    yll = min(p[1] for p in BOUNDARY_POLYGON)
-    a_local = (a[0] - xll, a[1] - yll)
-    b_local = (b[0] - xll, b[1] - yll)
+    xoff, yoff = _mesh_offset(anuga_mesh)
     count = 0
     for seg in segs:
         v0 = verts[seg[0]]
         v1 = verts[seg[1]]
-        if _point_on_segment((v0[0], v0[1]), a_local, b_local, tol) and \
-           _point_on_segment((v1[0], v1[1]), a_local, b_local, tol):
+        p0 = (v0[0] + xoff, v0[1] + yoff)
+        p1 = (v1[0] + xoff, v1[1] + yoff)
+        if _point_on_segment(p0, a, b, tol) and _point_on_segment(p1, a, b, tol):
             count += 1
     return count
 
@@ -202,21 +212,22 @@ class TestGradingComposesWithConformance:
             global_max_area = (SCENARIO_CONFIG['resolution'] ** 2) / 2.0
             verts = anuga_mesh.tri_mesh.vertices
             tris = anuga_mesh.tri_mesh.triangles
-            xll = min(p[0] for p in BOUNDARY_POLYGON)
-            yll = min(p[1] for p in BOUNDARY_POLYGON)
-            mid_local = ((BREAKLINE_A[0] + BREAKLINE_B[0]) / 2 - xll,
-                         (BREAKLINE_A[1] + BREAKLINE_B[1]) / 2 - yll)
+            xoff, yoff = _mesh_offset(anuga_mesh)
+            # Compare in ABSOLUTE coords (verts lifted by the mesh offset) so the
+            # midpoint stays valid under either mesh_geo_reference frame.
+            mid_abs = ((BREAKLINE_A[0] + BREAKLINE_B[0]) / 2,
+                       (BREAKLINE_A[1] + BREAKLINE_B[1]) / 2)
 
             def _tri_area(t):
                 (x0, y0), (x1, y1), (x2, y2) = verts[t[0]], verts[t[1]], verts[t[2]]
                 return abs((x1 - x0) * (y2 - y0) - (x2 - x0) * (y1 - y0)) / 2.0
 
             def _tri_centroid_near(t, pt, radius=15.0):
-                cx = (verts[t[0]][0] + verts[t[1]][0] + verts[t[2]][0]) / 3.0
-                cy = (verts[t[0]][1] + verts[t[1]][1] + verts[t[2]][1]) / 3.0
+                cx = (verts[t[0]][0] + verts[t[1]][0] + verts[t[2]][0]) / 3.0 + xoff
+                cy = (verts[t[0]][1] + verts[t[1]][1] + verts[t[2]][1]) / 3.0 + yoff
                 return math.hypot(cx - pt[0], cy - pt[1]) <= radius
 
-            near_areas = [_tri_area(t) for t in tris if _tri_centroid_near(t, mid_local)]
+            near_areas = [_tri_area(t) for t in tris if _tri_centroid_near(t, mid_abs)]
             assert near_areas, "no triangles found near the breakline midpoint"
             assert min(near_areas) < global_max_area, (
                 "no graded refinement near the breakline — grading did not compose "
