@@ -83,17 +83,34 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install system GDAL
+      - name: Install system GDAL + ANUGA fork build toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y gdal-bin libgdal-dev
+          # libgdal-dev/gdal-bin for the GDAL bindings; build-essential/gfortran/
+          # libopenmpi-dev to compile the anuga_core C/Fortran extensions from source
+          # (mirrors anuga_core's own ci.yml Ubuntu build).
+          sudo apt-get install -y gdal-bin libgdal-dev build-essential gfortran libopenmpi-dev
 
-      - name: Install package with full deps (includes ANUGA)
+      - name: Install package with full deps + GDAL bindings
         run: |
           pip install --upgrade pip
-          # Pin GDAL bindings to the system libgdal installed above (see test-geo).
-          pip install "GDAL==$(gdal-config --version)"
+          # numpy before GDAL so osgeo builds its numpy-backed gdal_array too; pin the
+          # GDAL bindings to the system libgdal (see test-geo). [full] pulls PyPI anuga
+          # here — replaced by the fork in the next step.
+          pip install numpy "GDAL==$(gdal-config --version)"
           pip install -e ".[full,dev]"
+
+      # The required physics gate must validate the SAME engine prod runs: the Hydrata
+      # anuga_core FORK (localhost + AWS Batch), NOT PyPI upstream `anuga`. Upstream's
+      # spatialInputUtil.getRasterExtent cannot import gdal/ogr in this env (the fork
+      # carries the rasterio-fallback glue) — which is why every requires_anuga test
+      # failed on `ImportError: Failed to import gdal/ogr`. Force-reinstall the fork over
+      # the PyPI wheel that [full] just pulled; --no-deps because [full]/PyPI-anuga
+      # already installed the shared runtime deps (numpy, scipy, netCDF4, pymetis, dill).
+      - name: Install the Hydrata anuga_core fork (prod engine, not PyPI upstream)
+        run: |
+          pip install --force-reinstall --no-deps "anuga @ git+https://github.com/Hydrata/anuga_core.git@main"
+          python -c "import anuga; from osgeo import gdal, ogr; print('anuga', anuga.__version__, '| gdal/ogr import OK')"
 
       - name: Merewether ARR benchmark + ANUGA integration tests
         run: pytest tests/ -v -m requires_anuga --timeout=1800
