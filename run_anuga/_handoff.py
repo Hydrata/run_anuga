@@ -118,9 +118,14 @@ def load_build_provenance(path=None):
         comp = manifest.get(name)
         comp = comp if isinstance(comp, dict) else {}
         sha = comp.get("sha")
+        git_url = comp.get("git_url")
         prov[name] = {
-            "git_url": comp.get("git_url"),
-            "sha": sha,
+            # Coerce to str so a malformed manifest (a non-string sha/url —
+            # e.g. {"sha": 123} or a list) can NEVER crash the corroboration
+            # .lower() below or the serializer's URL derivation: the
+            # "never raises / never block a sim" contract (epic 2280 §6).
+            "git_url": str(git_url) if git_url else None,
+            "sha": str(sha) if sha else None,
             "source": "container",
         }
         if not sha:

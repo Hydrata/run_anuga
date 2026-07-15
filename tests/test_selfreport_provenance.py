@@ -120,6 +120,22 @@ class TestLoadBuildProvenance:
         assert prov["anuga_core"]["sha"] is None
         assert prov["complete"] is False
 
+    def test_malformed_nonstring_sha_never_crashes(self, tmp_path):
+        # A malformed manifest with a truthy NON-STRING sha (int/list) must NOT
+        # crash the corroboration .lower() — the "never raises / never block a
+        # sim" contract (epic 2280 §6; W3 adversarial-review P2). The sha is
+        # coerced to str and the result is still a usable code_provenance dict.
+        from run_anuga import diagnostics, _handoff
+        bad = {"run_anuga": {"git_url": "u", "sha": ["not", "a", "string"]},
+               "anuga_core": {"git_url": "u", "sha": 123},
+               "hydrata": {"git_url": "u", "sha": "hy"}}
+        path = _write_manifest(tmp_path, bad)
+        with mock.patch.object(diagnostics, "installed_anuga_core_sha", return_value="12"):
+            prov = _handoff.load_build_provenance(path=path)  # must not raise
+        assert prov["provenance_source"] == "container"
+        assert prov["anuga_core"]["sha"] == "123"  # coerced int -> str, no crash
+        assert prov["complete"] is True  # all three shas truthy (coerced)
+
     def test_none_when_manifest_absent(self):
         from run_anuga import _handoff
         assert _handoff.load_build_provenance(path="/nonexistent/x.json") is None
