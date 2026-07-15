@@ -73,5 +73,19 @@ COPY gn_anuga /app/gn_anuga
 COPY . /app/run_anuga_src/
 RUN pip install --no-cache-dir "/app/run_anuga_src[sim,platform]"
 
+# --- Baked build-provenance manifest (epic 2280 W3.1 / TASK-2286) -----------
+# The CONTAINER reads THIS FILE at runtime to self-report the exact cross-repo
+# code it ran (run_anuga._handoff). A running container CANNOT read its own
+# docker LABELs, so the manifest FILE — not the labels — is the container's
+# source of truth (§1); the labels feed the W4.1 deploy gate instead.
+# Passed as a build-arg by deploy/scripts/rebuild-batch-image.sh (fork x4/x32);
+# the default "{}" keeps a plain `docker build .` working (empty manifest ->
+# provenance marked incomplete, NEVER a build failure). Schema: the
+# code_provenance component shape {run_anuga:{git_url,sha},
+# anuga_core:{git_url,sha}, hydrata:{git_url,sha}}.
+ARG BUILD_PROVENANCE_JSON="{}"
+RUN mkdir -p /opt/hydrata \
+    && printf '%s' "$BUILD_PROVENANCE_JSON" > /opt/hydrata/BUILD_PROVENANCE.json
+
 WORKDIR /app
 ENTRYPOINT ["/app/entrypoint.sh"]

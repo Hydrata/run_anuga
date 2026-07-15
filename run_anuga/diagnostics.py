@@ -51,12 +51,47 @@ import json
 import logging
 import os
 import platform
+import re
 import time
 from datetime import datetime, timezone
 
 import numpy as np
 
 logger = logging.getLogger(__name__)
+
+
+# --- anuga_core sha corroboration (epic 2280 W3.2 / TASK-2287) --------------
+def anuga_core_sha_from_version(version):
+    """Extract the anuga_core git sha from a PEP440 local version, or ``None``.
+
+    ANUGA's setuptools-scm version carries the installed commit as a ``+g``
+    local segment, e.g. ``3.3.1.dev123+g57a64ab`` -> ``57a64ab`` (the ``+g``
+    suffix IS the anuga_core sha). Used to CORROBORATE the baked manifest's
+    anuga_core sha against what is actually importable in-container. Tolerant:
+    a version with no ``+g`` segment (a plain release, or ``"unknown"``) or a
+    non-string returns ``None``. Never raises.
+    """
+    if not isinstance(version, str) or "+g" not in version:
+        return None
+    tail = version.split("+g", 1)[1]
+    match = re.match(r"[0-9a-fA-F]+", tail)
+    return match.group(0) if match else None
+
+
+def installed_anuga_core_sha():
+    """The anuga_core sha from the INSTALLED anuga package version, or ``None``.
+
+    Reads ``importlib.metadata.version('anuga')`` (does NOT ``import anuga`` —
+    metadata is available even where the compiled fork won't import, e.g. the
+    workstation) and parses its ``+g`` suffix. Never raises: any lookup failure
+    (package absent / no local segment) yields ``None`` so corroboration simply
+    degrades to "cannot corroborate".
+    """
+    try:
+        return anuga_core_sha_from_version(importlib.metadata.version("anuga"))
+    except Exception:
+        return None
+
 
 #: Depth below which a cell is treated as dry for velocity/volume calculations.
 WET_THRESHOLD = 1e-3  # 1 mm
@@ -381,6 +416,12 @@ class SimulationMonitor:
                 env[key] = importlib.metadata.version(pkg)
             except Exception:
                 pass
+        # anuga_core sha corroboration (TASK-2287): the '+g<sha>' suffix of
+        # anuga.__version__ IS the installed anuga_core commit — surfaced here so
+        # the run summary carries the installed-truth sha the container copy of
+        # code_provenance is corroborated against. None when the version has no
+        # local segment (a plain release / 'unknown').
+        env["anuga_core_sha"] = anuga_core_sha_from_version(env["anuga_version"])
         return env
 
     def _build_summary(self, finished_at: datetime) -> dict:
