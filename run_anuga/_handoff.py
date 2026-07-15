@@ -63,6 +63,93 @@ COLD_ARCHIVE_PREFIX_FIELD = "cold_archive_prefix"
 # Discriminator stamped onto every resource_summary this tool emits (doc05 §6).
 RESOURCE_REPORT_TOOL = "anuga"
 
+# Stable path of the container-readable build-provenance manifest baked into
+# every anuga image (epic 2280 W3.1, deploy scripts + batch/Dockerfile{,.gpu}).
+# Overridable via env purely for tests (the workstation has no real file and
+# `import anuga` fails here). §1: a running container CANNOT read its own docker
+# LABELs, so this FILE is the container's source of truth.
+BUILD_PROVENANCE_PATH = os.environ.get(
+    "BUILD_PROVENANCE_PATH", "/opt/hydrata/BUILD_PROVENANCE.json"
+)
+
+
+def load_build_provenance(path=None):
+    """Read the baked build-provenance manifest and stamp the container copy.
+
+    Returns a ``code_provenance`` dict — the manifest
+    ``{run_anuga,anuga_core,hydrata}->{git_url,sha}`` PLUS
+    ``provenance_source='container'`` — that :func:`_make_resource_sampler`
+    hands to the sampler so it surfaces at ``summary()['code_provenance']``
+    (the TOP LEVEL the BE serializer reads, §3). Returns ``None`` when the
+    manifest is absent/empty/malformed (a plain-build image bakes ``{}`` -> no
+    self-report; the dispatch fallback then wins, which is fine — never
+    fabricated).
+
+    CORROBORATION (§ container self-report): the manifest's anuga_core sha is
+    checked against the INSTALLED ``anuga.__version__`` '+g<sha>' suffix; a
+    mismatch logs a WARNING and KEEPS the manifest value (never crashes, never
+    silently overwrites). The manifest is authoritative for what was BUILT; the
+    installed version is the cross-check that the image wasn't tampered post-build.
+    Never raises.
+    """
+    manifest_path = path or BUILD_PROVENANCE_PATH
+    try:
+        with open(manifest_path) as fp:
+            manifest = json.load(fp)
+    except (OSError, ValueError):
+        logger.info(
+            "load_build_provenance: no readable manifest at %s — container "
+            "self-report skipped (dispatch fallback will be used)", manifest_path,
+        )
+        return None
+    if not isinstance(manifest, dict) or not manifest:
+        return None
+
+    # Normalise into the canonical code_provenance schema (epic 2280 §3), the
+    # SAME shape gn_anuga.models.run.build_code_provenance emits — but built here
+    # by hand because that helper imports Django models and this file runs
+    # Django-free in the container. Per-component {git_url, sha, source} +
+    # top-level provenance_source + complete, so the projected Run copy is
+    # indistinguishable from a native build and the serializer/FE need no
+    # container-specific special-casing.
+    prov = {}
+    complete = True
+    for name in ("run_anuga", "anuga_core", "hydrata"):
+        comp = manifest.get(name)
+        comp = comp if isinstance(comp, dict) else {}
+        sha = comp.get("sha")
+        prov[name] = {
+            "git_url": comp.get("git_url"),
+            "sha": sha,
+            "source": "container",
+        }
+        if not sha:
+            complete = False
+    prov["provenance_source"] = "container"
+    prov["complete"] = complete
+    # Carry image identity through if the manifest already has it (optional keys).
+    for key in ("image_digest", "jobdef"):
+        if manifest.get(key) is not None:
+            prov[key] = manifest[key]
+
+    # Corroborate anuga_core sha vs the installed anuga version (best-effort).
+    try:
+        from run_anuga.diagnostics import installed_anuga_core_sha
+        installed = installed_anuga_core_sha()
+    except Exception:
+        installed = None
+    baked = (prov["anuga_core"].get("sha") or "").lower()
+    if baked and installed:
+        inst = installed.lower()
+        # short-sha abbreviations: accept a prefix match either direction.
+        if not (baked.startswith(inst) or inst.startswith(baked)):
+            logger.warning(
+                "load_build_provenance: baked anuga_core sha %s does not match "
+                "installed anuga.__version__ +g%s — KEEPING the manifest value",
+                prov["anuga_core"].get("sha"), installed,
+            )
+    return prov
+
 
 def _make_s3_client():
     """Return a boto3 S3 client hardened against IncompleteBody/UploadPart failures.
@@ -507,6 +594,15 @@ def _make_resource_sampler(scratch_dir, *, control_server, ids):
         if isinstance(_parsed, dict) and _parsed:
             code_shas = _parsed
 
+    # code_provenance (TASK-2287): the AUTHORITATIVE container self-report read
+    # from the baked /opt/hydrata/BUILD_PROVENANCE.json manifest (stamped
+    # provenance_source='container', anuga_core sha corroborated vs the installed
+    # anuga.__version__). Surfaces at summary()['code_provenance'] (TOP LEVEL) so
+    # it reaches BatchJobResourceRecord.raw['code_provenance'] where the BE
+    # serializer resolves it OVER the dispatch fallback. Absent/plain-build
+    # image -> None -> no self-report (dispatch stamp then wins). Never raises.
+    code_provenance = load_build_provenance()
+
     # Sub-phase attribution (TASK-1910): wire run_anuga's Django-free phase
     # tracker into the sampler so each periodic RSS sample is tagged with the
     # build phase run.py set, and the mesh-size features ride onto the summary.
@@ -521,6 +617,7 @@ def _make_resource_sampler(scratch_dir, *, control_server, ids):
             control_server=control_server,
             ids=ids,
             code_shas=code_shas,
+            code_provenance=code_provenance,
             request=request or None,
             phase_provider=phase_tracker.get_phase,
             phase_durations_provider=phase_tracker.get_phase_durations,
