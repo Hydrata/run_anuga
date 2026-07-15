@@ -541,7 +541,7 @@ class TestUploadColdArchive:
                                side_effect=RuntimeError("S3 cold archive boom")), \
              mock.patch.object(_handoff, "upload_result_to_s3"), \
              mock.patch.object(_handoff, "report_result",
-                               return_value=post_response) as mock_post, \
+                               return_value=post_response), \
              mock.patch.object(_handoff, "report_error") as mock_err:
             # Must NOT raise even though cold archive failed.
             result = run_and_report(tmp_path, result_bucket="bucket")

@@ -14,7 +14,12 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        # Linux-only: run_anuga runs exclusively on Linux (localhost dev box +
+        # AWS Batch containers), never Windows. The windows-latest cells only ever
+        # surfaced Windows-runner/POSIX artifacts (entropy-init crash, os.path.join
+        # backslash, sub-ms timer granularity, POSIX-only signal.SIGALRM) — zero
+        # signal about the runtime we ship. See greenify pass-3 (2026-07-15).
+        os: [ubuntu-latest]
         python-version: ["3.10", "3.12"]
     steps:
       - uses: actions/checkout@v4
@@ -42,9 +47,18 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Install system GDAL
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gdal-bin libgdal-dev
+
       - name: Install package with sim + dev dependencies
         run: |
           pip install --upgrade pip
+          # Pin the GDAL python bindings to the runner's system libgdal: run_utils.py
+          # needs osgeo.ogr/osr (via import_optional), and an unpinned `GDAL` grabs a
+          # newer PyPI release whose build fails against the older system headers.
+          pip install "GDAL==$(gdal-config --version)"
           pip install -e ".[dev,sim]"
 
       - name: Run geo component tests
@@ -77,6 +91,8 @@ jobs:
       - name: Install package with full deps (includes ANUGA)
         run: |
           pip install --upgrade pip
+          # Pin GDAL bindings to the system libgdal installed above (see test-geo).
+          pip install "GDAL==$(gdal-config --version)"
           pip install -e ".[full,dev]"
 
       - name: Merewether ARR benchmark + ANUGA integration tests

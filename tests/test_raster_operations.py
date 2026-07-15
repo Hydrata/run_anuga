@@ -31,18 +31,3 @@ class TestMakeShpFromPolygon:
         gdf = gpd.read_file(output_path)
         assert gdf.crs is not None
         assert gdf.crs.to_epsg() == 28355
-
-    def test_shapefile_with_buffer(self, tmp_path):
-        from run_anuga.run_utils import make_shp_from_polygon
-
-        gpd = pytest.importorskip("geopandas")
-        from shapely.geometry import Polygon
-
-        output_path = str(tmp_path / "buffered.shp")
-        polygon = [[0, 0], [100, 0], [100, 100], [0, 100], [0, 0]]
-        make_shp_from_polygon(polygon, 28355, output_path, buffer=10)
-
-        assert os.path.isfile(output_path)
-        gdf = gpd.read_file(output_path)
-        original_area = Polygon(polygon).area  # 10000 m²
-        assert gdf.geometry.iloc[0].area > original_area

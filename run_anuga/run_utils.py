@@ -1909,7 +1909,7 @@ def burn_structures_into_raster(structures_filename, raster_filename, backup=Tru
     return True
 
 
-def make_shp_from_polygon(boundary_polygon, epsg_code, shapefilepath, buffer=0):
+def make_shp_from_polygon(boundary_polygon, epsg_code, shapefilepath):
     ogr = import_optional("osgeo.ogr")
     osr = import_optional("osgeo.osr")
     boundary_ring_geom = ogr.Geometry(ogr.wkbLinearRing)

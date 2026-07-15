@@ -188,29 +188,10 @@ def test_handoff_injects_phase_durations_provider(tmp_path):
 
 def test_multiprocessor_mode_default_one_calls_set_mode():
     """When scenario.json has no multiprocessor_mode, domain.set_multiprocessor_mode(1) is called."""
-    from run_anuga.run import run_sim
-    import contextlib
 
     mock_domain = mock.MagicMock()
     mock_domain.myid = 0
     mock_domain.numprocs = 1
-
-    # Minimal input_data dict with no multiprocessor_mode
-    input_data = {
-        "scenario_config": {
-            "duration": 10,
-            "run_id": 1,
-            "id": 1,
-            "project": 1,
-            "control_server": "http://localhost/",
-        },
-        "run_label": "run_1_1_1",
-        "checkpoint_directory": "/tmp",
-        "boundary_polygon": [],
-        "output_directory": "/tmp",
-        "mesh_filepath": "/tmp/test.msh",
-        "elevation_filename": "/tmp/elev.tif",
-    }
 
     # We just need to test that set_multiprocessor_mode is called with 1.
     # Patch run_sim internals so we don't actually run the simulation.
@@ -270,8 +251,6 @@ def test_multiprocessor_mode_reads_from_scenario_config():
 
 def test_benchmark_dry_run_exits_zero_and_writes_csv(tmp_path, monkeypatch):
     """--dry-run writes a non-empty results.csv and exits 0."""
-    deploy_dir = Path(__file__).resolve().parents[2]  # /opt/hydrata/run_anuga -> 2 up? no
-    # The deploy dir is /home/dave/hydrata/deploy
     deploy_scripts = Path("/home/dave/hydrata/deploy/scripts/anuga_gpu_benchmark")
     harness = deploy_scripts / "run_benchmark.py"
 

@@ -52,7 +52,6 @@ class TestReprocessFromArchivedSww:
         # The .sww key in the cold archive.
         bucket = "test-result-bucket"
         sww_key = "cold-archive/601_384_1243/601_384_1243.sww"
-        sww_filename = "601_384_1243.sww"
 
         # Sentinel raster that Make_Geotif "produces".
         expected_raster_name = "601_384_1243_depth_max.tif"
