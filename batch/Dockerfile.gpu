@@ -48,5 +48,17 @@ COPY gn_anuga /app/gn_anuga
 COPY . /app/run_anuga_src/
 RUN pip install --no-cache-dir "/app/run_anuga_src[sim,platform]"
 
+# --- Baked build-provenance manifest (epic 2280 W3.1 / TASK-2286) -----------
+# Same container-readable manifest contract as batch/Dockerfile (§1): the
+# CONTAINER reads THIS FILE to self-report; the docker LABELs (added by the
+# build script) feed the W4.1 deploy gate. For the GPU image anuga_core is
+# UPSTREAM anuga-community develop (the GPU base's org.hydrata.anuga_gpu_sha),
+# a DIFFERENT repo/lineage from the fork the CPU image bakes. Passed as a
+# build-arg by deploy/scripts/gpu-dev/build-gpu-batch-image.sh (or
+# rebuild-batch-image.sh --gpu); default "{}" keeps a plain build working.
+ARG BUILD_PROVENANCE_JSON="{}"
+RUN mkdir -p /opt/hydrata \
+    && printf '%s' "$BUILD_PROVENANCE_JSON" > /opt/hydrata/BUILD_PROVENANCE.json
+
 WORKDIR /app
 ENTRYPOINT ["/app/entrypoint.sh"]
