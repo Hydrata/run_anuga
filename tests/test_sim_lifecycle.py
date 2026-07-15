@@ -44,6 +44,7 @@ class TestSimLifecycle:
         from run_anuga.run import run_sim
 
         statuses = []
+        progress = []
 
         class RecordingCallback:
             def on_status(self, status, **kw):
@@ -55,10 +56,19 @@ class TestSimLifecycle:
             def on_file(self, key, filepath):
                 pass
 
+            def on_progress(self, pct, eta_seconds=None):
+                progress.append(pct)
+
+            def on_mesh_features_ready(self):
+                pass
+
+            def close(self):
+                pass
+
         run_sim(str(small_test_copy), callback=RecordingCallback())
         assert len(statuses) > 0
-        # Should have percentage updates
-        assert any("%" in s for s in statuses)
+        # Percentage progress now arrives via on_progress (on_status carries state words only)
+        assert len(progress) > 0
 
     def test_run_sim_output_directory_structure(self, small_test_copy):
         """Output directory has expected structure."""
