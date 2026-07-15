@@ -50,6 +50,7 @@ full = [
 dev = [
     "run_anuga[sim-light]",
     "pytest>=7.0",
+    "pytest-timeout>=2.1",  # provides --timeout, used by the e2e Merewether gate
     "ruff>=0.1",
     "jsonschema>=4.17",
     "hypothesis>=6.0",
