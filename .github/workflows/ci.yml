@@ -107,9 +107,16 @@ jobs:
       # failed on `ImportError: Failed to import gdal/ogr`. Force-reinstall the fork over
       # the PyPI wheel that [full] just pulled; --no-deps because [full]/PyPI-anuga
       # already installed the shared runtime deps (numpy, scipy, netCDF4, pymetis, dill).
+      #
+      # TASK-2298: pinned to a deliberate anuga_core SHA (was unpinned `@main`) — under
+      # branch protection an unpinned cross-repo ref means any anuga_core merge instantly
+      # reds every run_anuga PR, with the fix landing in another repo and no blame signal
+      # (TASK-1477's exact failure mode). Ratchet owner + cadence:
+      # docs/fleet-enforcement/pin-ratchet.md in Hydrata/deploy. Pinned SHA = anuga_core's
+      # origin/main tip as of 2026-07-16 (`git rev-parse origin/main`).
       - name: Install the Hydrata anuga_core fork (prod engine, not PyPI upstream)
         run: |
-          pip install --force-reinstall --no-deps "anuga @ git+https://github.com/Hydrata/anuga_core.git@main"
+          pip install --force-reinstall --no-deps "anuga @ git+https://github.com/Hydrata/anuga_core.git@ad1bfe7155f9b16986e0f672cf54275e9c35c5fb"
           python -c "import anuga; from osgeo import gdal, ogr; print('anuga', anuga.__version__, '| gdal/ogr import OK')"
 
       - name: Merewether ARR benchmark + ANUGA integration tests
