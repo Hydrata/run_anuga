@@ -26,17 +26,29 @@ jobs:
     timeout-minutes: 45
     steps:
       - name: Attribute causing merge
+        # TASK-2298 review: every github.event.client_payload.* value flows
+        # through env: (assigned to a variable, then quoted "$VAR" in the
+        # shell) — a repository_dispatch payload is attacker-influenced
+        # input, and direct ${{ }} interpolation inside run: is a script-
+        # injection vector.
+        env:
+          CAUSING_REPO: ${{ github.event.client_payload.repo }}
+          CAUSING_SHA: ${{ github.event.client_payload.sha }}
+          CAUSING_REF: ${{ github.event.client_payload.ref }}
+          CAUSING_RUN_URL: ${{ github.event.client_payload.run_url }}
         run: |
-          echo "## Cross-repo canary: anuga_core change" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Causing repo: \`${{ github.event.client_payload.repo }}\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Causing SHA: \`${{ github.event.client_payload.sha }}\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Causing ref: \`${{ github.event.client_payload.ref }}\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Upstream run: ${{ github.event.client_payload.run_url }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "If this run goes red, it means the anuga_core commit above is NOT yet" >> "$GITHUB_STEP_SUMMARY"
-          echo "safe to pin (see docs/fleet-enforcement/pin-ratchet.md in Hydrata/deploy" >> "$GITHUB_STEP_SUMMARY"
-          echo "for the bump-or-fix decision this red canary should trigger)." >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "## Cross-repo canary: anuga_core change"
+            echo ""
+            echo "- Causing repo: \`$CAUSING_REPO\`"
+            echo "- Causing SHA: \`$CAUSING_SHA\`"
+            echo "- Causing ref: \`$CAUSING_REF\`"
+            echo "- Upstream run: $CAUSING_RUN_URL"
+            echo ""
+            echo "If this run goes red, it means the anuga_core commit above is NOT yet"
+            echo "safe to pin (see docs/fleet-enforcement/pin-ratchet.md in Hydrata/deploy"
+            echo "for the bump-or-fix decision this red canary should trigger)."
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/checkout@v4
 
@@ -57,8 +69,18 @@ jobs:
           pip install -e ".[full,dev]"
 
       - name: Install the candidate anuga_core SHA (NOT the pinned SHA — this is the point)
+        # TASK-2298 review: client_payload flows through env: (never direct
+        # ${{ }} inside run: — script injection), and the SHA is format-
+        # validated before it can steer what pip installs.
+        env:
+          CANDIDATE_SHA: ${{ github.event.client_payload.sha }}
         run: |
-          pip install --force-reinstall --no-deps "anuga @ git+https://github.com/Hydrata/anuga_core.git@${{ github.event.client_payload.sha }}"
+          set -euo pipefail
+          if ! printf '%s' "$CANDIDATE_SHA" | grep -qE '^[0-9a-f]{40}$'; then
+            echo "::error::client_payload.sha is not a 40-char lowercase hex SHA: '$CANDIDATE_SHA'"
+            exit 1
+          fi
+          pip install --force-reinstall --no-deps "anuga @ git+https://github.com/Hydrata/anuga_core.git@${CANDIDATE_SHA}"
           python -c "import anuga; from osgeo import gdal, ogr; print('anuga', anuga.__version__, '| gdal/ogr import OK')"
 
       - name: Merewether ARR benchmark + ANUGA integration tests
