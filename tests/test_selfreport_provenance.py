@@ -17,8 +17,6 @@ import sys
 import types
 from unittest import mock
 
-import pytest
-
 
 # ---------------------------------------------------------------------------
 # diagnostics: anuga_core sha parse + installed-version corroboration
