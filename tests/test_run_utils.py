@@ -2,6 +2,7 @@
 
 import importlib.util
 import logging
+import os
 
 import pytest
 
@@ -17,6 +18,29 @@ from run_anuga.run_utils import (
 )
 
 _HAS_RASTERIO = importlib.util.find_spec("rasterio") is not None
+
+
+def test_rasterio_present_when_ci_expects_it():
+    """Canary for TASK-2302 fix-pass finding f4.
+
+    rasterio moved into the [dev] extra by TASK-1226 (see pyproject.toml) so
+    the 7 TestAssertRasterHasNoNodataInsideBoundary tests below run in the
+    light `test` CI job, not just `test-geo`/`test-anuga-e2e`. If [dev] ever
+    silently loses rasterio again (a pyproject edit, a wheel build failure,
+    etc.), those 7 tests would just re-skip via `_HAS_RASTERIO` — quietly,
+    with no red anywhere. This test is NEVER skipped; it only asserts when
+    RUN_ANUGA_EXPECT_RASTERIO is set (the ci.yml `test` job sets it after
+    installing `[dev]`), so a plain local `pip install -e .` (no extras) is
+    unaffected — it simply has nothing to assert.
+    """
+    if not os.environ.get("RUN_ANUGA_EXPECT_RASTERIO"):
+        pytest.skip("RUN_ANUGA_EXPECT_RASTERIO not set — not a [dev] CI job, nothing to assert")
+    assert _HAS_RASTERIO, (
+        "rasterio is not importable but RUN_ANUGA_EXPECT_RASTERIO is set, meaning this job "
+        "installed [dev] and rasterio is supposed to be present (TASK-1226). [dev] silently "
+        "lost rasterio — the 7 TestAssertRasterHasNoNodataInsideBoundary tests below would "
+        "otherwise re-skip instead of failing loudly."
+    )
 
 
 OUTER_RING = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0], [0.0, 0.0]]
@@ -386,7 +410,13 @@ def _write_geotiff(path, *, nodata_rowcol=None, declared_nodata=_NODATA_TAG,
     return str(path)
 
 
-@pytest.mark.skipif(not _HAS_RASTERIO, reason="rasterio is a [sim] extra, not installed in light CI")
+@pytest.mark.skipif(
+    not _HAS_RASTERIO,
+    reason="rasterio not importable — it ships with [dev] since TASK-1226 (moved out of "
+    "[sim]-only) but isn't guaranteed present in every install (e.g. a plain `pip install -e .` "
+    "with no extras); see test_rasterio_present_when_ci_expects_it for the CI-side canary that "
+    "turns an unexpected loss loud instead of silently re-skipping these 7 tests.",
+)
 class TestAssertRasterHasNoNodataInsideBoundary:
     def test_elevation_nodata_inside_boundary_raises(self, tmp_path):
         # Cell (row 5, col 4) -> centre (4.5, 4.5), inside the [2,7] square.

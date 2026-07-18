@@ -37,6 +37,12 @@ jobs:
       - name: Run unit tests
         # TASK-1226: coverage baseline for the light job (rasterio now runs the
         # 7 nodata-guard tests here too, since [dev] carries it — see pyproject).
+        # RUN_ANUGA_EXPECT_RASTERIO arms test_rasterio_present_when_ci_expects_it
+        # (TASK-2302 fix-pass finding f4): this job installs [dev], which is
+        # supposed to carry rasterio, so a silent loss of it must fail loudly
+        # here instead of the 7 nodata-guard tests just quietly re-skipping.
+        env:
+          RUN_ANUGA_EXPECT_RASTERIO: "1"
         run: pytest tests/ -v -m "not requires_anuga and not requires_geo and not mpi" --cov=run_anuga --cov-report=term-missing
 
   test-geo:
