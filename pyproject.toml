@@ -15,7 +15,11 @@ dependencies = [
 
 [project.optional-dependencies]
 # Pure-Python sim deps. Wheels available on bare CI runners (no apt needed).
-# Split out from [sim] so [dev] can pull them in without dragging GDAL/rasterio.
+# Split out from [sim] so [dev] can pull them in without dragging the osgeo/GDAL
+# system-library dependency (GDAL's PyPI wheel needs libgdal at import time;
+# rasterio's own wheel bundles its own GDAL build and needs no apt install, so
+# TASK-1226 pulls rasterio into [dev] directly — [sim]'s `GDAL` (osgeo bindings)
+# + `geopandas` stay out of [dev], only rasterio moves).
 sim-light = [
     "numpy>=2.0",
     "pandas>=2.0",
@@ -49,8 +53,15 @@ full = [
 ]
 dev = [
     "run_anuga[sim-light]",
+    # TASK-1226: rasterio's wheel bundles its own GDAL build (no apt-installed
+    # libgdal needed), so it can run in the light CI [dev] job unlike GDAL's
+    # osgeo bindings or geopandas (both stay [sim]-only). Un-skips the 7
+    # TestAssertRasterHasNoNodataInsideBoundary tests (tests/test_run_utils.py)
+    # guarding the TASK-1138 pre-flight nodata check.
+    "rasterio>=1.3",
     "pytest>=7.0",
     "pytest-timeout>=2.1",  # provides --timeout, used by the e2e Merewether gate
+    "pytest-cov>=4.0",  # TASK-1226: --cov=run_anuga coverage baseline in ci.yml
     "ruff>=0.1",
     "jsonschema>=4.17",
     "hypothesis>=6.0",
