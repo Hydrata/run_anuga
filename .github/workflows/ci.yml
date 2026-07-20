@@ -144,3 +144,26 @@ jobs:
 
       - name: Run ruff check
         run: ruff check run_anuga/ tests/
+
+  # TASK-2329 (epic 2290 W4): fleet marker/quarantine taxonomy lint. Pure static
+  # AST/regex scan — no install, no GDAL, no ANUGA — so it's a thin
+  # checkout+python job (unlike test-geo/test which build the C-extension stack).
+  # The script is VENDORED at .github/scripts/marker_lint.py (canonical source:
+  # Hydrata/deploy scripts/marker_lint.py) because the default GITHUB_TOKEN
+  # cannot check out a different private repo — same precedent as the fleet's
+  # other vendored gate scripts. Cap pins the CURRENT baseline (29
+  # conditional-skips — run_anuga's optional-dependency / requires_* env guards)
+  # as the interim ceiling to ratchet DOWN. A new bare xfail / bare-skip, or any
+  # marker missing its governance kwargs, reds this job. NOT a required check
+  # this wave (green-then-require; the require-flip is a later operator step).
+  marker-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Marker taxonomy lint (static scan, no deps)
+        run: python .github/scripts/marker_lint.py --repo . --check --cap conditional-skip=29
