@@ -35,7 +35,15 @@ jobs:
           pip install -e ".[dev]"
 
       - name: Run unit tests
-        run: pytest tests/ -v -m "not requires_anuga and not requires_geo and not mpi"
+        # TASK-1226: coverage baseline for the light job (rasterio now runs the
+        # 7 nodata-guard tests here too, since [dev] carries it — see pyproject).
+        # RUN_ANUGA_EXPECT_RASTERIO arms test_rasterio_present_when_ci_expects_it
+        # (TASK-2302 fix-pass finding f4): this job installs [dev], which is
+        # supposed to carry rasterio, so a silent loss of it must fail loudly
+        # here instead of the 7 nodata-guard tests just quietly re-skipping.
+        env:
+          RUN_ANUGA_EXPECT_RASTERIO: "1"
+        run: pytest tests/ -v -m "not requires_anuga and not requires_geo and not mpi" --cov=run_anuga --cov-report=term-missing
 
   test-geo:
     runs-on: ubuntu-latest
@@ -107,9 +115,16 @@ jobs:
       # failed on `ImportError: Failed to import gdal/ogr`. Force-reinstall the fork over
       # the PyPI wheel that [full] just pulled; --no-deps because [full]/PyPI-anuga
       # already installed the shared runtime deps (numpy, scipy, netCDF4, pymetis, dill).
+      #
+      # TASK-2298: pinned to a deliberate anuga_core SHA (was unpinned `@main`) — under
+      # branch protection an unpinned cross-repo ref means any anuga_core merge instantly
+      # reds every run_anuga PR, with the fix landing in another repo and no blame signal
+      # (TASK-1477's exact failure mode). Ratchet owner + cadence:
+      # docs/fleet-enforcement/pin-ratchet.md in Hydrata/deploy. Pinned SHA = anuga_core's
+      # origin/main tip as of 2026-07-16 (`git rev-parse origin/main`).
       - name: Install the Hydrata anuga_core fork (prod engine, not PyPI upstream)
         run: |
-          pip install --force-reinstall --no-deps "anuga @ git+https://github.com/Hydrata/anuga_core.git@main"
+          pip install --force-reinstall --no-deps "anuga @ git+https://github.com/Hydrata/anuga_core.git@ad1bfe7155f9b16986e0f672cf54275e9c35c5fb"
           python -c "import anuga; from osgeo import gdal, ogr; print('anuga', anuga.__version__, '| gdal/ogr import OK')"
 
       - name: Merewether ARR benchmark + ANUGA integration tests
@@ -129,3 +144,26 @@ jobs:
 
       - name: Run ruff check
         run: ruff check run_anuga/ tests/
+
+  # TASK-2329 (epic 2290 W4): fleet marker/quarantine taxonomy lint. Pure static
+  # AST/regex scan — no install, no GDAL, no ANUGA — so it's a thin
+  # checkout+python job (unlike test-geo/test which build the C-extension stack).
+  # The script is VENDORED at .github/scripts/marker_lint.py (canonical source:
+  # Hydrata/deploy scripts/marker_lint.py) because the default GITHUB_TOKEN
+  # cannot check out a different private repo — same precedent as the fleet's
+  # other vendored gate scripts. Cap pins the CURRENT baseline (29
+  # conditional-skips — run_anuga's optional-dependency / requires_* env guards)
+  # as the interim ceiling to ratchet DOWN. A new bare xfail / bare-skip, or any
+  # marker missing its governance kwargs, reds this job. NOT a required check
+  # this wave (green-then-require; the require-flip is a later operator step).
+  marker-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Marker taxonomy lint (static scan, no deps)
+        run: python .github/scripts/marker_lint.py --repo . --check --cap conditional-skip=29

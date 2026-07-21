@@ -1,0 +1,87 @@
+name: "Canary receive (upstream: anuga_core)"
+
+# TASK-2298 — cross-repo canary receiver. Triggered by anuga_core's
+# canary-dispatch.yml on every push to its main branch. Installs the JUST-
+# MERGED anuga_core SHA (not the pin currently in ci.yml) and runs the same
+# ANUGA e2e Merewether benchmark the required gate runs, so a breaking
+# anuga_core change reds THIS run — attributing itself to the causing
+# anuga_core commit in the run name/summary — instead of silently sitting
+# unused until someone bumps the pin and then reds an unrelated-looking
+# run_anuga PR with no blame signal.
+#
+# This does NOT change the pin in ci.yml — that only happens via a reviewed
+# pin-bump PR (see docs/fleet-enforcement/pin-ratchet.md in Hydrata/deploy).
+# A red run here is exactly the signal that ratchet's "red-canary-forced
+# proposal" cadence trigger describes: file a bump-or-fix decision to the
+# operator, attributing this run + the causing anuga_core SHA.
+
+on:
+  repository_dispatch:
+    types: [anuga_core_canary]
+
+jobs:
+  canary:
+    name: "Canary: anuga_core@${{ github.event.client_payload.sha }} (from ${{ github.event.client_payload.repo }})"
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Attribute causing merge
+        # TASK-2298 review: every github.event.client_payload.* value flows
+        # through env: (assigned to a variable, then quoted "$VAR" in the
+        # shell) — a repository_dispatch payload is attacker-influenced
+        # input, and direct ${{ }} interpolation inside run: is a script-
+        # injection vector.
+        env:
+          CAUSING_REPO: ${{ github.event.client_payload.repo }}
+          CAUSING_SHA: ${{ github.event.client_payload.sha }}
+          CAUSING_REF: ${{ github.event.client_payload.ref }}
+          CAUSING_RUN_URL: ${{ github.event.client_payload.run_url }}
+        run: |
+          {
+            echo "## Cross-repo canary: anuga_core change"
+            echo ""
+            echo "- Causing repo: \`$CAUSING_REPO\`"
+            echo "- Causing SHA: \`$CAUSING_SHA\`"
+            echo "- Causing ref: \`$CAUSING_REF\`"
+            echo "- Upstream run: $CAUSING_RUN_URL"
+            echo ""
+            echo "If this run goes red, it means the anuga_core commit above is NOT yet"
+            echo "safe to pin (see docs/fleet-enforcement/pin-ratchet.md in Hydrata/deploy"
+            echo "for the bump-or-fix decision this red canary should trigger)."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install system GDAL + ANUGA fork build toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gdal-bin libgdal-dev build-essential gfortran libopenmpi-dev
+
+      - name: Install package with full deps + GDAL bindings
+        run: |
+          pip install --upgrade pip
+          pip install numpy "GDAL==$(gdal-config --version)"
+          pip install -e ".[full,dev]"
+
+      - name: Install the candidate anuga_core SHA (NOT the pinned SHA — this is the point)
+        # TASK-2298 review: client_payload flows through env: (never direct
+        # ${{ }} inside run: — script injection), and the SHA is format-
+        # validated before it can steer what pip installs.
+        env:
+          CANDIDATE_SHA: ${{ github.event.client_payload.sha }}
+        run: |
+          set -euo pipefail
+          if ! printf '%s' "$CANDIDATE_SHA" | grep -qE '^[0-9a-f]{40}$'; then
+            echo "::error::client_payload.sha is not a 40-char lowercase hex SHA: '$CANDIDATE_SHA'"
+            exit 1
+          fi
+          pip install --force-reinstall --no-deps "anuga @ git+https://github.com/Hydrata/anuga_core.git@${CANDIDATE_SHA}"
+          python -c "import anuga; from osgeo import gdal, ogr; print('anuga', anuga.__version__, '| gdal/ogr import OK')"
+
+      - name: Merewether ARR benchmark + ANUGA integration tests
+        run: pytest tests/ -v -m requires_anuga --timeout=1800

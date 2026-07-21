@@ -1,0 +1,64 @@
+name: "Canary dispatch (downstream: hydrata)"
+
+# TASK-2298 — cross-repo canary. run_anuga is pinned inside hydrata's
+# required test job (see hydrata/.github/workflows/test.yml + Hydrata/
+# deploy's docs/fleet-enforcement/pin-ratchet.md), so a merge here does NOT
+# automatically red hydrata's PRs — it silently sits unused until the pin is
+# bumped. This workflow fires a repository_dispatch at hydrata on every push
+# to main so a breaking change reds ITS OWN canary run immediately,
+# attributing the causing repo+SHA, instead of surfacing later as an
+# unrelated-looking hydrata failure with no blame signal.
+#
+# No-ops gracefully if the CANARY_DISPATCH_TOKEN secret hasn't been minted
+# yet (operator action — see docs/fleet-enforcement/OPERATOR-CHECKLIST.md
+# and token-spec.md in Hydrata/deploy). secrets.* is not evaluable in a
+# job-level `if`, so the presence check happens in a step and later steps
+# branch on that step's output instead.
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check for CANARY_DISPATCH_TOKEN
+        id: check
+        env:
+          DISPATCH_TOKEN: ${{ secrets.CANARY_DISPATCH_TOKEN }}
+        run: |
+          if [ -n "$DISPATCH_TOKEN" ]; then
+            echo "has_token=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_token=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: No-op (secret absent)
+        if: steps.check.outputs.has_token != 'true'
+        run: |
+          echo "CANARY_DISPATCH_TOKEN secret is not set on this repo — skipping canary dispatch."
+          echo "This is expected until the operator mints it; see docs/fleet-enforcement/OPERATOR-CHECKLIST.md (Hydrata/deploy) step 7."
+
+      - name: Dispatch run_anuga_canary to Hydrata/hydrata
+        if: steps.check.outputs.has_token == 'true'
+        env:
+          DISPATCH_TOKEN: ${{ secrets.CANARY_DISPATCH_TOKEN }}
+        run: |
+          http_status=$(curl -sS -o /tmp/canary_response.json -w "%{http_code}" \
+            -X POST \
+            -H "Authorization: token ${DISPATCH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/Hydrata/hydrata/dispatches \
+            -d "$(jq -nc \
+                  --arg repo "${{ github.repository }}" \
+                  --arg sha "${{ github.sha }}" \
+                  --arg ref "${{ github.ref_name }}" \
+                  --arg run_url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+                  '{event_type: "run_anuga_canary", client_payload: {repo: $repo, sha: $sha, ref: $ref, run_url: $run_url}}')")
+          echo "dispatch response HTTP $http_status"
+          cat /tmp/canary_response.json
+          if [ "$http_status" -lt 200 ] || [ "$http_status" -ge 300 ]; then
+            echo "::error::repository_dispatch to Hydrata/hydrata failed (HTTP $http_status)"
+            exit 1
+          fi
