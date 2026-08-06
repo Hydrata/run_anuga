@@ -140,7 +140,12 @@ jobs:
           python-version: "3.12"
 
       - name: Install ruff
-        run: pip install ruff
+        # Pinned 2026-08-06: unpinned `pip install ruff` made lint a moving
+        # target — ruff 0.16.1 (released between fleet runs) flagged 225
+        # PRE-EXISTING repo-wide issues on a docstring-only PR (run_anuga#6);
+        # 0.15.2 is clean on the same tree. Bump deliberately, paired with a
+        # `ruff check --fix` sweep in its own commit.
+        run: pip install ruff==0.15.2
 
       - name: Run ruff check
         run: ruff check run_anuga/ tests/
