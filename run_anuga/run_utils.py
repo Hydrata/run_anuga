@@ -1509,32 +1509,12 @@ def post_process_sww(
                        if ":" in input_data['scenario_config'].get("epsg")
                        else input_data['scenario_config'].get("epsg"))
     interior_holes, _ = make_interior_holes_and_tags(input_data)
-    if legacy_per_timestep_tifs:
-        # TASK-2622: opt-in only — the per-timestep TIFs this pass produces
-        # are superseded by the playback store below for every NEW
-        # consumer; kept for the deprecated cmd_viz/cmd_upload CLI path.
-        util.Make_Geotif(
-            swwFile=f"{input_data['output_directory']}/{input_data['run_label']}.sww",
-            output_quantities=output_quantities,
-            myTimeStep='all',
-            CellSize=finest_grid_resolution,
-            lower_left=None,
-            upper_right=None,
-            EPSG_CODE=epsg_integer,
-            proj4string=None,
-            velocity_extrapolation=True,
-            min_allowed_height=defaults.MIN_ALLOWED_HEIGHT_M,
-            output_dir=input_data['output_directory'],
-            bounding_polygon=input_data['boundary_polygon'],
-            internal_holes=interior_holes,
-            verbose=False,
-            k_nearest_neighbours=defaults.K_NEAREST_NEIGHBOURS,
-            creation_options=[]
-        )
-    util.Make_Geotif(
+    # TASK-2622 simplify pass: the 'all' (opt-in only, legacy) and 'max'
+    # (always-on) Make_Geotif calls below differ ONLY in myTimeStep — shared
+    # base kwargs, no semantic change from the two-separate-calls form.
+    make_geotif_base_kwargs = dict(
         swwFile=f"{input_data['output_directory']}/{input_data['run_label']}.sww",
         output_quantities=output_quantities,
-        myTimeStep='max',
         CellSize=finest_grid_resolution,
         lower_left=None,
         upper_right=None,
@@ -1547,8 +1527,14 @@ def post_process_sww(
         internal_holes=interior_holes,
         verbose=False,
         k_nearest_neighbours=defaults.K_NEAREST_NEIGHBOURS,
-        creation_options=[]
+        creation_options=[],
     )
+    if legacy_per_timestep_tifs:
+        # TASK-2622: opt-in only — the per-timestep TIFs this pass produces
+        # are superseded by the playback store below for every NEW
+        # consumer; kept for the deprecated cmd_viz/cmd_upload CLI path.
+        util.Make_Geotif(myTimeStep='all', **make_geotif_base_kwargs)
+    util.Make_Geotif(myTimeStep='max', **make_geotif_base_kwargs)
 
     # TASK-1143: guard against a future anuga_core default flip away from NaN.
     # Re-open the *_max.tif outputs and assert band 1 nodata is NaN.
