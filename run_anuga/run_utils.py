@@ -183,8 +183,16 @@ def get_utm_geo_reference(epsg_str):
     utm_zone_str = crs.utm_zone
     if utm_zone_str:
         zone = int(re.search(r'\d+', utm_zone_str).group())
+        # TASK-2634: the hemisphere letter is right there in utm_zone_str —
+        # derive it directly instead of relying on anuga.Geo_reference's
+        # epsg-numeric-range auto-inference (which only covers WGS84 UTM
+        # codes 32601-32660/32701-32760).
+        hemisphere = 'northern' if utm_zone_str.upper().endswith('N') else 'southern'
     else:
-        # Fall back to parsing the CRS name (e.g. "GDA94 / MGA zone 55")
+        # Fall back to parsing the CRS name (e.g. "GDA94 / MGA zone 55").
+        # National-grid CRSs like GDA94/GDA2020 MGA have no utm_zone
+        # hemisphere letter from pyproj, so derive hemisphere from the CRS's
+        # area-of-use latitude bounds instead (negative = southern).
         m = re.search(r'zone\s+(\d+)', crs.name, re.IGNORECASE)
         if not m:
             raise ValueError(
@@ -193,8 +201,18 @@ def get_utm_geo_reference(epsg_str):
                 "Provide a UTM or MGA projected CRS."
             )
         zone = int(m.group(1))
+        area = crs.area_of_use
+        if area is not None and area.south is not None and area.north is not None:
+            hemisphere = 'southern' if (area.south + area.north) < 0 else 'northern'
+        else:
+            hemisphere = 'undefined'
 
-    return anuga.Geo_reference(zone=zone)
+    # TASK-2634: pass hemisphere= and epsg= through so the constructed
+    # Geo_reference carries correct false_easting/false_northing/epsg for
+    # the given EPSG (anuga_core fork commit 7565d91f) — previously only
+    # zone= was passed, leaving hemisphere='undefined',
+    # false_easting=false_northing=0, epsg=None on every new SWW.
+    return anuga.Geo_reference(zone=zone, hemisphere=hemisphere, epsg=epsg_int)
 
 
 def create_anuga_mesh(input_data):

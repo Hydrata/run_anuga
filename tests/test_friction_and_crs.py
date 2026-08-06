@@ -137,27 +137,58 @@ class TestDeriveUtmZone:
         from run_anuga.run_utils import get_utm_geo_reference
         geo_ref = get_utm_geo_reference("EPSG:32655")
         assert geo_ref.zone == 55
+        # TASK-2634: hemisphere/false_easting/false_northing/epsg must be
+        # correctly derived, not left at the anuga.Geo_reference defaults
+        # ('undefined'/0/0/None).
+        assert geo_ref.hemisphere == 'northern'
+        assert geo_ref.false_easting == 500000
+        assert geo_ref.false_northing == 0
+        assert geo_ref.epsg == 32655
 
     def test_southern_hemisphere_zone_55(self):
         from run_anuga.run_utils import get_utm_geo_reference
         geo_ref = get_utm_geo_reference("EPSG:32755")
         assert geo_ref.zone == 55
+        assert geo_ref.hemisphere == 'southern'
+        assert geo_ref.false_easting == 500000
+        assert geo_ref.false_northing == 10000000
+        assert geo_ref.epsg == 32755
 
     def test_zone_1(self):
         from run_anuga.run_utils import get_utm_geo_reference
         geo_ref = get_utm_geo_reference("EPSG:32601")
         assert geo_ref.zone == 1
+        assert geo_ref.hemisphere == 'northern'
+        assert geo_ref.false_easting == 500000
+        assert geo_ref.false_northing == 0
+        assert geo_ref.epsg == 32601
 
     def test_zone_28355_mga(self):
-        """EPSG:28355 is GDA94 / MGA zone 55 — should derive zone 55."""
+        """EPSG:28355 is GDA94 / MGA zone 55 — should derive zone 55.
+
+        MGA (Australian national grid) EPSG codes are not in anuga's
+        WGS84-UTM auto-infer range (32601-32660 / 32701-32760), so
+        get_utm_geo_reference must derive the hemisphere itself (via the
+        CRS's area-of-use latitude bounds — Australia is southern) and
+        thread it through explicitly; false_easting/false_northing follow
+        the same southern-hemisphere UTM convention (500000 / 10000000).
+        """
         from run_anuga.run_utils import get_utm_geo_reference
         geo_ref = get_utm_geo_reference("EPSG:28355")
         assert geo_ref.zone == 55
+        assert geo_ref.hemisphere == 'southern'
+        assert geo_ref.false_easting == 500000
+        assert geo_ref.false_northing == 10000000
+        assert geo_ref.epsg == 28355
 
     def test_zone_56(self):
         from run_anuga.run_utils import get_utm_geo_reference
         geo_ref = get_utm_geo_reference("EPSG:28356")
         assert geo_ref.zone == 56
+        assert geo_ref.hemisphere == 'southern'
+        assert geo_ref.false_easting == 500000
+        assert geo_ref.false_northing == 10000000
+        assert geo_ref.epsg == 28356
 
     def test_epsg_prefix_stripped(self):
         """Should accept both 'EPSG:32655' and '32655' forms."""
@@ -165,3 +196,4 @@ class TestDeriveUtmZone:
         geo_ref_with_prefix = get_utm_geo_reference("EPSG:32655")
         geo_ref_bare = get_utm_geo_reference("32655")
         assert geo_ref_with_prefix.zone == geo_ref_bare.zone == 55
+        assert geo_ref_with_prefix.hemisphere == geo_ref_bare.hemisphere == 'northern'
