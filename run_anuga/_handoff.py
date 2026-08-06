@@ -60,6 +60,10 @@ RESULT_PACKAGE_KEY_FIELD = "result_package_key"
 # constant so the sender/receiver field names cannot drift.
 COLD_ARCHIVE_PREFIX_FIELD = "cold_archive_prefix"
 
+# TASK-2623 (W1.2, epic 2618) — same pattern as COLD_ARCHIVE_PREFIX_FIELD
+# above, for the playback-store S3 prefix (TASK-2622's exporter).
+PLAYBACK_STORE_PREFIX_FIELD = "playback_store_prefix"
+
 # Discriminator stamped onto every resource_summary this tool emits (doc05 §6).
 RESOURCE_REPORT_TOOL = "anuga"
 
@@ -477,6 +481,7 @@ def report_result(
     result_key: str,
     *,
     cold_archive_prefix: str | None = None,
+    playback_store_prefix: str | None = None,
     session: Any = None,
     timeout: int = 30,
 ) -> Any:
@@ -484,6 +489,10 @@ def report_result(
 
     W2 (TASK-1920): also carries ``cold_archive_prefix`` when the cold archive
     completed successfully so the BE can persist it on ``Run.cold_archive_prefix``.
+
+    TASK-2623 (W1.2, epic 2618): also carries ``playback_store_prefix`` when
+    TASK-2622's exporter uploaded a playback store, so the BE can persist it
+    on ``Run.playback_store_prefix``.
 
     Returns the ``requests.Response`` so callers can inspect the status code.
     On non-2xx the helper logs (does not raise); callers MUST inspect the
@@ -498,6 +507,8 @@ def report_result(
     data: dict = {RESULT_PACKAGE_KEY_FIELD: result_key}
     if cold_archive_prefix is not None:
         data[COLD_ARCHIVE_PREFIX_FIELD] = cold_archive_prefix
+    if playback_store_prefix is not None:
+        data[PLAYBACK_STORE_PREFIX_FIELD] = playback_store_prefix
     try:
         return post_to_control_server(
             url,
@@ -969,6 +980,18 @@ def run_and_report(
     result_key = make_result_key(project_id, scenario_id, run_id)
     result_zip_path = package_dir / result_key
 
+    # TASK-2623 (W1.2, epic 2618) — the playback-store export already ran
+    # (or didn't) deep inside the run_sim() call above, several frames below
+    # this function (post_process_sww's rank-0 PHASE_COG_EXPORT seam). This
+    # reads the marker TASK-2622's exporter left behind — see
+    # playback_store.playback_store_prefix_for_run's docstring for why a
+    # file, not a return value, is the handoff channel. None (never a
+    # fabricated prefix) when the export was skipped/errored/never ran.
+    from run_anuga.playback_store import playback_store_prefix_for_run
+    completed_playback_store_prefix = playback_store_prefix_for_run(
+        package_dir, project_id, scenario_id, run_id
+    )
+
     # W2 (TASK-1920) — best-effort cold archive BEFORE the slim-result handoff.
     # A failed archive logs loudly but MUST NOT fail the run (the app result
     # path is completely independent; report_result carries the prefix only when
@@ -1033,6 +1056,7 @@ def run_and_report(
             token,
             result_key,
             cold_archive_prefix=completed_cold_prefix,
+            playback_store_prefix=completed_playback_store_prefix,
         )
     except Exception as exc:
         try:

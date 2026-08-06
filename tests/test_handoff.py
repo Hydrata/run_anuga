@@ -304,10 +304,14 @@ class TestRunAndReportOrchestration:
         upload_args = mock_upload.call_args[0]
         assert upload_args[1] == "bucket"
         assert upload_args[2] == "601_384_1243_results.zip"
-        # W2 (TASK-1920): report_result now carries cold_archive_prefix kwarg.
+        # W2 (TASK-1920): report_result carries cold_archive_prefix kwarg.
+        # TASK-2623: also playback_store_prefix — None here since this
+        # fixture's package has no playback_store_export_result.json marker
+        # (run_sim is mocked out, so TASK-2622's exporter never ran).
         mock_post.assert_called_once_with(
             "https://hydrata.com/", 1243, "test-token", "601_384_1243_results.zip",
             cold_archive_prefix="cold-archive/601_384_1243/",
+            playback_store_prefix=None,
         )
         # No /error/ POST on the happy path — a future regression that POSTed
         # /error/ on success would otherwise silently slip through.
@@ -655,6 +659,79 @@ class TestUploadColdArchive:
         assert call_kwargs.get("cold_archive_prefix") is None
 
 
+class TestPlaybackStorePrefixInRunAndReport:
+    """TASK-2623 (W1.2, epic 2618) — run_and_report reads the marker
+    export_playback_store() left in the output dir (run_sim runs several
+    frames above where the exporter actually executes — see
+    playback_store.playback_store_prefix_for_run's docstring) and threads
+    it into report_result, mirroring cold_archive_prefix exactly."""
+
+    def _base_setup(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HYDRATA_INTERNAL_COMPUTE_TOKEN", "test-token")
+        config = {
+            "id": 384, "project": 601, "run_id": 1243,
+            "control_server": "https://hydrata.com/",
+        }
+        (tmp_path / "scenario.json").write_text(json.dumps(config))
+        outputs = tmp_path / "outputs_601_384_1243"
+        outputs.mkdir()
+        (outputs / "result_depth_max.tif").write_bytes(b"fake tif")
+        return outputs
+
+    def test_playback_store_prefix_posted_when_marker_present(self, tmp_path: Path, monkeypatch):
+        outputs = self._base_setup(tmp_path, monkeypatch)
+        (outputs / "playback_store_export_result.json").write_text(
+            json.dumps({"status": "ok", "s3_prefix": "playback/601_384_1243/", "s3_bucket": "bucket"})
+        )
+        from run_anuga import _handoff
+
+        post_response = mock.MagicMock(status_code=202, text="")
+        with mock.patch("run_anuga.run.run_sim"), \
+             mock.patch.object(_handoff, "upload_cold_archive"), \
+             mock.patch.object(_handoff, "upload_result_to_s3"), \
+             mock.patch.object(_handoff, "report_result",
+                               return_value=post_response) as mock_post:
+            run_and_report(tmp_path, result_bucket="bucket")
+
+        call_kwargs = mock_post.call_args.kwargs
+        assert call_kwargs.get("playback_store_prefix") == "playback/601_384_1243/"
+
+    def test_playback_store_prefix_none_when_marker_absent(self, tmp_path: Path, monkeypatch):
+        """No marker (e.g. zarr wasn't installed / export skipped) -> None,
+        never a stale/fabricated prefix."""
+        self._base_setup(tmp_path, monkeypatch)
+        from run_anuga import _handoff
+
+        post_response = mock.MagicMock(status_code=202, text="")
+        with mock.patch("run_anuga.run.run_sim"), \
+             mock.patch.object(_handoff, "upload_cold_archive"), \
+             mock.patch.object(_handoff, "upload_result_to_s3"), \
+             mock.patch.object(_handoff, "report_result",
+                               return_value=post_response) as mock_post:
+            run_and_report(tmp_path, result_bucket="bucket")
+
+        call_kwargs = mock_post.call_args.kwargs
+        assert call_kwargs.get("playback_store_prefix") is None
+
+    def test_playback_store_prefix_none_when_marker_status_not_ok(self, tmp_path: Path, monkeypatch):
+        outputs = self._base_setup(tmp_path, monkeypatch)
+        (outputs / "playback_store_export_result.json").write_text(
+            json.dumps({"status": "skipped_no_zarr"})
+        )
+        from run_anuga import _handoff
+
+        post_response = mock.MagicMock(status_code=202, text="")
+        with mock.patch("run_anuga.run.run_sim"), \
+             mock.patch.object(_handoff, "upload_cold_archive"), \
+             mock.patch.object(_handoff, "upload_result_to_s3"), \
+             mock.patch.object(_handoff, "report_result",
+                               return_value=post_response) as mock_post:
+            run_and_report(tmp_path, result_bucket="bucket")
+
+        call_kwargs = mock_post.call_args.kwargs
+        assert call_kwargs.get("playback_store_prefix") is None
+
+
 class TestReportResultColdArchivePrefix:
     """report_result includes cold_archive_prefix in the POST body when provided."""
 
@@ -698,6 +775,54 @@ class TestReportResultColdArchivePrefix:
 
         _, called_kwargs = session.post.call_args[0], session.post.call_args[1]
         assert COLD_ARCHIVE_PREFIX_FIELD not in called_kwargs["data"]
+
+
+class TestReportResultPlaybackStorePrefix:
+    """report_result includes playback_store_prefix in the POST body when
+    provided (TASK-2623, mirrors TestReportResultColdArchivePrefix)."""
+
+    def test_posts_playback_store_prefix_when_provided(self, monkeypatch):
+        from run_anuga._handoff import PLAYBACK_STORE_PREFIX_FIELD
+
+        monkeypatch.setenv("HYDRATA_INTERNAL_COMPUTE_TOKEN", "test-token")
+        session = mock.MagicMock()
+        session.headers = {}
+        response = mock.MagicMock(status_code=202, text="")
+        session.post.return_value = response
+
+        with mock.patch("run_anuga._http.import_optional") as mock_import:
+            mock_import.return_value.Session.return_value = session
+            report_result(
+                "https://hydrata.com/",
+                run_id=99,
+                token="test-token",
+                result_key="1_2_3_results.zip",
+                playback_store_prefix="playback/1_2_3/",
+            )
+
+        _, called_kwargs = session.post.call_args[0], session.post.call_args[1]
+        assert called_kwargs["data"][PLAYBACK_STORE_PREFIX_FIELD] == "playback/1_2_3/"
+
+    def test_omits_playback_store_prefix_when_none(self, monkeypatch):
+        from run_anuga._handoff import PLAYBACK_STORE_PREFIX_FIELD
+
+        monkeypatch.setenv("HYDRATA_INTERNAL_COMPUTE_TOKEN", "test-token")
+        session = mock.MagicMock()
+        session.headers = {}
+        response = mock.MagicMock(status_code=202, text="")
+        session.post.return_value = response
+
+        with mock.patch("run_anuga._http.import_optional") as mock_import:
+            mock_import.return_value.Session.return_value = session
+            report_result(
+                "https://hydrata.com/",
+                run_id=99,
+                token="test-token",
+                result_key="1_2_3_results.zip",
+            )
+
+        _, called_kwargs = session.post.call_args[0], session.post.call_args[1]
+        assert PLAYBACK_STORE_PREFIX_FIELD not in called_kwargs["data"]
 
 
 # ---------------------------------------------------------------------------

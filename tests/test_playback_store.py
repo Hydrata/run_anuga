@@ -362,6 +362,65 @@ class TestMakePlaybackStorePrefix:
         assert ps.make_playback_store_prefix(601, 384, 1243) == "playback/601_384_1243/"
 
 
+class TestPlaybackStoreMarker:
+    """TASK-2623 (W1.2, epic 2618) — the cross-process handoff channel
+    _handoff.run_and_report() uses to learn the uploaded S3 prefix, since
+    export_playback_store() runs several frames deeper (inside run_sim())
+    than where report_result() is posted."""
+
+    def test_marker_written_on_skip(self, tmp_path):
+        with mock.patch.object(ps, "zarr_available", return_value=False):
+            ps.export_playback_store(
+                input_data={"run_label": "x", "scenario_config": {}},
+                sww_path="whatever.sww", output_dir=str(tmp_path), upload=False,
+            )
+        marker = ps.read_playback_store_marker(tmp_path)
+        assert marker == {"status": "skipped_no_zarr"}
+
+    def test_marker_written_on_error(self, tmp_path):
+        with mock.patch.object(ps, "zarr_available", return_value=True), \
+             mock.patch.object(ps, "_export_playback_store_impl", side_effect=RuntimeError("boom")):
+            ps.export_playback_store(
+                input_data={"run_label": "x", "scenario_config": {}},
+                sww_path="whatever.sww", output_dir=str(tmp_path), upload=False,
+            )
+        marker = ps.read_playback_store_marker(tmp_path)
+        assert marker == {"status": "error"}
+
+    def test_marker_absent_returns_none(self, tmp_path):
+        assert ps.read_playback_store_marker(tmp_path) is None
+
+    def test_playback_store_prefix_for_run_none_when_no_marker(self, tmp_path):
+        assert ps.playback_store_prefix_for_run(tmp_path, 601, 384, 1243) is None
+
+    def test_playback_store_prefix_for_run_none_when_skipped(self, tmp_path):
+        output_dir = tmp_path / "outputs_601_384_1243"
+        output_dir.mkdir()
+        with mock.patch.object(ps, "zarr_available", return_value=False):
+            ps.export_playback_store(
+                input_data={"run_label": "x", "scenario_config": {}},
+                sww_path="whatever.sww", output_dir=str(output_dir), upload=False,
+            )
+        assert ps.playback_store_prefix_for_run(tmp_path, 601, 384, 1243) is None
+
+    @requires_zarr
+    def test_playback_store_prefix_for_run_returns_prefix_after_real_export(self, tmp_path):
+        output_dir = tmp_path / "outputs_601_384_1243"
+        output_dir.mkdir()
+        with mock.patch.object(ps, "_upload_store_to_s3") as mock_upload:
+            mock_upload.return_value = "playback/601_384_1243/"
+            ps.export_playback_store(
+                input_data={
+                    "run_label": "run_601_384_1243",
+                    "scenario_config": {"project": 601, "id": 384, "run_id": 1243, "epsg": "EPSG:28355"},
+                },
+                sww_path=FIXTURE_SWW, output_dir=str(output_dir),
+                upload=True, bucket="test-bucket",
+            )
+        prefix = ps.playback_store_prefix_for_run(tmp_path, 601, 384, 1243)
+        assert prefix == "playback/601_384_1243/"
+
+
 @requires_zarr
 @pytest.mark.skipif(
     not os.environ.get("RUN_ANUGA_LIVE_S3_PLAYBACK_TEST"),

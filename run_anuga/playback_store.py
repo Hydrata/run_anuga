@@ -319,6 +319,61 @@ def make_playback_store_prefix(project_id, scenario_id, run_id) -> str:
     return f"playback/{project_id}_{scenario_id}_{run_id}/"
 
 
+# --- Cross-process result handoff (TASK-2623, W1.2, epic 2618) --------------
+#
+# export_playback_store() runs deep inside run_sim() (post_process_sww's
+# rank-0 PHASE_COG_EXPORT seam, run.py:713-725) — several call frames below
+# _handoff.run_and_report(), which is where report_result() posts back to
+# the Hydrata control server. run_and_report() has no other channel to learn
+# whether the export actually uploaded a store (vs skipped/errored) — unlike
+# the bucket (RESULT_S3_BUCKET, backfilled into os.environ), a boolean
+# outcome can't be "backfilled" before the fact. A small JSON marker file in
+# the SAME output_dir both functions already agree on (see
+# _handoff.upload_cold_archive's identical output_dir formula) is the
+# simplest reliable channel — written as this module's last step on every
+# code path (ok/skipped/error), read back by _handoff.run_and_report.
+
+_MARKER_FILENAME = "playback_store_export_result.json"
+
+
+def _write_marker(output_dir, result: dict) -> None:
+    import json
+
+    try:
+        marker_path = Path(output_dir) / _MARKER_FILENAME
+        marker_path.write_text(json.dumps(result))
+    except Exception:
+        logger.warning("playback_store: failed writing %s", _MARKER_FILENAME, exc_info=True)
+
+
+def read_playback_store_marker(output_dir) -> dict | None:
+    """Read back the marker written by export_playback_store(), or None if
+    absent/unreadable (e.g. this run predates TASK-2622, or export never ran).
+    """
+    import json
+
+    marker_path = Path(output_dir) / _MARKER_FILENAME
+    if not marker_path.is_file():
+        return None
+    try:
+        return json.loads(marker_path.read_text())
+    except Exception:
+        logger.warning("playback_store: failed reading %s", _MARKER_FILENAME, exc_info=True)
+        return None
+
+
+def playback_store_prefix_for_run(package_dir, project_id, scenario_id, run_id) -> str | None:
+    """Convenience wrapper for _handoff.run_and_report: the S3 prefix to
+    report back to the BE, or None when the export didn't produce an
+    uploaded store (skipped/errored/local-only/marker missing).
+    """
+    output_dir = Path(package_dir) / f"outputs_{project_id}_{scenario_id}_{run_id}"
+    marker = read_playback_store_marker(output_dir)
+    if marker is None or marker.get("status") != "ok":
+        return None
+    return marker.get("s3_prefix")
+
+
 # --- Orchestration -------------------------------------------------------------
 
 
@@ -346,10 +401,12 @@ def export_playback_store(
             'export (pip install "run_anuga[playback]" to enable). Run '
             'continues normally; per-timestep TIFs / *_max.tif are unaffected.'
         )
-        return {"status": "skipped_no_zarr"}
+        result = {"status": "skipped_no_zarr"}
+        _write_marker(output_dir, result)
+        return result
 
     try:
-        return _export_playback_store_impl(
+        result = _export_playback_store_impl(
             input_data=input_data,
             sww_path=sww_path,
             output_dir=output_dir,
@@ -362,7 +419,9 @@ def export_playback_store(
         logger.exception(
             "playback_store: export failed; run continues without a playback store"
         )
-        return {"status": "error"}
+        result = {"status": "error"}
+    _write_marker(output_dir, result)
+    return result
 
 
 def _export_playback_store_impl(
