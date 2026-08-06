@@ -95,6 +95,39 @@ class TestRunSubcommandImport:
         assert "pip install" in result.stderr
 
 
+class TestLegacyPerTimestepTifsDeprecation:
+    """TASK-2622 (W1.1, epic 2618) — viz/upload print a deprecation banner
+    (deterministic regardless of which extras are installed — unlike
+    TestRunSubcommandImport above, which asserts on downstream ImportError
+    text that only fires in an extras-less env)."""
+
+    def test_post_process_help_lists_legacy_flag(self):
+        result = subprocess.run(
+            [sys.executable, "-m", "run_anuga.cli", "post-process", "--help"],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0
+        assert "--legacy-per-timestep-tifs" in result.stdout
+
+    def test_viz_prints_deprecation_warning(self, tmp_path):
+        result = subprocess.run(
+            [sys.executable, "-m", "run_anuga.cli", "viz", str(tmp_path), "depth"],
+            capture_output=True, text=True,
+        )
+        assert "TASK-2622" in result.stderr
+        assert "post-process" in result.stderr
+        assert "--legacy-per-timestep-tifs" in result.stderr
+
+    def test_upload_prints_deprecation_warning(self, tmp_path):
+        (tmp_path / "scenario.json").write_text('{"model_start": "2026-01-01T00:00:00+00:00"}')
+        result = subprocess.run(
+            [sys.executable, "-m", "run_anuga.cli", "upload", str(tmp_path), "--bucket", "test-bucket"],
+            capture_output=True, text=True,
+        )
+        assert "TASK-2622" in result.stderr
+        assert "--legacy-per-timestep-tifs" in result.stderr
+
+
 class TestOldMainStillImportable:
     def test_old_main_importable(self):
         result = subprocess.run(

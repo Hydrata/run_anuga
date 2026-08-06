@@ -383,6 +383,7 @@ class TestUploadColdArchive:
         (output_dir / f"run_{run_label}_depth_max.tif").write_bytes(b"depth")
         (output_dir / f"run_{run_label}_velocity_max.tif").write_bytes(b"velocity")
         (output_dir / f"run_{run_label}_depthIntegratedVelocity_max.tif").write_bytes(b"div")
+        (output_dir / "run_diagnostics_1.csv").write_text("# mesh stats\nsim_time_s,min_dt_ms\n60.0,40.0\n")
         (tmp_path / "package.zip").write_bytes(b"input zip")
         (tmp_path / "scenario.json").write_text("{}")
         return tmp_path
@@ -415,7 +416,9 @@ class TestUploadColdArchive:
         )
 
     def test_uploads_correct_number_of_objects(self, tmp_path: Path):
-        """upload_file called for .sww + package.zip + scenario.json + 3 *_max.tif = 6."""
+        """upload_file called for .sww + package.zip + scenario.json + 3 *_max.tif
+        + 1 run_diagnostics_*.csv = 7 (TASK-2622 added the diagnostics CSV so the
+        playback-store's min_dt_ms/mean_dt_ms/last_dt_ms survive SWW cold-archive)."""
         package = self._make_package(tmp_path)
         from run_anuga import _handoff
 
@@ -432,7 +435,54 @@ class TestUploadColdArchive:
             )
 
         call_count = mock_s3.upload_file.call_count
-        assert call_count == 6, f"Expected 6 upload_file calls, got {call_count}"
+        assert call_count == 7, f"Expected 7 upload_file calls, got {call_count}"
+
+    def test_uploads_diagnostics_csv(self, tmp_path: Path):
+        """run_diagnostics_*.csv is uploaded (glob, since multi-batch/checkpoint
+        -restart runs can write more than one)."""
+        package = self._make_package(tmp_path)
+        from run_anuga import _handoff
+
+        with mock.patch.object(_handoff, "import_optional") as mock_import:
+            mock_s3 = mock.MagicMock()
+            mock_import.return_value.client.return_value = mock_s3
+            upload_cold_archive(
+                package,
+                "test-bucket",
+                "cold-archive/601_384_1243/",
+                project_id=601,
+                scenario_id=384,
+                run_id=1243,
+            )
+
+        keys = [call.args[2] for call in mock_s3.upload_file.call_args_list]
+        assert "cold-archive/601_384_1243/run_diagnostics_1.csv" in keys
+
+    def test_uploads_multiple_diagnostics_csvs(self, tmp_path: Path):
+        """A checkpoint-restart / multi-batch run can write several
+        run_diagnostics_N.csv files — all of them are archived."""
+        package = self._make_package(tmp_path)
+        run_label = "601_384_1243"
+        (package / f"outputs_{run_label}" / "run_diagnostics_2.csv").write_text(
+            "# mesh stats\nsim_time_s,min_dt_ms\n120.0,38.0\n"
+        )
+        from run_anuga import _handoff
+
+        with mock.patch.object(_handoff, "import_optional") as mock_import:
+            mock_s3 = mock.MagicMock()
+            mock_import.return_value.client.return_value = mock_s3
+            upload_cold_archive(
+                package,
+                "test-bucket",
+                "cold-archive/601_384_1243/",
+                project_id=601,
+                scenario_id=384,
+                run_id=1243,
+            )
+
+        keys = {call.args[2] for call in mock_s3.upload_file.call_args_list}
+        assert "cold-archive/601_384_1243/run_diagnostics_1.csv" in keys
+        assert "cold-archive/601_384_1243/run_diagnostics_2.csv" in keys
 
     def test_uploads_under_correct_prefix(self, tmp_path: Path):
         """All S3 keys must be under the cold-archive prefix."""

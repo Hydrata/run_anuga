@@ -41,7 +41,7 @@ RUN pip install --no-cache-dir "numpy>=2.0" setuptools wheel && \
 # mesh determinism guarantee.
 RUN pip install --no-cache-dir \
     scipy matplotlib "meshpy==2025.1.1" "pymetis==2025.2.2" netcdf4 dill utm pyproj affine \
-    mpi4py cython pybind11 requests boto3 awscli && \
+    mpi4py cython pybind11 requests boto3 awscli "zarr>=3.0" && \
     pip install --no-cache-dir \
     "anuga @ git+https://github.com/Hydrata/anuga_core.git@8abd3aefcc6df808372043a7ce1fbe523f5abbf3"
 
@@ -71,7 +71,7 @@ COPY gn_anuga /app/gn_anuga
 # Source tree + local-package install. The heavy layers above stay cached
 # across source-only changes; only these two layers re-run.
 COPY . /app/run_anuga_src/
-RUN pip install --no-cache-dir "/app/run_anuga_src[sim,platform]"
+RUN pip install --no-cache-dir "/app/run_anuga_src[sim,platform,playback]"
 
 # --- Baked build-provenance manifest (epic 2280 W3.1 / TASK-2286) -----------
 # The CONTAINER reads THIS FILE at runtime to self-report the exact cross-repo

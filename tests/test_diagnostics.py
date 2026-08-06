@@ -187,6 +187,27 @@ class TestRecord:
         # yieldstep=60s, n_steps=480 → mean_dt = 60/480*1000 = 125ms
         assert abs(rec["mean_dt_ms"] - 125.0) < 0.1
 
+    def test_min_dt_ms_reads_domain_recorded_min_timestep(self, tmp_path):
+        """TASK-2622 — min_dt_ms reads ANUGA's own domain.recorded_min_timestep
+        (reset per-yieldstep by generic_domain.evolve(), abstract_2d_finite_volumes/
+        generic_domain.py:2055), NOT last_dt_ms — the smallest internal substep dt
+        seen during the just-completed yieldstep, for the playback-store dt_source.
+        """
+        mon = self._make_monitor(tmp_path, timestep=0.125)
+        mon.domain.number_of_steps = 480
+        mon.domain.recorded_min_timestep = 0.040  # 40ms, smaller than last_dt_ms=125ms
+        rec = mon.record(60.0, wall_time_s=16.0)
+        assert abs(rec["min_dt_ms"] - 40.0) < 0.01
+
+    def test_min_dt_ms_falls_back_to_last_dt_ms_when_absent(self, tmp_path):
+        """Domains/mocks without recorded_min_timestep (e.g. a stripped test
+        double) degrade to last_dt_ms rather than raising."""
+        mon = self._make_monitor(tmp_path, timestep=0.125)
+        mon.domain.number_of_steps = 480
+        assert not hasattr(mon.domain, "recorded_min_timestep")
+        rec = mon.record(60.0, wall_time_s=16.0)
+        assert abs(rec["min_dt_ms"] - 125.0) < 0.01
+
     def test_wet_cells_count(self, tmp_path):
         mon = self._make_monitor(tmp_path)
         mon.domain.number_of_steps = 480

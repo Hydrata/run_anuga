@@ -458,6 +458,17 @@ def upload_cold_archive(
                 "upload_cold_archive: %s not found (output_dir=%s)", tif_name, output_dir
             )
 
+    # --- run_diagnostics_*.csv (TASK-2622, epic 2618 W1.1) ---
+    # Glob (not a single fixed filename) because checkpoint-restart / multi-batch
+    # runs write more than one run_diagnostics_N.csv. Without this, the CSV's
+    # min_dt_ms/mean_dt_ms/last_dt_ms (the playback store's dt_ms source, schema
+    # §5 dt_source) are unrecoverable once an archived run's local disk is gone
+    # — the CSV was never part of the cold archive before this change.
+    diagnostics_pattern = str(output_dir / "run_diagnostics_*.csv")
+    for diag_path_str in sorted(glob.glob(diagnostics_pattern)):
+        diag_path = Path(diag_path_str)
+        _upload(diag_path, diag_path.name)
+
 
 def report_result(
     control_server: str,
@@ -842,6 +853,17 @@ def run_and_report(
     # Fail fast on the bucket too so a misconfigured worker doesn't burn N
     # hours of ANUGA compute before discovering it can't upload the result.
     bucket = result_bucket or _required_env("RESULT_S3_BUCKET")
+    # TASK-2622 (W1.1, epic 2618) — backfill RESULT_S3_BUCKET into the process
+    # env BEFORE run_sim() runs. Batch already exports this var (entrypoint.sh);
+    # the F2 localhost dispatcher deliberately does NOT (tasks.py comment:
+    # "passing --result-bucket avoids an env rename") and only ever had
+    # `bucket` as a local variable here, well after run_sim() would need it.
+    # run.py's rank-0 post_process_sww() call (inside run_sim(), PHASE_COG_EXPORT)
+    # needs the bucket to upload the playback store while the SWW is still
+    # local — os.environ is the only channel that reaches that deep without
+    # threading a new bucket parameter through run_sim/run_sim's whole call
+    # chain. setdefault is a no-op when Batch already exported it.
+    os.environ.setdefault("RESULT_S3_BUCKET", bucket)
 
     if not (run_id and project_id and scenario_id and control_server):
         raise RuntimeError(
