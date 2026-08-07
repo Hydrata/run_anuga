@@ -869,6 +869,22 @@ def run_and_report(
             },
         )
 
+    # TASK-2663 (epic 2662 W0.1) — root cause of the dead progress channel:
+    # run_sim's token-gated HydrataCallback auto-construction only fires when
+    # ``callback is None``, but since TASK-1924 (W3, 049860a) this function has
+    # ALWAYS wrapped the callback in the truthy _EarlyPartialCallback below, so
+    # run_sim received wrapper(inner=None) and every on_progress/on_status/
+    # on_metric was silently dropped (the wrapper's delegation guards on
+    # ``if self._inner``). Replicate the gate HERE, before wrapping. The
+    # required-field guard above proves control_server/project/id/run_id are
+    # present, so ``from_config`` cannot raise KeyError. Rank>0 MPI processes
+    # construct a (never-posting) callback too — every callback invocation in
+    # run.py is rank-0-gated, so no duplicate POSTs result.
+    if callback is None and os.environ.get("HYDRATA_INTERNAL_COMPUTE_TOKEN"):
+        from run_anuga.callbacks import HydrataCallback
+
+        callback = HydrataCallback.from_config(scenario_config)
+
     # W3 (TASK-1924): wrap the caller's callback so on_mesh_features_ready()
     # fires the early partial emit.  The wrapper is transparent to all other
     # callback methods — it just adds the pre-evolve ledger write.
