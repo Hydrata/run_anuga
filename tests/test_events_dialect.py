@@ -283,8 +283,6 @@ class TestRunAndReportEventsDialect:
         ]
 
     def test_events_dialect_full_wiring(self, package, events_env):
-        from run_anuga import _handoff
-
         mock_run_sim = mock.MagicMock(return_value=None)
         patches = self._patches(mock_run_sim)
         with patches[0], patches[1], patches[2], \
