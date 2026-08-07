@@ -31,11 +31,14 @@
 # the provenance manifest stays "{}" (provenance-incomplete, never a failure).
 
 # ---- the ONE engine pin, shared by BOTH targets ---------------------------
-# TASK-2673 (engine unification) bumps this; both targets move together —
-# there is deliberately NO second pin anywhere in this file.
-# Pin 8abd3aef = fork main synced to upstream anuga-community/main @2d3696ea
-# (epic 2147 W1.1 / TASK-2152; PR #5). Prev: b09d47bb.
-ARG ANUGA_CORE_SHA=8abd3aefcc6df808372043a7ce1fbe523f5abbf3
+# There is deliberately NO second pin anywhere in this file; both targets
+# move together.
+# Pin 7f1a4847 = Hydrata/anuga_core fork main, the TASK-2652 881-commit
+# upstream-develop merge — the SAME engine the live GPU image bakes
+# (TASK-2673 engine unification: cpu joins gpu on fork main; towradgi
+# parity gate on the cpu build is the acceptance evidence). Prev: 8abd3aef
+# (fork main @ upstream anuga-community/main 2d3696ea, epic 2147 W1.1).
+ARG ANUGA_CORE_SHA=7f1a4847df34cd2527101d4e10dbbf0b81668e23
 
 # Provenance ARGs (stamped as LABELs in both targets; passed by
 # rebuild-batch-image.sh / CI — "unknown" on a plain local build).
