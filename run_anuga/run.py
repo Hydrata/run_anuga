@@ -126,8 +126,14 @@ def _get_module_offload_probe():
 def _assert_gpu_engaged(domain, requested_mode):
     """FAIL the run if mode 2 (GPU) was requested but did not actually engage
     (TASK-2197, epic 2190 W4.1; signal set corrected by the W4 adversarial
-    review P0, verified against upstream anuga develop@57a64abf — the engine
-    the GPU image actually bakes).
+    review P0, originally verified against upstream anuga develop@57a64abf —
+    the engine the GPU image baked at the time. TASK-2652 merged that upstream
+    develop lineage into Hydrata/anuga_core@main (merge commit 7f1a4847df34cd
+    2527101d4e10dbbf0b81668e23) and repointed the GPU build path onto the
+    fork; the GPU image now bakes from the fork, not upstream directly. A
+    fresh re-verification of this contract against the merged HEAD is a
+    TASK-2652/epic-2635 W5 runbook gate step (AC15) — the LOGIC below is
+    unchanged, only this docstring's stale premises are corrected here).
 
     Two DISTINCT fallbacks must both fail the run:
 
@@ -142,10 +148,12 @@ def _assert_gpu_engaged(domain, requested_mode):
       ``domain.gpu_offload_active`` (stamped at gpu-interface init from the
       process-wide state), a per-domain ``gpu_offload_enabled()`` method if
       an engine variant exposes one, or the package-level
-      ``anuga.gpu_offload_enabled()`` (upstream exports it; the fork does
-      not). The package probe is consulted only when the domain exposes no
-      offload signal (e.g. upstream's CUDA/CuPy interface path never stamps
-      ``gpu_offload_active``).
+      ``anuga.gpu_offload_enabled()`` (upstream exports it; POST-TASK-2652 the
+      fork exports it too — the merge landed it in ``anuga/__init__.py``,
+      superseding the earlier "the fork does not" premise this docstring
+      carried before the merge). The package probe is consulted only when the
+      domain exposes no offload signal (e.g. upstream's CUDA/CuPy interface
+      path never stamps ``gpu_offload_active``).
 
     Every signal the engine exposes must AGREE; any exposed signal reporting
     "not engaged" fails the run. An engine exposing NO signal at all fails
