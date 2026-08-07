@@ -190,26 +190,25 @@ ENV PYTHONUNBUFFERED=1
 ARG GPU_ARCH=cc70,cc75,cc86,cc89
 ARG GPU_AWARE_MPI=false
 COPY --from=src /src/anuga_core /app/anuga_core
-# EDITABLE (-e) install, mirroring the proven gpu-dev base recipe VERBATIM:
-# a non-editable `pip install <dir> -Csetup-args=...` silently DROPS the
-# meson options (pip configures the build during metadata preparation, where
-# the config-settings do not reach meson) and produces a CPU-only engine —
-# caught RED by the offload assert below during TASK-2671 bring-up. The
-# editable path applies the setup-args and the source stays at
-# /app/anuga_core (fine in-image; also what the dev base did).
 RUN cd /app/anuga_core && rm -rf build && \
-    CC=nvc CXX=nvc++ pip install --no-cache-dir --no-build-isolation -e /app/anuga_core \
+    CC=nvc CXX=nvc++ pip install --no-cache-dir --no-build-isolation /app/anuga_core \
       -Csetup-args=-Dgpu_offload=true \
       -Csetup-args=-Dgpu_arch=${GPU_ARCH} \
       -Csetup-args=-Dgpu_aware_mpi=${GPU_AWARE_MPI} \
       -Csetup-args=-Duse_nvtx=true \
     && rm -rf /app/anuga_core-gpu
-# Baked fail-loud detector for the silent-CPU-engine class (the trap above):
-# a gpu-target image whose engine cannot offload must never leave the build.
-# gpu_offload_supported() reads the build configuration — no GPU required.
-RUN python -c "from anuga import gpu_offload_supported; \
-    assert gpu_offload_supported(), 'gpu target built WITHOUT OpenMP offload support'; \
-    print('gpu offload support baked OK')"
+# Baked fail-loud detector for the silent-CPU-engine class: a gpu-target
+# image whose engine was compiled WITHOUT offload must never leave the
+# build. The check is DEVICE-INDEPENDENT on purpose — an offload-compiled
+# sw_domain_gpu_ext links the NVIDIA HPC offload runtime
+# (libacchost/libaccdevice), a CPU_ONLY_MODE build links libgomp only.
+# NEVER use anuga's gpu_offload_supported() here: it also requires a
+# physical GPU device (omp_get_num_devices()>0), which no docker build has —
+# it would fail EVERY build, including perfect ones (TASK-2671 bring-up
+# false-positive). The runtime device probe belongs to run-towradgi-gate.sh.
+RUN SO=$(python -c "from anuga.shallow_water import sw_domain_gpu_ext as m; print(m.__file__)") \
+    && ldd "$SO" | grep -qE 'libacc(host|device)' \
+    && echo "gpu offload runtime linkage OK: $SO"
 
 # entrypoint.sh BEFORE the source-tree COPY so its layer stays cached when
 # only run_anuga/*.py changes.
