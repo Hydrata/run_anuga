@@ -738,3 +738,190 @@ class TestNumpySafetyAndFinalizeGuard:
 
         finalize_monitor_safely(OkMonitor())
         assert calls == [1]
+
+
+# ---------------------------------------------------------------------------
+# TASK-2675 (epic 2662 W2.5) — honest MPI diagnostics: allreduce the status
+# scalars. Mocked-MPI ONLY on purpose: anuga_core is unbuilt on the
+# workstation, so a proof requiring local mpirun would be invalid — the live
+# multi-rank confirmation rides the W2.6 gate's CPU run log.
+# ---------------------------------------------------------------------------
+
+import sys  # noqa: E402
+import types  # noqa: E402
+
+import pytest  # noqa: E402
+
+from run_anuga.diagnostics import (  # noqa: E402
+    _mpi_world_size_from_env,
+    allreduce_flow_scalars,
+    collect_flow_scalars,
+    compute_local_flow_scalars,
+)
+
+# Rank 0 is DRY — the exact prod-run-1314 trap: local wet=0/vol=0 while the
+# water lives on other ranks.
+RANK0_DRY_LOCAL = {
+    "n_wet": 0, "n_full": 250, "volume_m3": 0.0, "max_depth_m": 0.0,
+    "max_speed_ms": 0.0, "peak_speed_x": 0.0, "peak_speed_y": 0.0,
+    "min_r_wet": float("inf"),
+}
+
+
+class ScriptedComm:
+    """Mocked MPI communicator: asserts each collective's (method, op,
+    sendobj) in the implementation's documented order and returns the
+    globally-reduced value a 4-rank world would produce."""
+
+    def __init__(self, script, rank=0):
+        self.script = list(script)
+        self.rank = rank
+
+    def Get_rank(self):
+        return self.rank
+
+    def _next(self, method, op=None, sendobj=None, root=None):
+        assert self.script, f"unexpected extra collective: {method}"
+        exp = self.script.pop(0)
+        assert exp["method"] == method, f"expected {exp['method']}, got {method}"
+        if "op" in exp:
+            assert exp["op"] == op, f"{method}: expected op {exp['op']}, got {op}"
+        if "sendobj" in exp:
+            assert exp["sendobj"] == sendobj, (
+                f"{method}: expected sendobj {exp['sendobj']}, got {sendobj}")
+        if "root" in exp:
+            assert exp["root"] == root, f"bcast: expected root {exp['root']}, got {root}"
+        return exp["ret"]
+
+    def allreduce(self, sendobj, op=None):
+        return self._next("allreduce", op=op, sendobj=sendobj)
+
+    def bcast(self, obj, root=None):
+        return self._next("bcast", root=root)
+
+
+def _install_fake_mpi(monkeypatch, comm):
+    fake_mpi = types.SimpleNamespace(
+        SUM="SUM", MAX="MAX", MIN="MIN", MAXLOC="MAXLOC",
+        COMM_WORLD=comm,
+    )
+    mod = types.ModuleType("mpi4py")
+    mod.MPI = fake_mpi
+    monkeypatch.setitem(sys.modules, "mpi4py", mod)
+    return fake_mpi
+
+
+class _ExplodingModule(types.ModuleType):
+    """Any attribute access (i.e. `from mpi4py import MPI`) raises."""
+
+    def __getattr__(self, name):
+        raise AssertionError(
+            f"mpi4py.{name} was touched on the serial path — AC2 violated "
+            "(no MPI import cost when serial)"
+        )
+
+
+class TestAllreduceFlowScalars:
+    def test_serial_path_unchanged_and_never_touches_mpi(self, monkeypatch):
+        """AC2: without an MPI launcher env the input passes through
+        unchanged and mpi4py is never imported/touched."""
+        for var in ("OMPI_COMM_WORLD_SIZE", "PMIX_SIZE", "PMI_SIZE"):
+            monkeypatch.delenv(var, raising=False)
+        monkeypatch.setitem(sys.modules, "mpi4py", _ExplodingModule("mpi4py"))
+        local = dict(RANK0_DRY_LOCAL, n_wet=7, volume_m3=1.5)
+        out = allreduce_flow_scalars(local)
+        assert out == local
+        assert out is not local  # a copy, never an aliased mutation surface
+
+    def test_world_size_env_parsing(self, monkeypatch):
+        for var in ("OMPI_COMM_WORLD_SIZE", "PMIX_SIZE", "PMI_SIZE"):
+            monkeypatch.delenv(var, raising=False)
+        assert _mpi_world_size_from_env() == 1
+        monkeypatch.setenv("OMPI_COMM_WORLD_SIZE", "32")
+        assert _mpi_world_size_from_env() == 32
+
+    def _global_script(self):
+        """4-rank world; rank 0 dry; water on ranks 1-3; vmax owned by rank 2."""
+        return [
+            {"method": "allreduce", "op": "SUM", "sendobj": 0, "ret": 300},
+            {"method": "allreduce", "op": "SUM", "sendobj": 250, "ret": 1000},
+            {"method": "allreduce", "op": "SUM", "sendobj": 0.0, "ret": 4321.5},
+            {"method": "allreduce", "op": "MAX", "sendobj": 0.0, "ret": 2.5},
+            {"method": "allreduce", "op": "MIN", "sendobj": float("inf"), "ret": 0.75},
+            {"method": "allreduce", "op": "MAXLOC", "sendobj": (0.0, 0), "ret": (3.2, 2)},
+            {"method": "bcast", "root": 2, "ret": (512.5, 663.25)},
+        ]
+
+    def test_allreduce_returns_global_values_on_a_dry_rank0(self, monkeypatch):
+        """AC1: rank 0's DRY partition must report the GLOBAL truth —
+        wet/vol/vmax/min-inradius reduced with the right op each, and the
+        vmax coordinates broadcast from the rank that owns the max."""
+        monkeypatch.setenv("OMPI_COMM_WORLD_SIZE", "4")
+        comm = ScriptedComm(self._global_script())
+        _install_fake_mpi(monkeypatch, comm)
+        out = allreduce_flow_scalars(dict(RANK0_DRY_LOCAL))
+        assert out["n_wet"] == 300
+        assert out["n_full"] == 1000
+        assert out["volume_m3"] == 4321.5
+        assert out["max_depth_m"] == 2.5
+        assert out["min_r_wet"] == 0.75
+        assert out["max_speed_ms"] == 3.2
+        assert (out["peak_speed_x"], out["peak_speed_y"]) == (512.5, 663.25)
+        assert comm.script == []  # every scripted collective consumed
+
+    def test_allreduce_missing_mpi4py_degrades_loudly(self, monkeypatch, caplog):
+        monkeypatch.setenv("OMPI_COMM_WORLD_SIZE", "4")
+        monkeypatch.setitem(sys.modules, "mpi4py", None)  # import -> ImportError
+        import logging as _logging
+        with caplog.at_level(_logging.WARNING, logger="run_anuga.diagnostics"):
+            out = allreduce_flow_scalars(dict(RANK0_DRY_LOCAL))
+        assert out == RANK0_DRY_LOCAL
+        assert "RANK-LOCAL" in caplog.text
+
+    def test_record_reports_global_values_despite_dry_local_domain(
+            self, monkeypatch, tmp_path):
+        """AC1 end-to-end: a monitor over a DRY rank-0 domain, handed the
+        reduced flow dict, logs the global wet/vol/vmax/v_impl."""
+        monkeypatch.setenv("OMPI_COMM_WORLD_SIZE", "4")
+        domain = _make_mock_domain(timestep=0.125)
+        # Dry out rank 0's partition entirely (stage below elevation).
+        domain.quantities["stage"].centroid_values = (
+            domain.quantities["elevation"].centroid_values - 1.0)
+        # Script keyed to THIS domain's locals (4 full triangles, all dry,
+        # local max depth -1.0m): the world still reports the global truth.
+        comm = ScriptedComm([
+            {"method": "allreduce", "op": "SUM", "sendobj": 0, "ret": 300},
+            {"method": "allreduce", "op": "SUM", "sendobj": 4, "ret": 1000},
+            {"method": "allreduce", "op": "SUM", "sendobj": 0.0, "ret": 4321.5},
+            {"method": "allreduce", "op": "MAX", "sendobj": -1.0, "ret": 2.5},
+            {"method": "allreduce", "op": "MIN", "sendobj": float("inf"), "ret": 0.75},
+            {"method": "allreduce", "op": "MAXLOC", "sendobj": (0.0, 0), "ret": (3.2, 2)},
+            {"method": "bcast", "root": 2, "ret": (512.5, 663.25)},
+        ])
+        _install_fake_mpi(monkeypatch, comm)
+        flow = collect_flow_scalars(domain)
+        mon = SimulationMonitor(domain, str(tmp_path), 1, yieldstep=60, cfl=0.9)
+        rec = mon.record(60.0, wall_time_s=16.0, flow=flow)
+
+        assert rec["wet_cells"] == 300
+        assert rec["wet_fraction"] == round(300 / 1000, 4)
+        assert rec["volume_m3"] == 4321.5
+        assert rec["max_speed_ms"] == 3.2
+        # v_impl = cfl * global min_r_wet / dt = 0.9 * 0.75 / 0.125 = 5.4
+        assert rec["implied_max_speed_ms"] == pytest.approx(5.4, abs=0.01)
+        # the log-suffix line (the one that lied on run 1314) now shows truth
+        suffix = mon.format_log_suffix(rec)
+        assert "wet=30%" in suffix and "vol=4322" in suffix
+
+    def test_serial_record_unchanged_without_flow_arg(self, tmp_path, monkeypatch):
+        """AC2: legacy serial callers (no flow kwarg) keep the exact local
+        computation — same values as compute_local_flow_scalars."""
+        for var in ("OMPI_COMM_WORLD_SIZE", "PMIX_SIZE", "PMI_SIZE"):
+            monkeypatch.delenv(var, raising=False)
+        domain = _make_mock_domain(timestep=0.125)
+        local = compute_local_flow_scalars(domain)
+        mon = SimulationMonitor(domain, str(tmp_path), 1, yieldstep=60, cfl=0.9)
+        rec = mon.record(60.0, wall_time_s=16.0)
+        assert rec["wet_cells"] == local["n_wet"] == 3
+        assert rec["volume_m3"] == round(local["volume_m3"], 1)
+        assert rec["max_speed_ms"] == round(local["max_speed_ms"], 3)

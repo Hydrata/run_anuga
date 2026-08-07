@@ -17,7 +17,9 @@ from run_anuga.run_utils import is_dir_check, setup_input_data, create_anuga_mes
 from run_anuga import defaults
 from run_anuga import phase_tracker
 from run_anuga.callbacks import NullCallback, HydrataCallback
-from run_anuga.diagnostics import SimulationMonitor, finalize_monitor_safely
+from run_anuga.diagnostics import (
+    SimulationMonitor, collect_flow_scalars, finalize_monitor_safely,
+)
 from run_anuga._logging import install_mname_filter
 
 try:
@@ -689,6 +691,14 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
         # post-processing; the phase is cleared after the trailing barrier below.
         phase_tracker.set_phase(phase_tracker.PHASE_EVOLVE)
         for t in domain.evolve(yieldstep=yieldstep, finaltime=duration, skip_initial_step=skip_initial_step):
+            # TASK-2675 — honest MPI diagnostics: the flow scalars are
+            # reduced across ALL ranks (SUM wet/vol, MAX depth/speed, MIN
+            # wet inradius), so this COLLECTIVE must run on every rank at
+            # the yieldstep boundary. Calling it inside the myid==0 block
+            # would deadlock rank 0's allreduce against the other ranks'
+            # evolve-internal collectives. Serial runs skip MPI entirely
+            # (launcher-env gate — zero mpi4py import cost).
+            flow = collect_flow_scalars(domain)
             if anuga.myid == 0:
                 stop = time.time()
                 percentage_done = round(t * 100 / duration, 1)
@@ -706,7 +716,9 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
                 mem_mb = memory_usage / (1024 * 1024)
                 # Per-yieldstep diagnostics. t is already simulation-relative here
                 # (finaltime=duration, no set_starttime), so pass it straight through.
-                diag = monitor.record(t, wall_time_s=stop - start, mem_mb=mem_mb)
+                # `flow` carries the globally-reduced scalars (TASK-2675).
+                diag = monitor.record(t, wall_time_s=stop - start, mem_mb=mem_mb,
+                                      flow=flow)
                 logger.info(
                     f'{percentage_done}% | {minutes}m {seconds}s | '
                     f'mem: {memory_percent}% | disk: {psutil.disk_usage("/").percent}% | '
