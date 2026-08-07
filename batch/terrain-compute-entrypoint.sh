@@ -19,6 +19,18 @@ set -euo pipefail
 #     MANIFEST_S3_URI                 - full s3://bucket/key URI, OR
 #     MANIFEST_S3_BUCKET + MANIFEST_S3_KEY
 #
+# Optional environment variables:
+#   HYDRATA_PROCESS_ID                - TaskMonitor Process uuid (TASK-2677, epic 2662
+#                                       W3.1). When present, merge_and_report arms the
+#                                       typed-events dialect (POST /api/v2/tasks/
+#                                       processes/<uuid>/events/ — progress/phase/
+#                                       heartbeat/started/error); absent, the legacy
+#                                       derive-* callbacks stay active (D9 migration
+#                                       window). Passes through this entrypoint into
+#                                       the python process env — no explicit export
+#                                       needed (mirrors the ANUGA entrypoint, where
+#                                       run_anuga._handoff reads it from os.environ).
+#
 # The manifest carries everything else (analysis_surface_id, project_crs, the
 # ordered DEM input stack, result_bucket/result_key, etc.) — see the schema in
 # gn_anuga/terrain_compute/merge.py. The runner POSTs progress/result/error
@@ -68,6 +80,9 @@ fi' EXIT
 echo "[terrain-entrypoint] === Terrain Compute (merge-and-report) ==="
 echo "[terrain-entrypoint] Manifest: ${MANIFEST_URI}"
 echo "[terrain-entrypoint] Control:  ${CONTROL_BASE}"
+# TASK-2677: one greppable line naming the active telemetry dialect — the
+# container-log twin of merge_and_report's own arming line.
+echo "[terrain-entrypoint] Process:  ${HYDRATA_PROCESS_ID:-<none - legacy derive-* dialect>}"
 echo "[terrain-entrypoint] ============================================"
 
 # 1. Download the manifest from S3.
