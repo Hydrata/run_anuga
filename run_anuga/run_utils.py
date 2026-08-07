@@ -1449,17 +1449,16 @@ def post_process_sww(package_dir, run_args=None, output_raster_resolution=None):
     util = anuga.utilities.plot_utils
     output_quantities = ['depth', 'velocity', 'depthIntegratedVelocity', 'stage']
     input_data = setup_input_data(package_dir)
-    logger.critical(f'Generating output rasters on {anuga.myid}...')
+    logger.info(f'Generating output rasters on {anuga.myid}...')
     resolutions = list()
     if input_data.get('mesh_region'):
         for feature in input_data.get('mesh_region').get('features') or list():
-            # logger.critical(f'{feature=}')
             resolutions.append(feature.get('properties').get('resolution'))
-    logger.critical(f'{resolutions=}')
+    logger.info(f'{resolutions=}')
     if len(resolutions) == 0:
         resolutions = [input_data.get('resolution') or 1000]
     finest_grid_resolution = min(resolutions)
-    logger.critical(f'raster output resolution: {finest_grid_resolution}m')
+    logger.info(f'raster output resolution: {finest_grid_resolution}m')
 
     epsg_integer = int(input_data['scenario_config'].get("epsg").split(":")[1]
                        if ":" in input_data['scenario_config'].get("epsg")
@@ -1522,7 +1521,7 @@ def post_process_sww(package_dir, run_args=None, output_raster_resolution=None):
     video_dir = f"{input_data['output_directory']}/videos/"
     if os.path.isdir(video_dir):
         shutil.rmtree(video_dir)
-    logger.critical('Successfully generated depth, velocity, momentum outputs')
+    logger.info('Successfully generated depth, velocity, momentum outputs')
 
 
 def reprocess_from_archived_sww(
