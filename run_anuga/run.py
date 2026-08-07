@@ -274,7 +274,8 @@ def _capture_gpu_model():
     return None
 
 
-def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoint_time=None, callback=None):
+def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoint_time=None, callback=None,
+            telemetry_client=None):
     # Lazy imports — these are only needed when actually running a simulation.
     anuga = import_optional("anuga")
     pickle = import_optional("dill")
@@ -295,7 +296,12 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
     if callback is None and os.environ.get('HYDRATA_INTERNAL_COMPUTE_TOKEN'):
         callback = HydrataCallback.from_config(input_data['scenario_config'])
     callback = callback or NullCallback()
-    logger = setup_logger(input_data, username, password, batch_number)
+    # TASK-2672: the events client (when run_and_report armed one, rank 0
+    # only) is threaded through EXPLICITLY so setup_logger can ship log lines
+    # as typed `log` events — no attribute-sniffing on the callback that a
+    # wrapper could shadow (the W0.1 lesson).
+    logger = setup_logger(input_data, username, password, batch_number,
+                          telemetry_client=telemetry_client)
     logger.info(f"run_sim started with {batch_number=}")
     domain = None
     overall = None
@@ -675,10 +681,9 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
                 run_label=input_data['run_label'],
                 scenario_config=input_data['scenario_config'],
             )
-        # W6 (TASK-1044) — `simulation_start` is the absolute wall-clock anchor used
-        # for ETA estimation; `start` is the per-tick reference reset every iteration.
-        simulation_start = time.time()
-        start = simulation_start
+        # `start` is the per-tick wall-clock reference reset every iteration.
+        # (The old `simulation_start` ETA anchor is gone — see D7 note below.)
+        start = time.time()
         # Sub-phase attribution (TASK-1910): the timestepping solver loop. Set
         # (not context-managed) because the loop is the last build phase before
         # post-processing; the phase is cleared after the trailing barrier below.
@@ -687,15 +692,12 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
             if anuga.myid == 0:
                 stop = time.time()
                 percentage_done = round(t * 100 / duration, 1)
-                # W6 (TASK-1044) — switch numeric progress from on_status('X%') to
-                # on_progress(X). on_status is reserved for state words ('error' below
-                # stays). ETA = elapsed * (100 - pct) / pct; unknown when pct==0.
-                elapsed = stop - simulation_start
-                if percentage_done > 0:
-                    eta_seconds = int(elapsed * (100 - percentage_done) / percentage_done)
-                else:
-                    eta_seconds = None
-                callback.on_progress(percentage_done, eta_seconds=eta_seconds)
+                # W6 (TASK-1044) — numeric progress flows via on_progress;
+                # on_status is reserved for state words ('error' below stays).
+                # D7 (TASK-2672): the container computes NO ETA — the server
+                # derives it from the progress history (the old elapsed-ratio
+                # math lived here and is deliberately deleted, not moved).
+                callback.on_progress(percentage_done)
                 duration_seconds = round(stop - start)
                 minutes, seconds = divmod(duration_seconds, 60)
                 memory_percent = psutil.virtual_memory().percent

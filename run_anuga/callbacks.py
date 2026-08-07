@@ -111,6 +111,55 @@ class LoggingCallback:
         pass
 
 
+class TelemetryCallback:
+    """SimulationCallback -> events-dialect adapter (TASK-2672, epic 2662 D4).
+
+    Maps the legacy per-channel callback protocol onto the ONE typed-events
+    endpoint via a :class:`gn_anuga.batch_common.telemetry_client.TelemetryClient`.
+    The server folds the events into the canonical Process row and fans out
+    to the Run during the migration window (D6), so the legacy /log/ +
+    /progress/ POSTs this replaces stay behaviourally covered.
+
+    Owns NO transport and NO construction logic: the client is constructed
+    ONCE, explicitly, in ``run_anuga._handoff.run_and_report`` (the W0.1
+    lesson from TASK-2663 — no sentinel-gated construction site a wrapper
+    can shadow) and handed in. The client is fail-open after construction
+    (every post returns bool, never raises), so nothing here can break the
+    run loop. Rank-0 only by construction (the client only exists on rank 0).
+    """
+
+    def __init__(self, client):
+        self.client = client
+
+    def on_status(self, status: str, **kwargs: Any) -> None:
+        """State words ride the log-event channel (folded into the bounded
+        Process.log + fanned out to Run.log), mirroring the legacy dialect's
+        'status: <word>' Run.log lines. Terminal transitions stay owned by
+        the orchestrator/server."""
+        self.client.log(f"status: {status}")
+
+    def on_metric(self, key: str, value: Any) -> None:
+        self.client.metric({key: value})
+
+    def on_file(self, key: str, filepath: str) -> None:
+        self.client.log(f"file: {key} -> {filepath}")
+
+    def on_progress(self, pct: float, eta_seconds: int | None = None) -> None:
+        """Progress event. eta_seconds is normally None — the server derives
+        ETA from progress history (D7); a non-None value is the documented
+        container override and is passed through."""
+        self.client.progress(pct, eta_seconds=eta_seconds)
+
+    def on_mesh_features_ready(self) -> None:
+        """No-op — the early partial ledger emit is wired by run_and_report's
+        wrapper, which has the sampler reference (TASK-1924)."""
+
+    def close(self) -> None:
+        """No-op — the client (and its watchdog thread) lifecycle is owned by
+        run_and_report, which arms it before run_sim and stops it after the
+        handoff."""
+
+
 class HydrataCallback:
     """Callback that reports progress to the Hydrata control-server V2 API.
 
