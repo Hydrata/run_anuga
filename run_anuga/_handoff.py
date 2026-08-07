@@ -41,6 +41,7 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
+from run_anuga import phase_tracker
 from run_anuga._imports import import_optional
 from run_anuga._logging import install_mname_filter
 
@@ -539,6 +540,49 @@ def report_error(
             session.close()
 
 
+def _make_telemetry_client(scenario_config):
+    """THE one explicit construction site for the events client (TASK-2672).
+
+    Per the W0.1 root-cause contract (TASK-2663 comment #1622 / TASK-2668
+    comment #1626): the events reporter is constructed HERE, once, fail-loud
+    — never via an ``is None`` sentinel inside run_sim that a wrapper could
+    shadow. The constructor logs the one greppable startup line naming the
+    active class + events URL; after construction the client is total
+    fail-open (posts return bool, never raise).
+
+    Returns ``None`` — each with its own LOUD log line — when:
+    * ``HYDRATA_PROCESS_ID`` is absent (legacy dispatcher / ad-hoc run: the
+      legacy callback dialect stays active during the D9 migration window);
+    * ``gn_anuga.batch_common`` is not importable (bare env without the
+      overlay / apps tree on PYTHONPATH).
+
+    With a process id present, a missing control_server/token raises
+    ValueError from the client constructor — a misconfigured container must
+    die noisily at startup, not run dark for hours.
+    """
+    process_id = os.environ.get("HYDRATA_PROCESS_ID", "").strip()
+    if not process_id:
+        logger.info(
+            "run_and_report: events dialect NOT armed — no HYDRATA_PROCESS_ID "
+            "in the environment; using the legacy callback dialect",
+        )
+        return None
+    try:
+        from gn_anuga.batch_common.telemetry_client import TelemetryClient
+    except Exception:
+        logger.warning(
+            "run_and_report: HYDRATA_PROCESS_ID=%s is set but "
+            "gn_anuga.batch_common is not importable — falling back to the "
+            "legacy callback dialect", process_id,
+        )
+        return None
+    return TelemetryClient(
+        scenario_config.get("control_server"),
+        process_id,
+        os.environ.get("HYDRATA_INTERNAL_COMPUTE_TOKEN"),
+    )
+
+
 def _make_resource_sampler(scratch_dir, *, control_server, ids):
     """Construct a Django-free ``ResourceSampler`` for the ANUGA run, or ``None``.
 
@@ -613,8 +657,6 @@ def _make_resource_sampler(scratch_dir, *, control_server, ids):
     # build phase run.py set, and the mesh-size features ride onto the summary.
     # The sampler stays tool-agnostic — phase tagging is opt-in via injection,
     # so terrain-merge / IDF (no provider) are unaffected.
-    from run_anuga import phase_tracker
-
     try:
         return ResourceSampler(
             scratch_dir,
@@ -858,6 +900,7 @@ def run_and_report(
     # ranks are live so the check is sound. The sampler is None on a non-rank-0
     # process and on any localhost / non-Batch run (batch_common not staged).
     sampler = None
+    telemetry_client = None
     if _is_mpi_rank_zero():
         sampler = _make_resource_sampler(
             tempfile.gettempdir(),
@@ -868,6 +911,58 @@ def run_and_report(
                 "scenario_id": scenario_id,
             },
         )
+        # TASK-2672 (epic 2662 W2.2) — the events dialect. Constructed at
+        # THIS one explicit site (see _make_telemetry_client's contract);
+        # rank-0 only, like the sampler: one client covers the whole job.
+        telemetry_client = _make_telemetry_client(scenario_config)
+
+    if telemetry_client is not None and callback is None:
+        # Events dialect: the whole callback protocol rides typed events.
+        from run_anuga.callbacks import TelemetryCallback
+
+        callback = TelemetryCallback(telemetry_client)
+    elif callback is None and os.environ.get("HYDRATA_INTERNAL_COMPUTE_TOKEN"):
+        # TASK-2663 (epic 2662 W0.1) — root cause of the dead progress
+        # channel: run_sim's token-gated HydrataCallback auto-construction
+        # only fires when ``callback is None``, but since TASK-1924 (W3,
+        # 049860a) this function has ALWAYS wrapped the callback in the
+        # truthy _EarlyPartialCallback below, so run_sim received
+        # wrapper(inner=None) and every on_progress/on_status/on_metric was
+        # silently dropped (the wrapper's delegation guards on
+        # ``if self._inner``). Replicate the gate HERE, before wrapping. The
+        # required-field guard above proves control_server/project/id/run_id
+        # are present, so ``from_config`` cannot raise KeyError. Rank>0 MPI
+        # processes construct a callback too, but run.py rank-0-gates every
+        # invocation that POSTs except (a) on_mesh_features_ready — a
+        # documented no-op on HydrataCallback — and (b) on_status('error')
+        # in the crash handler, where the failing rank POSTing (whichever
+        # rank it is) is the point.
+        from run_anuga.callbacks import HydrataCallback
+
+        callback = HydrataCallback.from_config(scenario_config)
+
+    # Arm the events-side channels that do NOT ride the callback chain
+    # (liveness must survive any future wrapper bug — TASK-2668 AC4):
+    # started event with the W1.3 placement, watchdog heartbeats with live
+    # probes on the client's OWN daemon thread, and phase events hooked
+    # straight into the phase tracker.
+    if telemetry_client is not None:
+        hardware = None
+        try:
+            from gn_anuga.batch_common.hardware_identity import (
+                collect_hardware_identity,
+            )
+            hardware = collect_hardware_identity()
+        except Exception:
+            logger.warning(
+                "run_and_report: hardware identity collection failed; "
+                "started event goes without placement", exc_info=True,
+            )
+        telemetry_client.started(hardware=hardware)
+        telemetry_client.start_watchdog(
+            probe_provider=(sampler.probe if sampler is not None else None),
+        )
+        phase_tracker.set_phase_listener(telemetry_client.phase)
 
     # W3 (TASK-1924): wrap the caller's callback so on_mesh_features_ready()
     # fires the early partial emit.  The wrapper is transparent to all other
@@ -911,80 +1006,153 @@ def run_and_report(
 
     wrapped_callback = _EarlyPartialCallback(callback, sampler, control_server, token)
 
+    # Outer try/finally (TASK-2672): whatever path exits — clean return,
+    # sim crash, handoff failure — the events channels are torn down: the
+    # phase listener is unhooked (module-global, this process may be a
+    # long-lived test runner) and the watchdog thread is stopped. In a Batch
+    # container the process exits anyway; this is correctness for embedded
+    # callers and tests.
     try:
-        # A None sampler (non-rank-0 / localhost / non-Batch) degrades to
-        # nullcontext so the run_sim call lives once.
-        import contextlib
-        with (sampler if sampler is not None else contextlib.nullcontext()):
-            run_sim(str(package_dir), callback=wrapped_callback)
-    except Exception as exc:
-        if _is_mpi_rank_zero():
-            # the sampler context already exited on the raise (its summary reflects
-            # the failure) — report both the ledger and the wedge-defence /error/.
+
+        try:
+            # A None sampler (non-rank-0 / localhost / non-Batch) degrades to
+            # nullcontext so the run_sim call lives once.
+            import contextlib
+            with (sampler if sampler is not None else contextlib.nullcontext()):
+                run_sim(str(package_dir), callback=wrapped_callback,
+                        telemetry_client=telemetry_client)
+        except Exception as exc:
+            if _is_mpi_rank_zero():
+                # the sampler context already exited on the raise (its summary reflects
+                # the failure) — report both the ledger and the failure itself.
+                report_resource_summary(control_server, token, sampler)
+                # TASK-2672: events dialect first (server folds error ->
+                # Process ERROR + Run.mark_error fan-out); the legacy /error/
+                # POST is the wedge-defence FALLBACK when the event did not
+                # get through (client fail-open returns False) or no client
+                # is armed. Never both on success — mark_error is idempotent
+                # but the double log line is noise.
+                message = f"{exc}\n{traceback.format_exc()}"
+                error_sent = (
+                    telemetry_client.error(message)
+                    if telemetry_client is not None else False
+                )
+                if not error_sent:
+                    try:
+                        report_error(
+                            control_server,
+                            run_id,
+                            token,
+                            message=message,
+                            source="run_and_report",
+                        )
+                    except Exception:
+                        logger.exception("run_and_report: /error/ POST failed; suppressed")
+            raise
+
+        # Sim succeeded — rank-0 post-sim handoff: archive + zip + upload.
+        # TASK-1954: wrap with PHASE_ARCHIVE so observed.phase_durations_s captures
+        # the full publish taxonomy (cog-export tagged in run.py, archive here).
+        # report_resource_summary is called AFTER the archive so that the lazy
+        # phase_durations_provider snapshot includes these durations.
+
+        if not _is_mpi_rank_zero():
             report_resource_summary(control_server, token, sampler)
+            return {"result_key": None, "process_result_status": None}
+
+        result_key = make_result_key(project_id, scenario_id, run_id)
+        result_zip_path = package_dir / result_key
+
+        # W2 (TASK-1920) — best-effort cold archive BEFORE the slim-result handoff.
+        # A failed archive logs loudly but MUST NOT fail the run (the app result
+        # path is completely independent; report_result carries the prefix only when
+        # the archive succeeded).
+        cold_prefix = make_cold_archive_prefix(project_id, scenario_id, run_id)
+        completed_cold_prefix: str | None = None
+
+        # PHASE_ARCHIVE timing seam (TASK-1954): tag the archive + zip/upload window
+        # so phase_tracker accumulates their durations into 'archive'.
+        _pt = phase_tracker
+        _pt.set_phase(_pt.PHASE_ARCHIVE)
+        try:
             try:
-                report_error(
-                    control_server,
-                    run_id,
-                    token,
-                    message=f"{exc}\n{traceback.format_exc()}",
-                    source="run_and_report",
+                upload_cold_archive(
+                    package_dir,
+                    bucket,
+                    cold_prefix,
+                    project_id=project_id,
+                    scenario_id=scenario_id,
+                    run_id=run_id,
+                )
+                completed_cold_prefix = cold_prefix
+                logger.info(
+                    "run_and_report: cold archive uploaded to s3://%s/%s", bucket, cold_prefix
                 )
             except Exception:
-                logger.exception("run_and_report: /error/ POST failed; suppressed")
-        raise
+                logger.exception(
+                    "run_and_report: cold archive FAILED (best-effort — run continues); "
+                    "prefix=%s bucket=%s",
+                    cold_prefix, bucket,
+                )
 
-    # Sim succeeded — rank-0 post-sim handoff: archive + zip + upload.
-    # TASK-1954: wrap with PHASE_ARCHIVE so observed.phase_durations_s captures
-    # the full publish taxonomy (cog-export tagged in run.py, archive here).
-    # report_resource_summary is called AFTER the archive so that the lazy
-    # phase_durations_provider snapshot includes these durations.
-
-    if not _is_mpi_rank_zero():
-        report_resource_summary(control_server, token, sampler)
-        return {"result_key": None, "process_result_status": None}
-
-    result_key = make_result_key(project_id, scenario_id, run_id)
-    result_zip_path = package_dir / result_key
-
-    # W2 (TASK-1920) — best-effort cold archive BEFORE the slim-result handoff.
-    # A failed archive logs loudly but MUST NOT fail the run (the app result
-    # path is completely independent; report_result carries the prefix only when
-    # the archive succeeded).
-    cold_prefix = make_cold_archive_prefix(project_id, scenario_id, run_id)
-    completed_cold_prefix: str | None = None
-
-    # PHASE_ARCHIVE timing seam (TASK-1954): tag the archive + zip/upload window
-    # so phase_tracker accumulates their durations into 'archive'.
-    from run_anuga import phase_tracker as _pt
-    _pt.set_phase(_pt.PHASE_ARCHIVE)
-    try:
-        try:
-            upload_cold_archive(
-                package_dir,
-                bucket,
-                cold_prefix,
-                project_id=project_id,
-                scenario_id=scenario_id,
-                run_id=run_id,
-            )
-            completed_cold_prefix = cold_prefix
-            logger.info(
-                "run_and_report: cold archive uploaded to s3://%s/%s", bucket, cold_prefix
-            )
-        except Exception:
-            logger.exception(
-                "run_and_report: cold archive FAILED (best-effort — run continues); "
-                "prefix=%s bucket=%s",
-                cold_prefix, bucket,
-            )
-
-        try:
-            zip_outputs(package_dir, result_zip_path)
-            upload_result_to_s3(result_zip_path, bucket, result_key)
-        except Exception as exc:
+            try:
+                zip_outputs(package_dir, result_zip_path)
+                upload_result_to_s3(result_zip_path, bucket, result_key)
+            except Exception as exc:
+                _pt.set_phase(None)
+                report_resource_summary(control_server, token, sampler)
+                try:
+                    report_error(
+                        control_server,
+                        run_id,
+                        token,
+                        message=f"run_and_report handoff failed: {exc}",
+                        source="run_and_report",
+                    )
+                except Exception:
+                    logger.exception("run_and_report: /error/ POST failed; suppressed")
+                raise
+        finally:
+            # Always end the archive phase timing (idempotent if already cleared).
             _pt.set_phase(None)
-            report_resource_summary(control_server, token, sampler)
+
+        # All archive phases done. Emit the complete resource summary (includes
+        # cog-export + archive durations via lazy phase_durations_provider).
+        report_resource_summary(control_server, token, sampler)
+
+        # TASK-2672: events dialect first — ONE result event carrying the
+        # result_package_key (+ cold_archive_prefix when the archive
+        # succeeded). The server folds it (Process -> complete) and fans out
+        # through the SAME process_result_async machinery the legacy
+        # /process-result/ endpoint drives. The legacy POST below survives as
+        # the wedge-defence FALLBACK for a dropped event (client fail-open
+        # returns False) or an unarmed client — deleted with the rest of the
+        # legacy dialect in W4.1.
+        if telemetry_client is not None:
+            result_fields = {}
+            if completed_cold_prefix is not None:
+                result_fields[COLD_ARCHIVE_PREFIX_FIELD] = completed_cold_prefix
+            if telemetry_client.result(result_package_key=result_key, **result_fields):
+                logger.info(
+                    "run_and_report: result event accepted for run %s "
+                    "(events dialect)", run_id,
+                )
+                return {"result_key": result_key,
+                        "process_result_status": "events"}
+            logger.warning(
+                "run_and_report: result EVENT was not accepted — falling back "
+                "to the legacy /process-result/ POST (wedge defence)",
+            )
+
+        try:
+            response = report_result(
+                control_server,
+                run_id,
+                token,
+                result_key,
+                cold_archive_prefix=completed_cold_prefix,
+            )
+        except Exception as exc:
             try:
                 report_error(
                     control_server,
@@ -996,45 +1164,27 @@ def run_and_report(
             except Exception:
                 logger.exception("run_and_report: /error/ POST failed; suppressed")
             raise
+
+        status_code = getattr(response, "status_code", None)
+        if status_code is None or status_code >= 400:
+            # Truncate the response body so a Django debug-HTML 500 doesn't bloat /error/.
+            body = (getattr(response, "text", "") or "")[:500]
+            message = f"/process-result/ returned HTTP {status_code}; body={body!r}"
+            try:
+                report_error(control_server, run_id, token, message=message, source="run_and_report")
+            except Exception:
+                logger.exception("run_and_report: /error/ POST failed; suppressed")
+            raise RuntimeError(message)
+
+        logger.info("run_and_report: /process-result/ returned %s for run %s", status_code, run_id)
+        return {"result_key": result_key, "process_result_status": status_code}
     finally:
-        # Always end the archive phase timing (idempotent if already cleared).
-        _pt.set_phase(None)
-
-    # All archive phases done. Emit the complete resource summary (includes
-    # cog-export + archive durations via lazy phase_durations_provider).
-    report_resource_summary(control_server, token, sampler)
-
-    try:
-        response = report_result(
-            control_server,
-            run_id,
-            token,
-            result_key,
-            cold_archive_prefix=completed_cold_prefix,
-        )
-    except Exception as exc:
-        try:
-            report_error(
-                control_server,
-                run_id,
-                token,
-                message=f"run_and_report handoff failed: {exc}",
-                source="run_and_report",
-            )
-        except Exception:
-            logger.exception("run_and_report: /error/ POST failed; suppressed")
-        raise
-
-    status_code = getattr(response, "status_code", None)
-    if status_code is None or status_code >= 400:
-        # Truncate the response body so a Django debug-HTML 500 doesn't bloat /error/.
-        body = (getattr(response, "text", "") or "")[:500]
-        message = f"/process-result/ returned HTTP {status_code}; body={body!r}"
-        try:
-            report_error(control_server, run_id, token, message=message, source="run_and_report")
-        except Exception:
-            logger.exception("run_and_report: /error/ POST failed; suppressed")
-        raise RuntimeError(message)
-
-    logger.info("run_and_report: /process-result/ returned %s for run %s", status_code, run_id)
-    return {"result_key": result_key, "process_result_status": status_code}
+        if telemetry_client is not None:
+            try:
+                phase_tracker.set_phase_listener(None)
+            except Exception:
+                pass
+            try:
+                telemetry_client.stop_watchdog()
+            except Exception:
+                pass

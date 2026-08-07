@@ -1,0 +1,123 @@
+name: batch-image-sha-lock
+
+# TASK-2671 (epic 2662 W2.1 / D8 same-code guarantee): the anuga image family
+# is ONE multi-stage Dockerfile (batch/Dockerfile) whose cpu + gpu targets
+# both consume the SAME `src` stage checkout set. This workflow is the CI
+# ratchet on that structure:
+#
+#   1. structure lint — parses batch/Dockerfile and fails if a second engine
+#      pin ever appears (exactly one ANUGA_CORE_SHA ARG; no git clone / pip
+#      git+ of anuga_core outside the src stage; both targets declare the
+#      three org.hydrata.*_sha LABELs).
+#   2. cpu-target build — builds --target cpu for real on the runner and
+#      asserts its labels carry the SHAs the build was invoked with.
+#
+# The full two-image label-equality assertion (batch/assert-image-sha-lock.sh
+# across BOTH built targets) runs at every bake on the operator box via
+# deploy/scripts/rebuild-batch-image.sh: the gpu target's toolchain base
+# (anuga-gpu-dev:multiarch, ~31 GB nvhpc image, built + kept locally) cannot
+# exist on a GitHub-hosted runner, so CI enforces the structural invariant
+# that MAKES the two targets equal, and the bake script enforces the equality
+# itself on the real artifacts before any push/register.
+#
+# paths-filtered: this job costs real minutes (GDAL + anuga source builds),
+# so it runs only when the image inputs change.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "batch/**"
+      - "pyproject.toml"
+      - ".github/workflows/batch-image-sha-lock.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "batch/**"
+      - "pyproject.toml"
+      - ".github/workflows/batch-image-sha-lock.yml"
+
+jobs:
+  dockerfile-structure:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Single-pin + shared-src structure lint
+        run: |
+          python3 - <<'PY'
+          import re, sys
+
+          text = open("batch/Dockerfile").read()
+
+          # 1. Exactly ONE ANUGA_CORE_SHA pin (the ARG default at the top);
+          #    per-stage bare re-declarations (`ARG ANUGA_CORE_SHA` with no
+          #    value) are the documented mechanism and are allowed.
+          pins = re.findall(r"^ARG ANUGA_CORE_SHA=([0-9a-fA-F]+)\s*$", text, re.M)
+          assert len(pins) == 1, f"expected exactly 1 ANUGA_CORE_SHA pin, found {len(pins)}: {pins}"
+          assert len(pins[0]) == 40, f"ANUGA_CORE_SHA must be a full 40-hex SHA, got {pins[0]!r}"
+
+          # 2. No second engine source: anuga_core may be cloned ONLY in the
+          #    src stage; cpu/gpu stages must consume it via COPY --from=src.
+          stages = re.split(r"^FROM .*? AS (\w+)\s*$", text, flags=re.M)
+          bodies = dict(zip(stages[1::2], stages[2::2]))
+          assert set(bodies) >= {"src", "cpu", "gpu"}, f"missing stages: {sorted(bodies)}"
+          for stage in ("cpu", "gpu"):
+              body = bodies[stage]
+              assert "anuga_core.git" not in body, f"{stage} stage clones anuga_core directly (second engine source)"
+              assert "git+https" not in body, f"{stage} stage pip-installs from git (unpinned engine source)"
+              assert re.search(r"COPY --from=src /src/anuga_core", body), f"{stage} stage must COPY the engine --from=src"
+              assert re.search(r"COPY --from=src /src/run_anuga ", body), f"{stage} stage must COPY run_anuga --from=src"
+              # 3. The three sha-lock labels, declared from the shared ARGs.
+              for label in ("org.hydrata.anuga_core_sha=${ANUGA_CORE_SHA}",
+                            "org.hydrata.run_anuga_sha=${RUN_ANUGA_SHA}",
+                            "org.hydrata.gn_anuga_sha=${HYDRATA_SHA}"):
+                  assert label in body, f"{stage} stage missing sha-lock label {label}"
+
+          # 4. The retired second Dockerfile must stay dead.
+          import os
+          assert not os.path.exists("batch/Dockerfile.gpu"), "batch/Dockerfile.gpu is back — the gpu target lives in batch/Dockerfile"
+
+          print("structure lint PASS: single pin", pins[0][:9], "- both targets consume src, labels declared")
+          PY
+
+  cpu-target-labels:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    needs: dockerfile-structure
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build cpu target with SHA args
+        run: |
+          RUN_ANUGA_SHA=$(git rev-parse --short HEAD)
+          echo "RUN_ANUGA_SHA=${RUN_ANUGA_SHA}" >> "$GITHUB_ENV"
+          docker build --target cpu \
+            --build-arg RUN_ANUGA_SHA="${RUN_ANUGA_SHA}" \
+            --build-arg HYDRATA_SHA=ci-lockcheck \
+            -t anuga-simulation:ci-sha-lock \
+            -f batch/Dockerfile .
+
+      - name: Assert labels match the invoked SHAs
+        run: |
+          set -euo pipefail
+          PIN=$(grep -oE '^ARG ANUGA_CORE_SHA=[0-9a-fA-F]+' batch/Dockerfile | cut -d= -f2)
+          for pair in \
+            "org.hydrata.run_anuga_sha=${RUN_ANUGA_SHA}" \
+            "org.hydrata.anuga_core_sha=${PIN}" \
+            "org.hydrata.gn_anuga_sha=ci-lockcheck" \
+            "org.hydrata.image_target=cpu"; do
+            label="${pair%%=*}"; want="${pair#*=}"
+            got=$(docker image inspect anuga-simulation:ci-sha-lock --format "{{ index .Config.Labels \"${label}\" }}")
+            if [ "$got" != "$want" ]; then
+              echo "FAIL: label ${label} = '${got}', expected '${want}'" >&2
+              exit 1
+            fi
+            echo "OK: ${label} = ${got}"
+          done
+
+      - name: Smoke the baked engine import
+        run: |
+          docker run --rm --entrypoint python anuga-simulation:ci-sha-lock \
+            -c "import anuga, run_anuga; print('anuga', anuga.__version__)"

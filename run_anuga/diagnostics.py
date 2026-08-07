@@ -96,6 +96,142 @@ def installed_anuga_core_sha():
 #: Depth below which a cell is treated as dry for velocity/volume calculations.
 WET_THRESHOLD = 1e-3  # 1 mm
 
+#: Launcher-provided world-size env vars (mirrors run_anuga._handoff's rank
+#: detection): authoritative, readable without importing mpi4py (AC2 of
+#: TASK-2675 — a serial run must pay ZERO MPI import cost).
+_MPI_SIZE_ENV_VARS = ("OMPI_COMM_WORLD_SIZE", "PMIX_SIZE", "PMI_SIZE")
+
+
+def _mpi_world_size_from_env() -> int:
+    """World size from the MPI launcher environment; 1 when not launched."""
+    for var in _MPI_SIZE_ENV_VARS:
+        val = os.environ.get(var)
+        if val is not None and val.strip():
+            try:
+                return int(val.strip())
+            except ValueError:
+                continue
+    return 1
+
+
+def compute_local_flow_scalars(domain) -> dict:
+    """This rank's LOCAL flow-state scalars from its sub-domain partition.
+
+    Pure local read (no collectives): stage/elevation/momentum centroid
+    values filtered to full (non-ghost) triangles. ``min_r_wet`` is ``inf``
+    when the partition is dry so a global MIN reduction ignores dry ranks.
+    Never raises — any failure degrades to the all-zero dict (matching the
+    monitor's historical fallback).
+    """
+    try:
+        stage = np.asarray(domain.quantities["stage"].centroid_values, dtype=float)
+        elev = np.asarray(domain.quantities["elevation"].centroid_values, dtype=float)
+        xmom = np.asarray(domain.quantities["xmomentum"].centroid_values, dtype=float)
+        ymom = np.asarray(domain.quantities["ymomentum"].centroid_values, dtype=float)
+        areas = np.asarray(domain.mesh.areas, dtype=float)
+        radii = np.asarray(domain.mesh.radii, dtype=float)
+        centroids = np.asarray(domain.mesh.centroid_coordinates, dtype=float)
+
+        # Ghost-cell filter (1 = full triangle, 0 = ghost halo)
+        try:
+            full = np.asarray(domain.tri_full_flag, dtype=bool)
+        except AttributeError:
+            full = np.ones(len(stage), dtype=bool)
+
+        depth = stage - elev
+        wet = (depth > WET_THRESHOLD) & full
+        n_wet = int(wet.sum())
+        n_full = int(full.sum())
+
+        volume_m3 = float(np.sum(depth[wet] * areas[wet])) if n_wet > 0 else 0.0
+        max_depth_m = float(depth[full].max()) if n_full > 0 else 0.0
+
+        if n_wet > 0:
+            d_safe = np.maximum(depth[wet], WET_THRESHOLD)
+            speed_wet = np.sqrt((xmom[wet] / d_safe) ** 2 + (ymom[wet] / d_safe) ** 2)
+            peak_idx = int(np.argmax(speed_wet))
+            max_speed_ms = float(speed_wet[peak_idx])
+            wet_centroids = centroids[wet]
+            peak_speed_x = float(wet_centroids[peak_idx, 0])
+            peak_speed_y = float(wet_centroids[peak_idx, 1])
+            min_r_wet = float(radii[wet].min())
+        else:
+            max_speed_ms = 0.0
+            peak_speed_x = peak_speed_y = 0.0
+            min_r_wet = float("inf")
+
+        return {
+            "n_wet": n_wet,
+            "n_full": n_full,
+            "volume_m3": volume_m3,
+            "max_depth_m": max_depth_m,
+            "max_speed_ms": max_speed_ms,
+            "peak_speed_x": peak_speed_x,
+            "peak_speed_y": peak_speed_y,
+            "min_r_wet": min_r_wet,
+        }
+    except Exception as exc:
+        logger.debug("Diagnostics: could not compute flow quantities: %s", exc)
+        return {
+            "n_wet": 0, "n_full": 0, "volume_m3": 0.0, "max_depth_m": 0.0,
+            "max_speed_ms": 0.0, "peak_speed_x": 0.0, "peak_speed_y": 0.0,
+            "min_r_wet": float("inf"),
+        }
+
+
+def allreduce_flow_scalars(local: dict) -> dict:
+    """Reduce the per-rank flow scalars to GLOBAL values (TASK-2675).
+
+    The rank-0-local trap this kills (proven on prod run 1314): the monitor
+    reads only rank 0's partition, so a 32-rank run whose water lives on
+    other ranks logged ``wet=0 vol=0`` for 14+ model-% while the GPU twin
+    showed ~300 m3/s inflow — the status line LIED. Reductions:
+
+    * ``n_wet`` / ``n_full`` / ``volume_m3`` — SUM
+    * ``max_depth_m`` — MAX
+    * ``max_speed_ms`` — MAXLOC (value, rank); the winning rank broadcasts
+      its peak coordinates so vmax and its location stay a consistent pair
+    * ``min_r_wet`` — MIN (dry ranks contribute ``inf``)
+
+    COLLECTIVE: every rank must call this at the same point (run.py calls it
+    at the yieldstep boundary OUTSIDE the ``myid == 0`` gate — reducing
+    inside the rank-0 block would deadlock against the other ranks' evolve
+    collectives). Serial path (AC2): when no MPI launcher env is present the
+    input is returned unchanged and ``mpi4py`` is NEVER imported.
+    """
+    if _mpi_world_size_from_env() <= 1:
+        return dict(local)
+    try:
+        from mpi4py import MPI
+    except ImportError:
+        logger.warning(
+            "allreduce_flow_scalars: MPI launcher env present but mpi4py is "
+            "not importable — status scalars stay RANK-LOCAL (dishonest on "
+            "multi-rank runs)",
+        )
+        return dict(local)
+    comm = MPI.COMM_WORLD
+    out = dict(local)
+    out["n_wet"] = comm.allreduce(local["n_wet"], op=MPI.SUM)
+    out["n_full"] = comm.allreduce(local["n_full"], op=MPI.SUM)
+    out["volume_m3"] = comm.allreduce(local["volume_m3"], op=MPI.SUM)
+    out["max_depth_m"] = comm.allreduce(local["max_depth_m"], op=MPI.MAX)
+    out["min_r_wet"] = comm.allreduce(local["min_r_wet"], op=MPI.MIN)
+    max_speed, winner = comm.allreduce(
+        (local["max_speed_ms"], comm.Get_rank()), op=MPI.MAXLOC,
+    )
+    out["max_speed_ms"] = max_speed
+    out["peak_speed_x"], out["peak_speed_y"] = comm.bcast(
+        (local["peak_speed_x"], local["peak_speed_y"]), root=winner,
+    )
+    return out
+
+
+def collect_flow_scalars(domain) -> dict:
+    """Local flow scalars + global reduction — call on EVERY rank, then hand
+    the result to ``SimulationMonitor.record`` on rank 0 (TASK-2675)."""
+    return allreduce_flow_scalars(compute_local_flow_scalars(domain))
+
 #: Implied max speed above this (m/s) flags a run as numerically unstable.
 #: Urban floods peak at ~5 m/s; 20 m/s is physically impossible for shallow water.
 INSTABILITY_SPEED_THRESHOLD_MS = 20.0
@@ -258,7 +394,8 @@ class SimulationMonitor:
     # Per-yieldstep recording
     # ------------------------------------------------------------------
 
-    def record(self, sim_time: float, wall_time_s: float, mem_mb: float = 0.0) -> dict:
+    def record(self, sim_time: float, wall_time_s: float, mem_mb: float = 0.0,
+               flow: dict | None = None) -> dict:
         """
         Record metrics at a yieldstep boundary.
 
@@ -272,6 +409,13 @@ class SimulationMonitor:
             Wall-clock seconds elapsed for this yieldstep.
         mem_mb : float
             Current process memory in MB (optional; pass 0 to skip).
+        flow : dict, optional
+            Pre-computed flow scalars from :func:`collect_flow_scalars` —
+            REQUIRED for honest values on a multi-rank run (TASK-2675: the
+            collective reduction must run on EVERY rank, so it cannot live
+            inside this rank-0-only method). When omitted (serial callers,
+            legacy tests) the rank-local computation runs here, which is
+            exact for a single-process run.
 
         Returns
         -------
@@ -287,59 +431,29 @@ class SimulationMonitor:
         last_dt_ms = float(domain.timestep) * 1000.0
         mean_dt_ms = self.yieldstep / n_steps * 1000.0
 
-        # --- Flow state ---
-        try:
-            stage = np.asarray(domain.quantities["stage"].centroid_values, dtype=float)
-            elev = np.asarray(domain.quantities["elevation"].centroid_values, dtype=float)
-            xmom = np.asarray(domain.quantities["xmomentum"].centroid_values, dtype=float)
-            ymom = np.asarray(domain.quantities["ymomentum"].centroid_values, dtype=float)
-            areas = np.asarray(domain.mesh.areas, dtype=float)
-            radii = np.asarray(domain.mesh.radii, dtype=float)
-            centroids = np.asarray(domain.mesh.centroid_coordinates, dtype=float)
+        # --- Flow state (global when a reduced `flow` dict is handed in) ---
+        if flow is None:
+            flow = compute_local_flow_scalars(domain)
+        n_wet = flow["n_wet"]
+        wet_fraction = n_wet / max(1, flow["n_full"])
+        volume_m3 = flow["volume_m3"]
+        max_depth_m = flow["max_depth_m"]
+        max_speed_ms = flow["max_speed_ms"]
+        peak_speed_x = flow["peak_speed_x"]
+        peak_speed_y = flow["peak_speed_y"]
 
-            # Ghost-cell filter (1 = full triangle, 0 = ghost halo)
-            try:
-                full = np.asarray(domain.tri_full_flag, dtype=bool)
-            except AttributeError:
-                full = np.ones(len(stage), dtype=bool)
-
-            depth = stage - elev
-            wet = (depth > WET_THRESHOLD) & full
-            n_wet = int(wet.sum())
-            n_full = int(full.sum())
-            wet_fraction = n_wet / max(1, n_full)
-
-            volume_m3 = float(np.sum(depth[wet] * areas[wet])) if n_wet > 0 else 0.0
-            max_depth_m = float(depth[full].max()) if n_full > 0 else 0.0
-
-            if n_wet > 0:
-                d_safe = np.maximum(depth[wet], WET_THRESHOLD)
-                speed_wet = np.sqrt((xmom[wet] / d_safe) ** 2 + (ymom[wet] / d_safe) ** 2)
-                peak_idx = int(np.argmax(speed_wet))
-                max_speed_ms = float(speed_wet[peak_idx])
-                wet_centroids = centroids[wet]
-                peak_speed_x = float(wet_centroids[peak_idx, 0])
-                peak_speed_y = float(wet_centroids[peak_idx, 1])
-            else:
-                max_speed_ms = 0.0
-                peak_speed_x = peak_speed_y = 0.0
-
-            # Implied max speed from the CFL condition:
-            #   dt = CFL * min_inradius_wet / max_speed
-            #   => implied = CFL * min_inradius_wet / dt
-            # Only meaningful when the domain is wet; at t=0 (all dry) domain.timestep≈0
-            # causes a spurious divide-near-zero result, so report 0 when n_wet==0.
-            if n_wet > 0:
-                min_r_wet = float(radii[wet].min())
-                implied_max_speed_ms = self.cfl * min_r_wet / max(domain.timestep, 1e-12)
-            else:
-                implied_max_speed_ms = 0.0
-
-        except Exception as exc:
-            logger.debug("Diagnostics: could not compute flow quantities: %s", exc)
-            n_wet = 0
-            wet_fraction = volume_m3 = max_depth_m = max_speed_ms = 0.0
-            peak_speed_x = peak_speed_y = implied_max_speed_ms = 0.0
+        # Implied max speed from the CFL condition:
+        #   dt = CFL * min_inradius_wet / max_speed
+        #   => implied = CFL * min_inradius_wet / dt
+        # domain.timestep is already globally reduced by parallel ANUGA;
+        # min_r_wet arrives globally reduced (MIN) in `flow`. Only meaningful
+        # when wet somewhere; at t=0 (all dry) domain.timestep≈0 causes a
+        # spurious divide-near-zero result, so report 0 when n_wet==0.
+        min_r_wet = flow["min_r_wet"]
+        if n_wet > 0 and np.isfinite(min_r_wet):
+            implied_max_speed_ms = self.cfl * min_r_wet / max(domain.timestep, 1e-12)
+        else:
+            implied_max_speed_ms = 0.0
 
         rec = {
             "sim_time_s": round(sim_time, 1),

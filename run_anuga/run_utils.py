@@ -1449,17 +1449,16 @@ def post_process_sww(package_dir, run_args=None, output_raster_resolution=None):
     util = anuga.utilities.plot_utils
     output_quantities = ['depth', 'velocity', 'depthIntegratedVelocity', 'stage']
     input_data = setup_input_data(package_dir)
-    logger.critical(f'Generating output rasters on {anuga.myid}...')
+    logger.info(f'Generating output rasters on {anuga.myid}...')
     resolutions = list()
     if input_data.get('mesh_region'):
         for feature in input_data.get('mesh_region').get('features') or list():
-            # logger.critical(f'{feature=}')
             resolutions.append(feature.get('properties').get('resolution'))
-    logger.critical(f'{resolutions=}')
+    logger.info(f'{resolutions=}')
     if len(resolutions) == 0:
         resolutions = [input_data.get('resolution') or 1000]
     finest_grid_resolution = min(resolutions)
-    logger.critical(f'raster output resolution: {finest_grid_resolution}m')
+    logger.info(f'raster output resolution: {finest_grid_resolution}m')
 
     epsg_integer = int(input_data['scenario_config'].get("epsg").split(":")[1]
                        if ":" in input_data['scenario_config'].get("epsg")
@@ -1522,7 +1521,7 @@ def post_process_sww(package_dir, run_args=None, output_raster_resolution=None):
     video_dir = f"{input_data['output_directory']}/videos/"
     if os.path.isdir(video_dir):
         shutil.rmtree(video_dir)
-    logger.critical('Successfully generated depth, velocity, momentum outputs')
+    logger.info('Successfully generated depth, velocity, momentum outputs')
 
 
 def reprocess_from_archived_sww(
@@ -1790,6 +1789,34 @@ def make_comparison_video(input_directory_1, input_directory_2, result_type):
     out.release()
 
 
+class _TelemetryLogHandler(logging.Handler):
+    """Logging handler that ships formatted records as typed ``log`` events
+    (TASK-2672, epic 2662 D4/D6).
+
+    Replaces :class:`_V2LogHandler` when run_and_report armed a
+    ``TelemetryClient`` (HYDRATA_PROCESS_ID present): each record becomes ONE
+    ``log`` event which the server folds into the bounded Process.log and
+    fans out to Run.log during the migration window. Rank-0 only by
+    construction — the client only exists on rank 0, and ``setup_logger``
+    additionally installs NO web/telemetry handler on rank>0 (this is what
+    kills the 32x startup-spam class).
+
+    The client is fail-open (``post_event`` returns bool, never raises), so
+    ``emit`` cannot break the run loop; ``close`` is a no-op because the
+    client + watchdog lifecycle is owned by run_and_report.
+    """
+
+    def __init__(self, telemetry_client):
+        super().__init__()
+        self._client = telemetry_client
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            self._client.log(self.format(record))
+        except Exception:  # pragma: no cover — client is fail-open already
+            self.handleError(record)
+
+
 class _V2LogHandler(logging.Handler):
     """Logging handler that ships records to the V2 ``/log/`` control endpoint.
 
@@ -1852,7 +1879,8 @@ class _V2LogHandler(logging.Handler):
         super().close()
 
 
-def setup_logger(input_data, username=None, password=None, batch_number=1):
+def setup_logger(input_data, username=None, password=None, batch_number=1,
+                 telemetry_client=None):
     if not username or not password:
         username = os.environ.get('COMPUTE_USERNAME')
         password = os.environ.get('COMPUTE_PASSWORD')
@@ -1865,7 +1893,8 @@ def setup_logger(input_data, username=None, password=None, batch_number=1):
     # is released (the V2 handler below owns a requests.Session); FileHandler
     # also benefits from close() flushing/closing its file descriptor.
     for h in logger.handlers[:]:
-        if isinstance(h, (logging.FileHandler, logging.handlers.HTTPHandler, _V2LogHandler)):
+        if isinstance(h, (logging.FileHandler, logging.handlers.HTTPHandler,
+                          _V2LogHandler, _TelemetryLogHandler)):
             logger.removeHandler(h)
             try:
                 h.close()
@@ -1875,15 +1904,34 @@ def setup_logger(input_data, username=None, password=None, batch_number=1):
     # Add handlers to the logger
     logger.addHandler(file_handler)
 
-    # Ship log lines to the control server over the V2 log endpoint using the
-    # site-wide X-Internal-Token shared secret (NOT the legacy V1 BasicAuth
-    # HTTPHandler, which 401'd against allauth on localhost and targeted the
-    # /anuga/api/.../log/ URL that TASK-1184 will delete). The token is read
-    # from the environment, matching how run.py builds HydrataCallback; the
-    # username/password parameters are retained for signature back-compat but
-    # are no longer used for the web log channel. When the token is absent
-    # (e.g. a standalone CLI run) no web handler is installed and logging
-    # stays file/console-only.
+    # TASK-2672 (epic 2662 D6): web log shipping is RANK-0 ONLY. Every MPI
+    # rank runs run_sim -> setup_logger, and pre-2672 each installed its own
+    # web handler, so a 32-rank Batch job POSTed 32 copies of every log line
+    # (the '32x startup spam'). Rank>0 keeps file logging only. Lazy import —
+    # run_utils must not import _handoff at module load.
+    from run_anuga._handoff import _is_mpi_rank_zero
+    if not _is_mpi_rank_zero():
+        logger.setLevel(logging.DEBUG)
+        return logger
+
+    if telemetry_client is not None:
+        # Events dialect (TASK-2672): one typed `log` event per record; the
+        # server folds to the bounded Process.log + fans out to Run.log.
+        telemetry_handler = _TelemetryLogHandler(telemetry_client)
+        telemetry_handler.setLevel(logging.DEBUG)
+        logger.addHandler(telemetry_handler)
+        logger.setLevel(logging.DEBUG)
+        return logger
+
+    # Legacy dialect (no events client armed): ship log lines to the V2 /log/
+    # endpoint using the site-wide X-Internal-Token shared secret (NOT the
+    # legacy V1 BasicAuth HTTPHandler, which 401'd against allauth on
+    # localhost and targeted the /anuga/api/.../log/ URL that TASK-1184 will
+    # delete). The token is read from the environment, matching how run.py
+    # builds HydrataCallback; the username/password parameters are retained
+    # for signature back-compat but are no longer used for the web log
+    # channel. When the token is absent (e.g. a standalone CLI run) no web
+    # handler is installed and logging stays file/console-only.
     token = os.environ.get('HYDRATA_INTERNAL_COMPUTE_TOKEN')
     control_server = input_data['scenario_config'].get('control_server')
     run_id = input_data['scenario_config'].get('run_id')
