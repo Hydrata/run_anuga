@@ -137,7 +137,41 @@ def cmd_upload(args):
     )
 
 
+def _ensure_cli_logging():
+    """Make the pre-sim telemetry log lines visible on stderr (TASK-2672
+    review pass).
+
+    The events dialect's fail-loud arming line ('telemetry client active
+    class=... events_url=...') and the loud legacy-fallback lines are logged
+    at INFO on loggers that have NO handler in a bare CLI/container process
+    — python silently drops INFO records with no handler, so the ONE
+    greppable line the W0.1 contract promises never reached the container
+    log (caught in the TASK-2672 AC1 bring-up). Attach a stderr handler to
+    the two namespaces that own those lines (idempotent; mirrors run.py's
+    module-level stderr-handler pattern). Deliberately NOT the 'run_anuga'
+    root namespace: run.py's own logger already carries a stderr handler and
+    a parent handler would double-print every line via propagation.
+    """
+    import logging
+
+    for name in ("run_anuga._handoff", "gn_anuga.batch_common"):
+        lg = logging.getLogger(name)
+        if not any(
+            isinstance(h, logging.StreamHandler)
+            and getattr(h, "stream", None) is sys.stderr
+            for h in lg.handlers
+        ):
+            handler = logging.StreamHandler(sys.stderr)
+            handler.setFormatter(
+                logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+            )
+            lg.addHandler(handler)
+        if lg.level == logging.NOTSET or lg.level > logging.INFO:
+            lg.setLevel(logging.INFO)
+
+
 def main():
+    _ensure_cli_logging()
     parser = argparse.ArgumentParser(
         prog="run-anuga",
         description="ANUGA flood simulation toolkit",

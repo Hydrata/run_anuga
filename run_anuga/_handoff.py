@@ -41,6 +41,7 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
+from run_anuga import phase_tracker
 from run_anuga._imports import import_optional
 from run_anuga._logging import install_mname_filter
 
@@ -656,8 +657,6 @@ def _make_resource_sampler(scratch_dir, *, control_server, ids):
     # build phase run.py set, and the mesh-size features ride onto the summary.
     # The sampler stays tool-agnostic — phase tagging is opt-in via injection,
     # so terrain-merge / IDF (no provider) are unaffected.
-    from run_anuga import phase_tracker
-
     try:
         return ResourceSampler(
             scratch_dir,
@@ -963,9 +962,7 @@ def run_and_report(
         telemetry_client.start_watchdog(
             probe_provider=(sampler.probe if sampler is not None else None),
         )
-        from run_anuga import phase_tracker as _phase_tracker
-
-        _phase_tracker.set_phase_listener(telemetry_client.phase)
+        phase_tracker.set_phase_listener(telemetry_client.phase)
 
     # W3 (TASK-1924): wrap the caller's callback so on_mesh_features_ready()
     # fires the early partial emit.  The wrapper is transparent to all other
@@ -1075,7 +1072,7 @@ def run_and_report(
 
         # PHASE_ARCHIVE timing seam (TASK-1954): tag the archive + zip/upload window
         # so phase_tracker accumulates their durations into 'archive'.
-        from run_anuga import phase_tracker as _pt
+        _pt = phase_tracker
         _pt.set_phase(_pt.PHASE_ARCHIVE)
         try:
             try:
@@ -1184,8 +1181,7 @@ def run_and_report(
     finally:
         if telemetry_client is not None:
             try:
-                from run_anuga import phase_tracker as _pt_cleanup
-                _pt_cleanup.set_phase_listener(None)
+                phase_tracker.set_phase_listener(None)
             except Exception:
                 pass
             try:

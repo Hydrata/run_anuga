@@ -483,3 +483,32 @@ class TestNoContainerEta:
         assert 'eta_seconds = int(elapsed' not in source
         assert 'simulation_start =' not in source  # the ETA wall-clock anchor
         assert 'callback.on_progress(percentage_done)' in source
+
+
+# ---------------------------------------------------------------------------
+# CLI telemetry-log visibility (TASK-2672 review pass)
+# ---------------------------------------------------------------------------
+
+class TestCliTelemetryLogging:
+    def _stderr_handlers(self, name):
+        import logging
+        return [
+            h for h in logging.getLogger(name).handlers
+            if isinstance(h, logging.StreamHandler)
+            and getattr(h, 'stream', None) is sys.stderr
+        ]
+
+    def test_ensure_cli_logging_attaches_once(self):
+        """The fail-loud arming line ('telemetry client active …') is INFO on
+        loggers with no handler in a bare container process — python drops
+        it. _ensure_cli_logging makes both namespaces stderr-visible, and is
+        idempotent (main() may be re-entered in tests)."""
+        from run_anuga import cli
+
+        cli._ensure_cli_logging()
+        cli._ensure_cli_logging()
+        for name in ('run_anuga._handoff', 'gn_anuga.batch_common'):
+            handlers = self._stderr_handlers(name)
+            assert len(handlers) == 1, (name, handlers)
+            import logging
+            assert logging.getLogger(name).level <= logging.INFO
