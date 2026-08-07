@@ -29,6 +29,19 @@
 # overlay + passes the SHA args/labels). A plain `docker build --target cpu .`
 # still works: the overlay COPY degrades to an empty gn_anuga/ package and
 # the provenance manifest stays "{}" (provenance-incomplete, never a failure).
+#
+# LOCAL BUILD + RUN (D8 portability — no AWS needed):
+#   docker build --target cpu -t anuga-sim:local -f batch/Dockerfile .
+#   docker run --rm --network host \
+#     -v /path/to/package:/tmp/simulation \
+#     -e CONTROL_SERVER=http://localhost:8000/ \
+#     -e HYDRATA_INTERNAL_COMPUTE_TOKEN=<token> \
+#     -e HYDRATA_PROCESS_ID=<process uuid>   \
+#     -e RESULT_S3_BUCKET=<bucket> -e PROJECT_ID=.. -e SCENARIO_ID=.. -e RUN_ID=.. \
+#     --entrypoint python anuga-sim:local -m run_anuga.cli run-and-report /tmp/simulation
+#   (the stock ENTRYPOINT instead downloads the package itself from
+#   PACKAGE_S3_BUCKET/KEY — use it when S3 credentials are provided;
+#   HYDRATA_PROCESS_ID arms the epic-2662 events dialect, absent = legacy.)
 
 # ---- the ONE engine pin, shared by BOTH targets ---------------------------
 # There is deliberately NO second pin anywhere in this file; both targets
