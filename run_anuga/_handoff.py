@@ -878,8 +878,10 @@ def run_and_report(
     # ``if self._inner``). Replicate the gate HERE, before wrapping. The
     # required-field guard above proves control_server/project/id/run_id are
     # present, so ``from_config`` cannot raise KeyError. Rank>0 MPI processes
-    # construct a (never-posting) callback too — every callback invocation in
-    # run.py is rank-0-gated, so no duplicate POSTs result.
+    # construct a callback too, but run.py rank-0-gates every invocation that
+    # POSTs except (a) on_mesh_features_ready — a documented no-op on
+    # HydrataCallback — and (b) on_status('error') in the crash handler,
+    # where the failing rank POSTing (whichever rank it is) is the point.
     if callback is None and os.environ.get("HYDRATA_INTERNAL_COMPUTE_TOKEN"):
         from run_anuga.callbacks import HydrataCallback
 
