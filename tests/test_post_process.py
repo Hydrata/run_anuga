@@ -4,7 +4,6 @@ Requires ANUGA and all simulation dependencies installed.
 Tests GeoTIFF generation from SWW output files.
 """
 
-import os
 import shutil
 from unittest import mock
 
