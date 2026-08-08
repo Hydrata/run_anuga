@@ -126,7 +126,7 @@ RUN pip install --no-cache-dir "numpy>=2.0" setuptools wheel cython pybind11 \
 # cpu image must run riverwall scenarios identically to the gpu image).
 RUN pip install --no-cache-dir \
     scipy matplotlib "meshpy==2025.1.1" "pymetis==2025.2.2" netcdf4 dill utm pyproj affine \
-    mpi4py requests boto3 awscli fiona
+    mpi4py requests boto3 awscli fiona "zarr>=3.0"
 
 # ---- the engine, from the SHARED checkout (never a second clone/pin) ------
 COPY --from=src /src/anuga_core /app/anuga_core
@@ -151,7 +151,7 @@ COPY --from=src /src/run_anuga/gn_anuga /app/gn_anuga
 # Source tree + local-package install. The heavy layers above stay cached
 # across source-only changes; only these layers re-run.
 COPY --from=src /src/run_anuga /app/run_anuga_src
-RUN pip install --no-cache-dir "/app/run_anuga_src[sim,platform]"
+RUN pip install --no-cache-dir "/app/run_anuga_src[sim,platform,playback]"
 
 # --- Baked build-provenance manifest (epic 2280 W3.1 / TASK-2286) -----------
 # The CONTAINER reads THIS FILE at runtime to self-report the exact cross-repo

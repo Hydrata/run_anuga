@@ -183,8 +183,16 @@ def get_utm_geo_reference(epsg_str):
     utm_zone_str = crs.utm_zone
     if utm_zone_str:
         zone = int(re.search(r'\d+', utm_zone_str).group())
+        # TASK-2634: the hemisphere letter is right there in utm_zone_str —
+        # derive it directly instead of relying on anuga.Geo_reference's
+        # epsg-numeric-range auto-inference (which only covers WGS84 UTM
+        # codes 32601-32660/32701-32760).
+        hemisphere = 'northern' if utm_zone_str.upper().endswith('N') else 'southern'
     else:
-        # Fall back to parsing the CRS name (e.g. "GDA94 / MGA zone 55")
+        # Fall back to parsing the CRS name (e.g. "GDA94 / MGA zone 55").
+        # National-grid CRSs like GDA94/GDA2020 MGA have no utm_zone
+        # hemisphere letter from pyproj, so derive hemisphere from the CRS's
+        # area-of-use latitude bounds instead (negative = southern).
         m = re.search(r'zone\s+(\d+)', crs.name, re.IGNORECASE)
         if not m:
             raise ValueError(
@@ -193,8 +201,18 @@ def get_utm_geo_reference(epsg_str):
                 "Provide a UTM or MGA projected CRS."
             )
         zone = int(m.group(1))
+        area = crs.area_of_use
+        if area is not None and area.south is not None and area.north is not None:
+            hemisphere = 'southern' if (area.south + area.north) < 0 else 'northern'
+        else:
+            hemisphere = 'undefined'
 
-    return anuga.Geo_reference(zone=zone)
+    # TASK-2634: pass hemisphere= and epsg= through so the constructed
+    # Geo_reference carries correct false_easting/false_northing/epsg for
+    # the given EPSG (anuga_core fork commit 7565d91f) — previously only
+    # zone= was passed, leaving hemisphere='undefined',
+    # false_easting=false_northing=0, epsg=None on every new SWW.
+    return anuga.Geo_reference(zone=zone, hemisphere=hemisphere, epsg=epsg_int)
 
 
 def create_anuga_mesh(input_data):
@@ -1437,7 +1455,33 @@ def apply_inflows_to_domain(
     return inflow_functions
 
 
-def post_process_sww(package_dir, run_args=None, output_raster_resolution=None):
+def post_process_sww(
+    package_dir,
+    run_args=None,
+    output_raster_resolution=None,
+    domain=None,
+    legacy_per_timestep_tifs=False,
+):
+    """Post-process a completed run's SWW: max-envelope rasters + playback
+    store (TASK-2622, W1.1, epic 2618).
+
+    Parameters
+    ----------
+    domain : anuga.Domain, optional
+        The LIVE domain object, when this is called from run.py's rank-0
+        seam right after evolve() (before the domain is torn down). Lets the
+        playback-store exporter read domain.minimum_allowed_height /
+        flow_algorithm directly (schema §5 "read from the run's domain at
+        export") instead of falling back to anuga.config module defaults.
+        None for CLI/offline re-exports from an already-archived package.
+    legacy_per_timestep_tifs : bool, optional
+        TASK-2622 REMOVED the myTimeStep='all' Make_Geotif pass by default
+        (~400 griddata interpolations per run, replaced by the playback
+        store) — pass True to regenerate the old per-timestep TIFs for the
+        deprecated cmd_viz/cmd_upload CLI consumers (CLI: run-anuga
+        post-process --legacy-per-timestep-tifs). The myTimeStep='max' pass
+        below is UNCHANGED either way.
+    """
     # TASK-1143: ANUGA result rasters (depth/velocity/depthIntegratedVelocity/stage)
     # intentionally keep NaN as their nodata value, NOT -9999.  NaN is propagated
     # by Make_Geotif (plot_utils.py nodata=numpy.nan) and relied upon by make_video
@@ -1464,10 +1508,12 @@ def post_process_sww(package_dir, run_args=None, output_raster_resolution=None):
                        if ":" in input_data['scenario_config'].get("epsg")
                        else input_data['scenario_config'].get("epsg"))
     interior_holes, _ = make_interior_holes_and_tags(input_data)
-    util.Make_Geotif(
+    # TASK-2622 simplify pass: the 'all' (opt-in only, legacy) and 'max'
+    # (always-on) Make_Geotif calls below differ ONLY in myTimeStep — shared
+    # base kwargs, no semantic change from the two-separate-calls form.
+    make_geotif_base_kwargs = dict(
         swwFile=f"{input_data['output_directory']}/{input_data['run_label']}.sww",
         output_quantities=output_quantities,
-        myTimeStep='all',
         CellSize=finest_grid_resolution,
         lower_left=None,
         upper_right=None,
@@ -1480,26 +1526,14 @@ def post_process_sww(package_dir, run_args=None, output_raster_resolution=None):
         internal_holes=interior_holes,
         verbose=False,
         k_nearest_neighbours=defaults.K_NEAREST_NEIGHBOURS,
-        creation_options=[]
+        creation_options=[],
     )
-    util.Make_Geotif(
-        swwFile=f"{input_data['output_directory']}/{input_data['run_label']}.sww",
-        output_quantities=output_quantities,
-        myTimeStep='max',
-        CellSize=finest_grid_resolution,
-        lower_left=None,
-        upper_right=None,
-        EPSG_CODE=epsg_integer,
-        proj4string=None,
-        velocity_extrapolation=True,
-        min_allowed_height=defaults.MIN_ALLOWED_HEIGHT_M,
-        output_dir=input_data['output_directory'],
-        bounding_polygon=input_data['boundary_polygon'],
-        internal_holes=interior_holes,
-        verbose=False,
-        k_nearest_neighbours=defaults.K_NEAREST_NEIGHBOURS,
-        creation_options=[]
-    )
+    if legacy_per_timestep_tifs:
+        # TASK-2622: opt-in only — the per-timestep TIFs this pass produces
+        # are superseded by the playback store below for every NEW
+        # consumer; kept for the deprecated cmd_viz/cmd_upload CLI path.
+        util.Make_Geotif(myTimeStep='all', **make_geotif_base_kwargs)
+    util.Make_Geotif(myTimeStep='max', **make_geotif_base_kwargs)
 
     # TASK-1143: guard against a future anuga_core default flip away from NaN.
     # Re-open the *_max.tif outputs and assert band 1 nodata is NaN.
@@ -1522,6 +1556,20 @@ def post_process_sww(package_dir, run_args=None, output_raster_resolution=None):
     if os.path.isdir(video_dir):
         shutil.rmtree(video_dir)
     logger.info('Successfully generated depth, velocity, momentum outputs')
+
+    # TASK-2622 (W1.1, epic 2618) — SWW -> quantized playback-store export,
+    # while the SWW is still local. Import-guarded + never raises: a missing
+    # zarr or any export failure degrades to a logged warning, never a
+    # failed run (see run_anuga.playback_store.export_playback_store).
+    from run_anuga.playback_store import export_playback_store
+    playback_result = export_playback_store(
+        input_data=input_data,
+        sww_path=f"{input_data['output_directory']}/{input_data['run_label']}.sww",
+        output_dir=input_data['output_directory'],
+        domain=domain,
+        upload=True,
+    )
+    logger.info(f"playback_store export result: {playback_result}")
 
 
 def reprocess_from_archived_sww(

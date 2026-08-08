@@ -744,7 +744,7 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
             # (build = mesh-gen + raster-read + distribute, solve = evolve,
             # publish = cog-export + archive).
             with phase_tracker.phase(phase_tracker.PHASE_COG_EXPORT):
-                post_process_sww(package_dir, run_args=run_args)
+                post_process_sww(package_dir, run_args=run_args, domain=domain)
     except Exception:
         callback.on_status('error')
         logger.error(f"{traceback.format_exc()}")

@@ -273,6 +273,7 @@ class SimulationMonitor:
         "n_steps",
         "mean_dt_ms",
         "last_dt_ms",
+        "min_dt_ms",
         "implied_max_speed_ms",
         "wet_cells",
         "wet_fraction",
@@ -430,6 +431,16 @@ class SimulationMonitor:
         self._prev_steps = curr_steps
         last_dt_ms = float(domain.timestep) * 1000.0
         mean_dt_ms = self.yieldstep / n_steps * 1000.0
+        # TASK-2622 (W1.1, epic 2618) — the smallest internal substep dt within
+        # the just-completed yieldstep. ANUGA already tracks this itself
+        # (generic_domain.update_timestep sets domain.recorded_min_timestep on
+        # every substep; evolve() resets it to evolve_max_timestep right after
+        # each yield — abstract_2d_finite_volumes/generic_domain.py:2055 — so by
+        # the time this record() call runs, in the caller's `for t in
+        # domain.evolve(...)` loop body, it still holds the just-finished
+        # interval's minimum, not yet reset). Falls back to last_dt_ms for
+        # domains/mocks that don't expose the attribute.
+        min_dt_ms = float(getattr(domain, "recorded_min_timestep", domain.timestep)) * 1000.0
 
         # --- Flow state (global when a reduced `flow` dict is handed in) ---
         if flow is None:
@@ -461,6 +472,7 @@ class SimulationMonitor:
             "n_steps": n_steps,
             "mean_dt_ms": round(mean_dt_ms, 2),
             "last_dt_ms": round(last_dt_ms, 2),
+            "min_dt_ms": round(min_dt_ms, 2),
             "implied_max_speed_ms": round(implied_max_speed_ms, 2),
             "wet_cells": n_wet,
             "wet_fraction": round(wet_fraction, 4),
