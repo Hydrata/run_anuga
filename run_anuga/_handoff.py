@@ -555,9 +555,19 @@ def _make_telemetry_client(scenario_config):
       reports nothing to any server by design;
     * ``run_and_report`` itself can be run unreported by exporting
       ``RUN_ANUGA_ALLOW_UNREPORTED_RUN=1`` (:data:`ALLOW_UNREPORTED_ENV`),
-      which downgrades both raises to a loud WARNING and returns ``None``. That
-      is an explicit "I accept that nothing is reported anywhere" switch: with
-      no client, ``run_and_report`` posts no result and no error.
+      which downgrades both raises to an **ERROR** log and returns ``None``.
+      That is an explicit "I accept that nothing is reported anywhere" switch:
+      with no client, ``run_and_report`` posts no result and no error.
+
+      ERROR, not WARNING, because the opt-out is INHERITABLE and produces NO
+      server-side signal whatsoever. On the celery-native localhost path the
+      dispatcher builds the child env as ``dict(os.environ)``, so an operator
+      who exports the variable in the shell that restarts celery arms it for
+      every subsequent run in that worker — silently, since a run with no
+      client never reaches the control server to say so. The container log line
+      is then the ONLY evidence, and the eventual "why did this run go dark"
+      investigation has to find it: it names the variable, states that NOTHING
+      (result or error) will be reported, and says how to disarm it.
 
     With a process id present, a missing control_server/token raises
     ValueError from the client constructor — a misconfigured container must
@@ -567,10 +577,17 @@ def _make_telemetry_client(scenario_config):
     process_id = os.environ.get("HYDRATA_PROCESS_ID", "").strip()
     if not process_id:
         if allow_unreported:
-            logger.warning(
-                "run_and_report: no HYDRATA_PROCESS_ID and %s is set — running "
-                "with NO telemetry channel. Nothing (result OR error) will be "
-                "reported to the control server.", ALLOW_UNREPORTED_ENV,
+            logger.error(
+                "run_and_report: no HYDRATA_PROCESS_ID and %s=%r is set — "
+                "running with NO telemetry channel. Nothing (result OR error) "
+                "will be reported to the control server, and the server has no "
+                "way to know: this log line is the ONLY record. If you did not "
+                "mean to do this, unset %s (note it is INHERITED from the "
+                "environment of whoever started this process — on the "
+                "celery-native path the worker's own env is copied into the "
+                "child) and re-dispatch.",
+                ALLOW_UNREPORTED_ENV, os.environ.get(ALLOW_UNREPORTED_ENV, ""),
+                ALLOW_UNREPORTED_ENV,
             )
             return None
         raise RuntimeError(
@@ -590,12 +607,18 @@ def _make_telemetry_client(scenario_config):
         from gn_anuga.batch_common.telemetry_client import TelemetryClient
     except Exception as exc:
         if allow_unreported:
-            logger.warning(
+            logger.error(
                 "run_and_report: HYDRATA_PROCESS_ID=%s is set but "
-                "gn_anuga.batch_common is not importable, and %s is set — "
+                "gn_anuga.batch_common is not importable, and %s=%r is set — "
                 "running with NO telemetry channel. Nothing (result OR error) "
-                "will be reported to the control server.",
+                "will be reported to the control server, and the server has no "
+                "way to know: this log line is the ONLY record. If you did not "
+                "mean to do this, unset %s (note it is INHERITED from the "
+                "environment of whoever started this process — on the "
+                "celery-native path the worker's own env is copied into the "
+                "child) and re-dispatch.",
                 process_id, ALLOW_UNREPORTED_ENV,
+                os.environ.get(ALLOW_UNREPORTED_ENV, ""), ALLOW_UNREPORTED_ENV,
             )
             return None
         raise RuntimeError(

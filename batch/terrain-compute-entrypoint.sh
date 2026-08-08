@@ -91,22 +91,36 @@ TELEMETRY_SCHEMA_VERSION="$(python -c 'from gn_anuga.batch_common.telemetry_prot
 # merge_and_report raises without the env var), so HYDRATA_PROCESS_ID is
 # guaranteed present in a legitimately-dispatched container. The `-n` guard is
 # for the mis-provisioned case only: degrade to silence rather than curl a
-# malformed URL. NOTE: the ANUGA twin in batch/entrypoint.sh cannot make this
-# move yet — its dispatcher does not guarantee HYDRATA_PROCESS_ID.
+# malformed URL. (The ANUGA twin in batch/entrypoint.sh could not make this move
+# when the above was written — its dispatcher did not yet guarantee
+# HYDRATA_PROCESS_ID. W5 closed that: both dispatchers now refuse a Run with no
+# TaskMonitor Process, and the twin posts the same events dialect.)
 #
 # Double-reporting is harmless: merge_and_report's own `error` event fires first
 # for in-process failures, and the server fold is guarded
 # (`if process.status not in terminal`), so this second event is a no-op.
 #
+# `source` is CARRIED (spec §2.5/§8.2), naming THIS entrypoint. Today it is
+# inert on the server: a terrain Process's source_object is an AnalysisSurface,
+# so taskmonitor.telemetry._fan_out_error_to_run returns before `Run.mark_error`
+# — and the TASK-2206 precedence rule keys on the literal `entrypoint.sh`
+# (BATCH_ENTRYPOINT_SOURCE) anyway, which this value is deliberately NOT. It is
+# sent because §8.2 requires BOTH shell traps to name their reporter: the field
+# is the only thing that distinguishes a pre-Python container death from
+# merge_and_report's own in-process `error` once both are folded onto the same
+# Process, and it is already on the wire the day terrain telemetry grows a
+# precedence rule of its own. `validate_event` ignores unknown keys, so this is
+# additive on every deployed server version.
+#
 # curl failures are swallowed (|| true) so they never mask the originating exit
 # code. Envelope matches docs/strategy/process-telemetry-spec.md §2/§2.1 exactly:
-# type + schema_version + ts + message.
+# type + schema_version + ts + message, plus the optional §2.5 `source`.
 trap 'exit_code=$?; if [ $exit_code -ne 0 ] && [ -n "${HYDRATA_PROCESS_ID:-}" ]; then
   echo "[terrain-entrypoint] failing with exit code ${exit_code}; posting terminal error event" >&2
   curl -sS -X POST \
     -H "X-Internal-Token: ${HYDRATA_INTERNAL_COMPUTE_TOKEN}" \
     -H "Content-Type: application/json" \
-    --data "{\"type\":\"error\",\"schema_version\":${TELEMETRY_SCHEMA_VERSION},\"ts\":$(date +%s),\"message\":\"terrain-compute-entrypoint.sh failed with exit code ${exit_code}\"}" \
+    --data "{\"type\":\"error\",\"schema_version\":${TELEMETRY_SCHEMA_VERSION},\"ts\":$(date +%s),\"message\":\"terrain-compute-entrypoint.sh failed with exit code ${exit_code}\",\"source\":\"terrain-compute-entrypoint.sh\"}" \
     "${CONTROL_BASE}/api/v2/tasks/processes/${HYDRATA_PROCESS_ID}/events/" || true
 fi' EXIT
 

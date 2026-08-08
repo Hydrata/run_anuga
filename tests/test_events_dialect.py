@@ -212,14 +212,34 @@ class TestMakeTelemetryClient:
             _make_telemetry_client({'control_server': 'http://cs'})
 
     @pytest.mark.parametrize('value', ['1', 'true', 'TRUE', 'yes', 'on'])
-    def test_opt_out_downgrades_missing_process_id_to_a_warning(
+    def test_opt_out_downgrades_missing_process_id_to_a_loud_error(
             self, monkeypatch, caplog, value):
+        """(Was ..._to_a_warning.) The downgrade must log at ERROR, not WARNING.
+
+        W5 adversarial review: this opt-out is INHERITABLE — the celery-native
+        dispatcher builds the child env as ``dict(os.environ)``, so an operator
+        who exports the variable in the shell that restarts celery arms it for
+        every subsequent run in that worker. Such a run reports NOTHING, so
+        there is no server-side signal at all and this log line is the only
+        evidence a later "why did this run go dark" investigation can find. It
+        must therefore be ERROR-level and must name the variable.
+        """
         monkeypatch.delenv('HYDRATA_PROCESS_ID', raising=False)
         monkeypatch.setenv(ALLOW_UNREPORTED_ENV, value)
         with caplog.at_level(logging.WARNING, logger='run_anuga._handoff'):
             client = _make_telemetry_client({'control_server': 'http://cs'})
         assert client is None
         assert 'NO telemetry channel' in caplog.text
+
+        records = [r for r in caplog.records if r.name == 'run_anuga._handoff']
+        assert records, 'nothing was logged at all'
+        assert [r.levelno for r in records] == [logging.ERROR], (
+            'the unreported-run downgrade must be ERROR, not WARNING: %r'
+            % ([logging.getLevelName(r.levelno) for r in records],)
+        )
+        text = records[0].getMessage()
+        assert ALLOW_UNREPORTED_ENV in text, text
+        assert 'Nothing (result OR error) will be reported' in text, text
 
     @pytest.mark.parametrize('value', ['', '0', 'false', 'no', 'off', 'maybe'])
     def test_non_truthy_opt_out_values_stay_fail_closed(self, monkeypatch, value):
@@ -241,6 +261,14 @@ class TestMakeTelemetryClient:
             client = _make_telemetry_client({'control_server': 'http://cs'})
         assert client is None
         assert 'not importable' in caplog.text
+
+        # Same reasoning as the missing-process-id twin above: ERROR, naming
+        # the variable, because nothing reaches the server on this path either.
+        records = [r for r in caplog.records if r.name == 'run_anuga._handoff']
+        assert [r.levelno for r in records] == [logging.ERROR], (
+            [logging.getLevelName(r.levelno) for r in records]
+        )
+        assert ALLOW_UNREPORTED_ENV in records[0].getMessage()
 
     def test_cli_run_never_reaches_the_construction_site(
             self, tmp_path, monkeypatch):

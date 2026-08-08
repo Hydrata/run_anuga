@@ -49,6 +49,17 @@ EVENTS_PATH_RE = r"/api/v2/tasks/processes/\$\{HYDRATA_PROCESS_ID\}/events/"
 PROCESS_ID = "6f1c0c2e-6b1e-4d3e-9a55-0c9d1a2b3c4d"
 TOKEN = "test-internal-compute-token"
 
+#: The §2.5 reporter marker this trap must carry. NOT ``entrypoint.sh``: that
+#: literal is ``BATCH_ENTRYPOINT_SOURCE``, the key ``Run.mark_error``'s TASK-2206
+#: precedence rule matches on, and terrain must never impersonate the anuga twin.
+TERRAIN_SOURCE = "terrain-compute-entrypoint.sh"
+
+#: The one interpreter that can import the monolith's taskmonitor package. Used
+#: by the validator cross-check only; absent in bare-run_anuga CI, where those
+#: tests skip.
+HYDRATA_VENV_PYTHON = Path("/opt/venv/hydrata/bin/python")
+HYDRATA_REPO = Path("/opt/hydrata")
+
 
 # ---------------------------------------------------------------------------
 # Textual pins
@@ -73,6 +84,24 @@ def test_trap_curls_the_events_endpoint():
     assert re.search(EVENTS_PATH_RE, text), (
         "terrain-compute-entrypoint.sh must POST its terminal error event to "
         "the protocol endpoint /api/v2/tasks/processes/<uuid>/events/"
+    )
+
+
+def test_trap_carries_its_own_source_marker():
+    """Spec §8.2: BOTH shell traps name their reporter in `source`.
+
+    Textual twin of the behavioural assertion below — this one fails loudly if
+    someone edits the JSON literal out of the trap while the socket harness is
+    skipped (no curl in the environment).
+    """
+    text = ENTRYPOINT.read_text()
+    trap = text.split("trap '", 1)[1].split("' EXIT", 1)[0]
+    assert f'source\\":\\"{TERRAIN_SOURCE}' in trap, (
+        "the trap's JSON body must carry source=%r (spec §8.2)" % TERRAIN_SOURCE
+    )
+    assert '\\"source\\":\\"entrypoint.sh\\"' not in trap, (
+        "terrain must NOT send the anuga literal `entrypoint.sh` — that value is "
+        "BATCH_ENTRYPOINT_SOURCE and drives Run.mark_error's TASK-2206 precedence"
     )
 
 
@@ -232,13 +261,17 @@ def test_pre_python_failure_posts_terminal_error_event(tmp_path):
     assert "Content-Type: application/json" in cap["head"]
 
     body = json.loads(cap["body"])
-    # Envelope must match process-telemetry-spec.md §2/§2.1 EXACTLY.
-    assert sorted(body) == ["message", "schema_version", "ts", "type"], body
+    # Envelope must match process-telemetry-spec.md §2/§2.1 EXACTLY, plus the
+    # optional §2.5 `source`.
+    assert sorted(body) == [
+        "message", "schema_version", "source", "ts", "type",
+    ], body
     assert body["type"] == "error"
     assert body["schema_version"] == 1
     assert isinstance(body["ts"], (int, float)) and not isinstance(body["ts"], bool)
     assert "exit code 1" in body["message"]
     assert "terrain-compute-entrypoint.sh" in body["message"]
+    assert body["source"] == TERRAIN_SOURCE, body["source"]
 
     # The trap must never mask the originating exit code.
     assert proc.returncode == 1, proc.returncode
@@ -270,3 +303,66 @@ def test_successful_run_posts_nothing(tmp_path):
     proc, cap = _run_entrypoint(tmp_path, process_id=PROCESS_ID, aws_fails=False)
     assert proc.returncode == 0, proc.stderr[-2000:]
     assert not cap, f"trap POSTed on a successful run: {cap}"
+
+
+# ---------------------------------------------------------------------------
+# Server-side cross-check — the REAL validator accepts the captured bytes
+# ---------------------------------------------------------------------------
+
+_VALIDATOR_SNIPPET = """
+import json, os, sys
+os.environ['DJANGO_SETTINGS_MODULE'] = 'hydrata.pytest_local_settings'
+os.environ.setdefault('RECAPTCHA_PRIVATE_KEY', 'x')
+os.environ.setdefault('RECAPTCHA_PUBLIC_KEY', 'x')
+import django
+django.setup()
+from taskmonitor.telemetry import validate_event
+etype, err = validate_event(json.loads(sys.argv[1]))
+print(json.dumps({'type': etype, 'error': err}))
+"""
+
+needs_monolith = pytest.mark.skipif(
+    not (HYDRATA_VENV_PYTHON.exists() and HYDRATA_REPO.is_dir()),
+    reason="hydrata monolith venv not present (bare run_anuga env)",
+)
+
+
+def _validate_with_real_server(payload: str) -> dict:
+    proc = subprocess.run(
+        [str(HYDRATA_VENV_PYTHON), "-c", _VALIDATOR_SNIPPET, payload],
+        cwd=str(HYDRATA_REPO), capture_output=True, text=True, timeout=300,
+    )
+    assert proc.returncode == 0, proc.stderr[-3000:]
+    return json.loads(proc.stdout.strip().splitlines()[-1])
+
+
+@needs_curl
+@needs_monolith
+def test_captured_bytes_are_accepted_by_the_real_server_validator(tmp_path):
+    """Feed the EXACT bytes the shell put on the wire — now carrying `source` —
+    to ``taskmonitor.telemetry.validate_event``. Re-stating the envelope in a
+    test only proves the test agrees with itself; this proves the server agrees,
+    i.e. that the added key is genuinely additive and not a 400 in production."""
+    _, cap = _run_entrypoint(tmp_path, process_id=PROCESS_ID)
+    assert cap, "trap posted nothing"
+    assert json.loads(cap["body"])["source"] == TERRAIN_SOURCE
+    verdict = _validate_with_real_server(cap["body"])
+    assert verdict == {"type": "error", "error": None}, verdict
+
+
+@needs_curl
+@needs_monolith
+def test_the_real_server_validator_is_not_a_no_op(tmp_path):
+    """Control: the same validator must REJECT a malformed envelope, else the
+    acceptance above would prove nothing."""
+    _, cap = _run_entrypoint(tmp_path, process_id=PROCESS_ID)
+    assert cap, "trap posted nothing"
+    body = json.loads(cap["body"])
+
+    bogus_type = dict(body, type="terrain_entrypoint_failure")
+    verdict = _validate_with_real_server(json.dumps(bogus_type))
+    assert verdict["type"] is None and "unknown event type" in verdict["error"]
+
+    future_version = dict(body, schema_version=body["schema_version"] + 1000)
+    verdict = _validate_with_real_server(json.dumps(future_version))
+    assert verdict["type"] is None and "newer than this server" in verdict["error"]
