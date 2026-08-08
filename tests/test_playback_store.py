@@ -17,8 +17,6 @@ import pytest
 
 from run_anuga import playback_store as ps
 
-FIXTURE_SWW = os.path.join(os.path.dirname(__file__), "..", "domain.sww")
-
 try:
     import zarr  # noqa: F401
 
@@ -201,12 +199,20 @@ class TestMissingZarrDegradation:
 
 
 # ---------------------------------------------------------------------------
-# Full export against the real domain.sww fixture + schema-conformance via
+# Full export against the session-scoped fixture SWW + schema-conformance via
 # the validator tool (AC: "store validates against the W0 schema doc").
 # ---------------------------------------------------------------------------
 
 @requires_zarr
+@pytest.mark.requires_anuga
 class TestExportAgainstFixtureSww:
+    # requires_anuga because the session fixture_sww runs a real small sim;
+    # the plain CI legs deselect the marker, the e2e job runs it.
+
+    @pytest.fixture(autouse=True)
+    def _sww(self, fixture_sww):
+        self.sww_path = str(fixture_sww)
+
     def _export(self, tmp_path, domain=None):
         input_data = {
             "run_label": "run_601_384_1243",
@@ -219,7 +225,7 @@ class TestExportAgainstFixtureSww:
         }
         return ps.export_playback_store(
             input_data=input_data,
-            sww_path=FIXTURE_SWW,
+            sww_path=self.sww_path,
             output_dir=str(tmp_path),
             domain=domain,
             upload=False,
@@ -229,8 +235,13 @@ class TestExportAgainstFixtureSww:
         result = self._export(tmp_path)
         assert result["status"] == "ok"
         assert Path(result["local_path"]).is_dir()
-        assert result["n_time"] == 3
-        assert result["n_node"] == 178
+        import netCDF4
+
+        with netCDF4.Dataset(self.sww_path) as ds:
+            expected_n_time = len(ds.variables["time"])
+            expected_n_node = len(ds.variables["x"][:])
+        assert result["n_time"] == expected_n_time >= 2
+        assert result["n_node"] == expected_n_node >= 3
 
     def test_exported_store_validates_against_schema(self, tmp_path):
         """AC: 'store validates against the W0 schema doc (write an
@@ -252,10 +263,26 @@ class TestExportAgainstFixtureSww:
 
     def test_georef_from_sww_not_scenario_config(self, tmp_path):
         """B2: xllcorner/yllcorner come from the SWW verbatim, NOT from
-        scenario_config (which doesn't carry them)."""
+        scenario_config (which doesn't carry them). Stamp a NONZERO offset
+        onto a copy of the fixture — most real SWWs carry xllcorner=0.0,
+        which is exactly what hid the B2 defect in the first place, so a
+        zero-offset fixture cannot prove the read path."""
+        import shutil as _shutil
+
+        import netCDF4
         import zarr
 
-        result = self._export(tmp_path)
+        sww_copy = tmp_path / "georef_offset.sww"
+        _shutil.copy(self.sww_path, sww_copy)
+        with netCDF4.Dataset(sww_copy, "a") as ds:
+            ds.xllcorner = 321000.0
+            ds.yllcorner = 5812000.0
+        original_sww = self.sww_path
+        self.sww_path = str(sww_copy)
+        try:
+            result = self._export(tmp_path)
+        finally:
+            self.sww_path = original_sww
         root = zarr.open_group(result["local_path"], mode="r")
         assert root.attrs["xllcorner"] == 321000.0
         assert root.attrs["yllcorner"] == 5812000.0
@@ -277,7 +304,7 @@ class TestExportAgainstFixtureSww:
 
         result = self._export(tmp_path)
         root = zarr.open_group(result["local_path"], mode="r")
-        with netCDF4.Dataset(FIXTURE_SWW) as ds:
+        with netCDF4.Dataset(self.sww_path) as ds:
             sww_x = np.array(ds.variables["x"][:], dtype=np.float32)
         np.testing.assert_array_equal(root["node_x"][:], sww_x)
 
@@ -341,7 +368,8 @@ class TestValidatorCatchesRealDefects:
         violations = validate_store(store_path)
         assert any("xllcorner" in v for v in violations)
 
-    def test_valid_store_zero_violations(self, tmp_path):
+    @pytest.mark.requires_anuga
+    def test_valid_store_zero_violations(self, tmp_path, fixture_sww):
         """Negative control: the exporter's own real output must be clean
         (guards against the validator being too strict, not just too loose)."""
         from run_anuga.validate_playback_store import validate_store
@@ -351,7 +379,7 @@ class TestValidatorCatchesRealDefects:
             "scenario_config": {"project": 1, "id": 1, "run_id": 1, "epsg": "EPSG:28355"},
         }
         result = ps.export_playback_store(
-            input_data=input_data, sww_path=FIXTURE_SWW,
+            input_data=input_data, sww_path=str(fixture_sww),
             output_dir=str(tmp_path), upload=False,
         )
         assert validate_store(result["local_path"]) == []
@@ -404,7 +432,8 @@ class TestPlaybackStoreMarker:
         assert ps.playback_store_prefix_for_run(tmp_path, 601, 384, 1243) is None
 
     @requires_zarr
-    def test_playback_store_prefix_for_run_returns_prefix_after_real_export(self, tmp_path):
+    @pytest.mark.requires_anuga
+    def test_playback_store_prefix_for_run_returns_prefix_after_real_export(self, tmp_path, fixture_sww):
         output_dir = tmp_path / "outputs_601_384_1243"
         output_dir.mkdir()
         with mock.patch.object(ps, "_upload_store_to_s3") as mock_upload:
@@ -414,25 +443,29 @@ class TestPlaybackStoreMarker:
                     "run_label": "run_601_384_1243",
                     "scenario_config": {"project": 601, "id": 384, "run_id": 1243, "epsg": "EPSG:28355"},
                 },
-                sww_path=FIXTURE_SWW, output_dir=str(output_dir),
+                sww_path=str(fixture_sww), output_dir=str(output_dir),
                 upload=True, bucket="test-bucket",
             )
         prefix = ps.playback_store_prefix_for_run(tmp_path, 601, 384, 1243)
         assert prefix == "playback/601_384_1243/"
 
 
-@requires_zarr
-@pytest.mark.skipif(
+# Module-level conditional mark, same style as requires_zarr above (and
+# counted once by the marker taxonomy the same way): opt-in only (needs real
+# AWS creds + network) — set RUN_ANUGA_LIVE_S3_PLAYBACK_TEST=1 to run. NEVER
+# targets anuga-result-storage and never deletes anything; see TASK-2622 W1
+# wave-agent verification, 2026-08-06, for a manual run that uploaded 20
+# objects to a playback/W1-WAVE-AGENT-VERIFICATION-2026-08-06-2622/ test
+# prefix on anuga-test-storage.
+live_s3_opt_in = pytest.mark.skipif(
     not os.environ.get("RUN_ANUGA_LIVE_S3_PLAYBACK_TEST"),
-    reason=(
-        "opt-in only (needs real AWS creds + network) — set "
-        "RUN_ANUGA_LIVE_S3_PLAYBACK_TEST=1 to run. NEVER targets "
-        "anuga-result-storage and never deletes anything; see TASK-2622 W1 "
-        "wave-agent verification, 2026-08-06, for a manual run that uploaded "
-        "20 objects to a playback/W1-WAVE-AGENT-VERIFICATION-2026-08-06-2622/ "
-        "test prefix on anuga-test-storage."
-    ),
+    reason="opt-in only — set RUN_ANUGA_LIVE_S3_PLAYBACK_TEST=1 (TASK-2622)",
 )
+
+
+@requires_zarr
+@live_s3_opt_in
+@pytest.mark.requires_anuga
 class TestLiveS3Upload:
     """Real S3 round-trip proof — the AC-sanctioned fallback verification
     path when a full localhost ANUGA run is impractical inside a wave:
@@ -442,7 +475,7 @@ class TestLiveS3Upload:
     TASK-2622 stands as the AC proof regardless of whether CI ever opts in.
     """
 
-    def test_uploads_and_lists_back_from_s3(self, tmp_path):
+    def test_uploads_and_lists_back_from_s3(self, tmp_path, fixture_sww):
         import time
 
         import boto3
@@ -454,7 +487,7 @@ class TestLiveS3Upload:
             "scenario_config": {"project": 1, "id": 1, "run_id": 1, "epsg": "EPSG:28355"},
         }
         result = ps.export_playback_store(
-            input_data=input_data, sww_path=FIXTURE_SWW,
+            input_data=input_data, sww_path=str(fixture_sww),
             output_dir=str(tmp_path), upload=True, bucket=bucket, prefix=prefix,
         )
         assert result["status"] == "ok"

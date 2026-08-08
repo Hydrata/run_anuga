@@ -200,7 +200,7 @@ def _load_dt_ms_series(output_dir, run_label, n_time: int):
     import csv
     import glob
 
-    pattern = str(Path(output_dir) / f"run_diagnostics_*.csv")
+    pattern = str(Path(output_dir) / "run_diagnostics_*.csv")
     matches = sorted(glob.glob(pattern))
     # A specific batch-numbered file matching this run_label's batch, if the
     # caller can't disambiguate multi-batch runs, just take the first —

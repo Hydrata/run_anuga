@@ -50,7 +50,11 @@ platform = [
 # separately (TASK-2622 landmine #1: three install surfaces, none of which
 # reads the others) — this extra must be self-sufficient on its own.
 playback = [
-    "zarr>=3.0",
+    # zarr v3 publishes no Python 3.10 wheels (Requires-Python >=3.11) — the
+    # env marker keeps `pip install .[dev]` working on the CI 3.10 leg; there
+    # zarr is simply absent and zarr_available() gates the export off exactly
+    # like a worker without this extra.
+    "zarr>=3.0; python_version >= '3.11'",
     "netcdf4",
 ]
 full = [

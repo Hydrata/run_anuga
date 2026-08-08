@@ -10,7 +10,14 @@ from unittest import mock
 
 import pytest
 
-FIXTURE_SWW = os.path.join(os.path.dirname(__file__), "..", "domain.sww")
+try:
+    import zarr  # noqa: F401
+
+    HAS_ZARR = True
+except ImportError:
+    HAS_ZARR = False
+
+requires_zarr = pytest.mark.skipif(not HAS_ZARR, reason="zarr not installed")
 
 
 @pytest.mark.requires_anuga
@@ -75,12 +82,12 @@ class TestPostProcessLegacyTifsFlagGate:
     """
 
     @pytest.fixture
-    def package_with_sww(self, scenario_package):
+    def package_with_sww(self, scenario_package, fixture_sww):
         """scenario_package (project=1, id=1, run_id=1) + a copy of the real
-        domain.sww fixture placed where post_process_sww expects it."""
+        session-scoped fixture SWW placed where post_process_sww expects it."""
         output_dir = scenario_package / "outputs_1_1_1"
         output_dir.mkdir(parents=True, exist_ok=True)
-        shutil.copy(FIXTURE_SWW, output_dir / "run_1_1_1.sww")
+        shutil.copy(fixture_sww, output_dir / "run_1_1_1.sww")
         return scenario_package
 
     def _call_post_process(self, package_dir, **kwargs):
@@ -142,14 +149,14 @@ class TestPostProcessRealPlaybackExport:
     site, not just that export_playback_store is called)."""
 
     @pytest.fixture
-    def package_with_sww(self, scenario_package):
+    def package_with_sww(self, scenario_package, fixture_sww):
         output_dir = scenario_package / "outputs_1_1_1"
         output_dir.mkdir(parents=True, exist_ok=True)
-        shutil.copy(FIXTURE_SWW, output_dir / "run_1_1_1.sww")
+        shutil.copy(fixture_sww, output_dir / "run_1_1_1.sww")
         return scenario_package
 
+    @requires_zarr
     def test_real_playback_store_produced_and_valid(self, package_with_sww):
-        zarr = pytest.importorskip("zarr")  # noqa: F841
         from run_anuga.run_utils import post_process_sww
         from run_anuga.validate_playback_store import validate_store
 

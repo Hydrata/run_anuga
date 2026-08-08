@@ -173,6 +173,27 @@ def small_test_copy(tmp_path):
     return dst
 
 
+@pytest.fixture(scope="session")
+def fixture_sww(tmp_path_factory):
+    """One real small-run SWW, produced once per session by run_sim on a copy
+    of examples/small_test. Consumers MUST carry @pytest.mark.requires_anuga —
+    the plain CI legs deselect that marker; the e2e job (anuga installed) runs it.
+
+    Replaces the repo-root ``domain.sww`` dependency (2618 integration): that
+    path was never a tracked fixture (*.sww is gitignored) — it only ever
+    existed as a leftover of other tests writing to CWD, so CI ordering / a
+    fresh checkout made it vanish and every consumer errored at setup.
+    """
+    from run_anuga.run import run_sim
+
+    pkg = tmp_path_factory.mktemp("fixture-sww") / "small_test"
+    shutil.copytree(SMALL_TEST_DIR, str(pkg))
+    run_sim(str(pkg))
+    swws = sorted(pkg.glob("outputs_*/*.sww"))
+    assert swws, "fixture_sww: run_sim produced no .sww"
+    return swws[0]
+
+
 @pytest.fixture
 def small_geotiff(tmp_path):
     """Create a tiny 10x10 GeoTIFF for testing raster operations."""

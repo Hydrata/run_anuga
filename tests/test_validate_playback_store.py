@@ -31,17 +31,14 @@ def test_too_many_args_returns_usage_error(capsys):
 
 
 @requires_zarr
-def test_valid_store_returns_zero(tmp_path, capsys):
-    import zarr
-    from zarr.codecs import BytesCodec, GzipCodec
-
+@pytest.mark.requires_anuga
+def test_valid_store_returns_zero(tmp_path, capsys, fixture_sww):
     # Minimal but fully-conformant single-array store isn't realistic (the
     # validator requires all named arrays) — build via the real exporter
-    # instead for a true positive.
+    # against the session fixture SWW instead for a true positive.
     from run_anuga import playback_store as ps
-    import os
 
-    fixture_sww = os.path.join(os.path.dirname(__file__), "..", "domain.sww")
+    fixture_sww = str(fixture_sww)
     result = ps.export_playback_store(
         input_data={
             "run_label": "run_1_1_1",
