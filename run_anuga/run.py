@@ -17,7 +17,9 @@ from run_anuga.run_utils import is_dir_check, setup_input_data, create_anuga_mes
 from run_anuga import defaults
 from run_anuga import phase_tracker
 from run_anuga.callbacks import NullCallback, HydrataCallback
-from run_anuga.diagnostics import SimulationMonitor, finalize_monitor_safely
+from run_anuga.diagnostics import (
+    SimulationMonitor, collect_flow_scalars, finalize_monitor_safely,
+)
 from run_anuga._logging import install_mname_filter
 
 try:
@@ -126,8 +128,14 @@ def _get_module_offload_probe():
 def _assert_gpu_engaged(domain, requested_mode):
     """FAIL the run if mode 2 (GPU) was requested but did not actually engage
     (TASK-2197, epic 2190 W4.1; signal set corrected by the W4 adversarial
-    review P0, verified against upstream anuga develop@57a64abf — the engine
-    the GPU image actually bakes).
+    review P0, originally verified against upstream anuga develop@57a64abf —
+    the engine the GPU image baked at the time. TASK-2652 merged that upstream
+    develop lineage into Hydrata/anuga_core@main (merge commit 7f1a4847df34cd
+    2527101d4e10dbbf0b81668e23) and repointed the GPU build path onto the
+    fork; the GPU image now bakes from the fork, not upstream directly. A
+    fresh re-verification of this contract against the merged HEAD is a
+    TASK-2652/epic-2635 W5 runbook gate step (AC15) — the LOGIC below is
+    unchanged, only this docstring's stale premises are corrected here).
 
     Two DISTINCT fallbacks must both fail the run:
 
@@ -142,10 +150,12 @@ def _assert_gpu_engaged(domain, requested_mode):
       ``domain.gpu_offload_active`` (stamped at gpu-interface init from the
       process-wide state), a per-domain ``gpu_offload_enabled()`` method if
       an engine variant exposes one, or the package-level
-      ``anuga.gpu_offload_enabled()`` (upstream exports it; the fork does
-      not). The package probe is consulted only when the domain exposes no
-      offload signal (e.g. upstream's CUDA/CuPy interface path never stamps
-      ``gpu_offload_active``).
+      ``anuga.gpu_offload_enabled()`` (upstream exports it; POST-TASK-2652 the
+      fork exports it too — the merge landed it in ``anuga/__init__.py``,
+      superseding the earlier "the fork does not" premise this docstring
+      carried before the merge). The package probe is consulted only when the
+      domain exposes no offload signal (e.g. upstream's CUDA/CuPy interface
+      path never stamps ``gpu_offload_active``).
 
     Every signal the engine exposes must AGREE; any exposed signal reporting
     "not engaged" fails the run. An engine exposing NO signal at all fails
@@ -266,7 +276,8 @@ def _capture_gpu_model():
     return None
 
 
-def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoint_time=None, callback=None):
+def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoint_time=None, callback=None,
+            telemetry_client=None):
     # Lazy imports — these are only needed when actually running a simulation.
     anuga = import_optional("anuga")
     pickle = import_optional("dill")
@@ -287,7 +298,12 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
     if callback is None and os.environ.get('HYDRATA_INTERNAL_COMPUTE_TOKEN'):
         callback = HydrataCallback.from_config(input_data['scenario_config'])
     callback = callback or NullCallback()
-    logger = setup_logger(input_data, username, password, batch_number)
+    # TASK-2672: the events client (when run_and_report armed one, rank 0
+    # only) is threaded through EXPLICITLY so setup_logger can ship log lines
+    # as typed `log` events — no attribute-sniffing on the callback that a
+    # wrapper could shadow (the W0.1 lesson).
+    logger = setup_logger(input_data, username, password, batch_number,
+                          telemetry_client=telemetry_client)
     logger.info(f"run_sim started with {batch_number=}")
     domain = None
     overall = None
@@ -667,27 +683,31 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
                 run_label=input_data['run_label'],
                 scenario_config=input_data['scenario_config'],
             )
-        # W6 (TASK-1044) — `simulation_start` is the absolute wall-clock anchor used
-        # for ETA estimation; `start` is the per-tick reference reset every iteration.
-        simulation_start = time.time()
-        start = simulation_start
+        # `start` is the per-tick wall-clock reference reset every iteration.
+        # (The old `simulation_start` ETA anchor is gone — see D7 note below.)
+        start = time.time()
         # Sub-phase attribution (TASK-1910): the timestepping solver loop. Set
         # (not context-managed) because the loop is the last build phase before
         # post-processing; the phase is cleared after the trailing barrier below.
         phase_tracker.set_phase(phase_tracker.PHASE_EVOLVE)
         for t in domain.evolve(yieldstep=yieldstep, finaltime=duration, skip_initial_step=skip_initial_step):
+            # TASK-2675 — honest MPI diagnostics: the flow scalars are
+            # reduced across ALL ranks (SUM wet/vol, MAX depth/speed, MIN
+            # wet inradius), so this COLLECTIVE must run on every rank at
+            # the yieldstep boundary. Calling it inside the myid==0 block
+            # would deadlock rank 0's allreduce against the other ranks'
+            # evolve-internal collectives. Serial runs skip MPI entirely
+            # (launcher-env gate — zero mpi4py import cost).
+            flow = collect_flow_scalars(domain)
             if anuga.myid == 0:
                 stop = time.time()
                 percentage_done = round(t * 100 / duration, 1)
-                # W6 (TASK-1044) — switch numeric progress from on_status('X%') to
-                # on_progress(X). on_status is reserved for state words ('error' below
-                # stays). ETA = elapsed * (100 - pct) / pct; unknown when pct==0.
-                elapsed = stop - simulation_start
-                if percentage_done > 0:
-                    eta_seconds = int(elapsed * (100 - percentage_done) / percentage_done)
-                else:
-                    eta_seconds = None
-                callback.on_progress(percentage_done, eta_seconds=eta_seconds)
+                # W6 (TASK-1044) — numeric progress flows via on_progress;
+                # on_status is reserved for state words ('error' below stays).
+                # D7 (TASK-2672): the container computes NO ETA — the server
+                # derives it from the progress history (the old elapsed-ratio
+                # math lived here and is deliberately deleted, not moved).
+                callback.on_progress(percentage_done)
                 duration_seconds = round(stop - start)
                 minutes, seconds = divmod(duration_seconds, 60)
                 memory_percent = psutil.virtual_memory().percent
@@ -696,7 +716,9 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
                 mem_mb = memory_usage / (1024 * 1024)
                 # Per-yieldstep diagnostics. t is already simulation-relative here
                 # (finaltime=duration, no set_starttime), so pass it straight through.
-                diag = monitor.record(t, wall_time_s=stop - start, mem_mb=mem_mb)
+                # `flow` carries the globally-reduced scalars (TASK-2675).
+                diag = monitor.record(t, wall_time_s=stop - start, mem_mb=mem_mb,
+                                      flow=flow)
                 logger.info(
                     f'{percentage_done}% | {minutes}m {seconds}s | '
                     f'mem: {memory_percent}% | disk: {psutil.disk_usage("/").percent}% | '

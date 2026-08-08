@@ -73,6 +73,14 @@ _lock = threading.Lock()
 _current_phase: Optional[str] = None
 _mesh_features: Dict[str, object] = {}
 
+# TASK-2672 (epic 2662 D4): optional phase-transition listener — the events
+# dialect posts a typed `phase` event on each transition. Module-global so
+# run.py's set_phase call sites need no changes; registered by
+# run_and_report on rank 0 only (the only place a telemetry client exists)
+# and deliberately NOT cleared by reset() (reset runs at the START of
+# run_sim, after registration).
+_phase_listener = None
+
 # Per-phase duration accumulators (TASK-1954).
 # _phase_start_time is perf_counter at the moment _current_phase was last set
 # to a non-None value; None means no phase is active / duration not started.
@@ -95,6 +103,7 @@ def set_phase(phase: Optional[str]) -> None:
     global _current_phase, _phase_start_time
     with _lock:
         now = time.perf_counter()
+        changed = phase != _current_phase
         # Accumulate the duration for the phase we are leaving.
         if _current_phase is not None and _phase_start_time is not None:
             elapsed = now - _phase_start_time
@@ -103,6 +112,26 @@ def set_phase(phase: Optional[str]) -> None:
             )
         _current_phase = phase
         _phase_start_time = now if phase is not None else None
+    # TASK-2672: notify the events dialect OUTSIDE the lock (the listener does
+    # network I/O). Non-None transitions only (clearing a phase is not an
+    # event; the next real phase overwrites). Fully guarded — telemetry must
+    # never break the sim.
+    listener = _phase_listener
+    if changed and phase is not None and listener is not None:
+        try:
+            listener(phase)
+        except Exception:
+            pass
+
+
+def set_phase_listener(listener) -> None:
+    """Register a callable invoked with each NEW non-None phase value when
+    the active phase CHANGES (TASK-2672 events dialect). Pass ``None`` to
+    clear. The listener is called OUTSIDE the lock and fully guarded —
+    telemetry must never break the sim. Deliberately NOT cleared by
+    :func:`reset` (registration happens before run_sim, which calls reset)."""
+    global _phase_listener
+    _phase_listener = listener
 
 
 def get_phase() -> Optional[str]:

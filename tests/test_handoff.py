@@ -937,3 +937,79 @@ class TestHardenedS3ClientFactory:
         assert mock_s3.upload_file.call_count >= 3, (
             f"Expected ≥3 upload_file calls, got {mock_s3.upload_file.call_count}"
         )
+
+
+class TestRunAndReportCallbackWiring:
+    """TASK-2663 (epic 2662 W0.1) — regression lock on the dead-progress root cause.
+
+    Since TASK-1924 (W3) run_and_report always passed a truthy
+    _EarlyPartialCallback wrapper to run_sim, so run_sim's token-gated
+    ``if callback is None`` HydrataCallback auto-construction never fired and
+    the wrapper delegated every on_progress/on_status to inner=None (silent
+    drop). These tests pin the fix: with the token set and no explicit
+    callback, the wrapper's inner MUST be a live HydrataCallback.
+    """
+
+    @pytest.fixture
+    def package(self, tmp_path: Path) -> Path:
+        config = {
+            "id": 384,
+            "project": 601,
+            "run_id": 1243,
+            "control_server": "https://hydrata.com/",
+        }
+        (tmp_path / "scenario.json").write_text(json.dumps(config))
+        outputs = tmp_path / "outputs_601_384_1243"
+        outputs.mkdir()
+        (outputs / "result_depth_max.tif").write_bytes(b"fake tif")
+        return tmp_path
+
+    def _run_and_capture_callback(self, package: Path):
+        from run_anuga import _handoff
+
+        mock_run_sim = mock.MagicMock(return_value=None)
+        post_response = mock.MagicMock(status_code=202, text="")
+        with mock.patch("run_anuga.run.run_sim", mock_run_sim), \
+             mock.patch.object(_handoff, "upload_cold_archive"), \
+             mock.patch.object(_handoff, "upload_result_to_s3"), \
+             mock.patch.object(_handoff, "report_result", return_value=post_response), \
+             mock.patch.object(_handoff, "report_error"):
+            run_and_report(package, result_bucket="bucket")
+        mock_run_sim.assert_called_once()
+        return mock_run_sim.call_args.kwargs["callback"]
+
+    def test_token_env_wires_hydrata_callback_inside_wrapper(self, package: Path, monkeypatch):
+        """With the token set and callback=None, run_sim must receive a wrapper
+        whose inner is a HydrataCallback aimed at the packaged run — NOT
+        inner=None (the pre-fix silent-drop state)."""
+        from run_anuga.callbacks import HydrataCallback
+
+        monkeypatch.setenv("HYDRATA_INTERNAL_COMPUTE_TOKEN", "test-token")
+        cb = self._run_and_capture_callback(package)
+        assert cb is not None
+        inner = getattr(cb, "_inner", "MISSING")
+        assert isinstance(inner, HydrataCallback), (
+            f"run_sim's callback wrapper carries inner={inner!r}; the TASK-2663 "
+            "regression (wrapper around None -> every on_progress dropped) is back"
+        )
+        assert inner.run_id == 1243
+        assert inner.control_server == "https://hydrata.com/"
+
+    def test_explicit_callback_is_not_replaced(self, package: Path, monkeypatch):
+        """An explicitly passed callback (e.g. LoggingCallback on the CLI
+        --log-to-stdout path) must ride through unreplaced."""
+        from run_anuga import _handoff
+        from run_anuga.callbacks import LoggingCallback
+
+        monkeypatch.setenv("HYDRATA_INTERNAL_COMPUTE_TOKEN", "test-token")
+        explicit = LoggingCallback()
+        mock_run_sim = mock.MagicMock(return_value=None)
+        post_response = mock.MagicMock(status_code=202, text="")
+        with mock.patch("run_anuga.run.run_sim", mock_run_sim), \
+             mock.patch.object(_handoff, "upload_cold_archive"), \
+             mock.patch.object(_handoff, "upload_result_to_s3"), \
+             mock.patch.object(_handoff, "report_result", return_value=post_response), \
+             mock.patch.object(_handoff, "report_error"):
+            run_and_report(package, callback=explicit, result_bucket="bucket")
+        cb = mock_run_sim.call_args.kwargs["callback"]
+        assert cb._inner is explicit
