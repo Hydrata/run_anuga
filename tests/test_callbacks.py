@@ -1,6 +1,7 @@
 """Tests for run_anuga.callbacks — callback protocol and implementations.
 
-TASK-1049 (W1 of TASK-1048): HydrataCallback was rewritten to use the V2
+TASK-2681 (epic 2662 W4.1) DELETED HydrataCallback outright — its routes are 410 tombstones and TelemetryCallback is the one web reporter (covered in test_events_dialect.py).
+HISTORY — TASK-1049 (W1 of TASK-1048): HydrataCallback was rewritten to use the V2
 API + ``X-Internal-Token`` header + owned ``requests.Session``. The
 V1-era TestHydrataCallback / TestHydrataCallbackOnProgress classes were
 removed because they exercised the removed BasicAuth surface and V1

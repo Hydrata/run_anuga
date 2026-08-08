@@ -146,7 +146,7 @@ class TestOldMainStillImportable:
 class TestRunSubcommandCallbackSelection:
     """TASK-1160 (F1b): the `run` subcommand must not force LoggingCallback.
 
-    Bare ``python run.py`` already auto-constructs HydrataCallback when
+    Bare ``python run.py`` runs silent unless run_and_report armed a TelemetryCallback (TASK-2681 removed the old token-gated auto-construct); historically it auto-constructed HydrataCallback when
     HYDRATA_INTERNAL_COMPUTE_TOKEN + scenario_config.control_server are
     present; the CLI must match that. Pass ``--log-to-stdout`` to force
     LoggingCallback for standalone debugging.

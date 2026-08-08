@@ -69,13 +69,13 @@ def cmd_run(args):
         )
         return
 
-    # TASK-1160 (F1b): leave the callback unset by default so run_sim's env-based
-    # auto-construct kicks in — when HYDRATA_INTERNAL_COMPUTE_TOKEN is present
-    # and scenario.json carries a control_server, a HydrataCallback streams
-    # /log/ + /progress/ to the control server (matching bare ``python run.py``).
-    # When neither is set, run_sim falls back to NullCallback (silent).
-    # --log-to-stdout forces LoggingCallback regardless of the env, for
-    # standalone debugging or when the token IS set but you want stdout output.
+    # TASK-1160 (F1b): leave the callback unset by default. Web reporting is
+    # armed by run_and_report (which builds the ONE TelemetryCallback when
+    # HYDRATA_PROCESS_ID is present); a bare ``run-sim`` with no callback
+    # falls back to NullCallback (silent). TASK-2681 removed the old
+    # token-gated HydrataCallback auto-construct.
+    # --log-to-stdout forces LoggingCallback regardless, for standalone
+    # debugging or when telemetry IS armed but you want stdout output too.
     callback = LoggingCallback() if args.log_to_stdout else None
     run_sim(
         args.package_dir,
