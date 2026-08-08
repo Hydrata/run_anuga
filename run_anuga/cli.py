@@ -90,8 +90,18 @@ def cmd_run_and_report(args):
 
     TASK-1159 (F1): one entry point for both Batch (via mpirun) and the F2
     localhost dispatcher. Reads scenario.json + env (HYDRATA_INTERNAL_COMPUTE_TOKEN,
-    RESULT_S3_BUCKET), runs the sim, zips outputs, uploads to S3, POSTs
-    /process-result/. POSTs /error/ on any failure.
+    RESULT_S3_BUCKET, HYDRATA_PROCESS_ID), runs the sim, zips outputs, uploads
+    to S3, and posts a terminal ``result`` event to
+    ``/api/v2/tasks/processes/<uuid>/events/`` — a terminal ``error`` event on
+    any failure.
+
+    TASK-2692 (epic 2662 W5): FAIL-CLOSED. Without HYDRATA_PROCESS_ID (or an
+    importable ``gn_anuga.batch_common``) this refuses before the sim rather
+    than computing for hours with nowhere to report — the legacy
+    ``/process-result/`` + ``/error/`` dialect it used to fall back to is a 410
+    tombstone. Use ``run_anuga.cli run`` for a deliberately unreported ad-hoc
+    sim, or set ``RUN_ANUGA_ALLOW_UNREPORTED_RUN=1`` to run THIS command
+    unreported.
     """
     from run_anuga._handoff import run_and_report
 
@@ -227,7 +237,11 @@ def main():
     # --- run-and-report ---
     rar_parser = subparsers.add_parser(
         "run-and-report",
-        help="Run a simulation, zip + upload results, and POST /process-result/ (TASK-1159 F1)",
+        help=(
+            "Run a simulation, zip + upload results, and post a terminal "
+            "`result` event (TASK-1159 F1; needs HYDRATA_PROCESS_ID since "
+            "TASK-2692)"
+        ),
     )
     rar_parser.add_argument(
         "package_dir", help="Path to scenario package directory"

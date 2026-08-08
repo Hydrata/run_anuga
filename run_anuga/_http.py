@@ -18,6 +18,12 @@ routes. Everything a container reports about its own lifecycle now rides
 ``gn_anuga.batch_common.telemetry_client`` (stdlib ``urllib``, not this
 module) to ``POST /api/v2/tasks/processes/<uuid>/events/``.
 
+⚠ As a result, :func:`post_to_control_server` has NO in-repo caller left —
+only ``make_internal_session`` above is still live. It is kept (with its
+tests) as the generic, URL-agnostic POST/PATCH helper rather than deleted in
+the same breath as the routes, because nothing about it is route-specific.
+If nothing has adopted it by the next sweep of this module, delete it.
+
 Callers pass an owned ``requests.Session`` via ``session=`` to realise
 connection-reuse on hot paths.
 When ``session`` is omitted a fresh Session is created and closed per call.

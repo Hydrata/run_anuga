@@ -3,6 +3,13 @@
 Covers happy path (201), 4xx, 5xx, connection error, and the dispatch
 between POST and PATCH.  Uses unittest.mock to match the existing
 test-suite style (responses lib is available but not used elsewhere).
+
+TASK-2692 (epic 2662 W5): the sample URL was
+``/api/v2/anuga/runs/1/error/``, which is a 410 tombstone now. The helper is
+URL-agnostic — the caller owns templating — so the sample moved to the
+resource-ledger route (the one endpoint this module's surviving caller,
+``make_internal_session``, still feeds) purely so a repo-wide grep for the dead
+routes returns nothing that looks like a live caller.
 """
 
 from __future__ import annotations
@@ -41,7 +48,7 @@ class TestHappyPath:
         session, fake_response = _make_session_mock(201)
         with patch("requests.Session", return_value=session), caplog.at_level(logging.ERROR):
             result = post_to_control_server(
-                "https://example.com/api/v2/anuga/runs/1/error/",
+                "https://example.com/api/v2/anuga/jobs/resource-report/",
                 auth=auth,
                 method="POST",
                 data={"message": "boom"},
@@ -51,7 +58,7 @@ class TestHappyPath:
         # Default timeout is None (no timeout) to preserve pre-refactor
         # behavior and avoid breaking PATCH-with-files callers on slow links.
         session.post.assert_called_once_with(
-            "https://example.com/api/v2/anuga/runs/1/error/",
+            "https://example.com/api/v2/anuga/jobs/resource-report/",
             data={"message": "boom"},
             files=None,
             timeout=None,
@@ -140,7 +147,7 @@ class TestTimeout:
 class TestErrorStatusLogging:
     def test_4xx_logs_error_returns_response(self, auth, caplog):
         session, fake_response = _make_session_mock(403, text="forbidden")
-        url = "https://example.com/api/v2/anuga/runs/1/error/"
+        url = "https://example.com/api/v2/anuga/jobs/resource-report/"
         with patch("requests.Session", return_value=session), caplog.at_level(logging.ERROR):
             result = post_to_control_server(url, auth=auth, method="POST")
 

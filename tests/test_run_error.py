@@ -1,135 +1,88 @@
-"""Tests for run_anuga.run._report_run_error — TASK-1078 (W6.2 of TASK-1048).
+"""``python -m run_anuga.run`` refuses — TASK-2692 (epic 2662 W5).
 
-`_report_run_error` POSTs the originating run failure to
-``/api/v2/anuga/runs/<id>/error/`` and is invoked from the top-level
-``main()`` exception handler. Without these tests, canary 15 wedged silently
-because the function had no Batch token-auth path: HYDRATA_INTERNAL_COMPUTE_TOKEN
-was set in the container but the function only knew about HTTPBasicAuth, and
-the BE rejected un-authed POSTs with 401, swallowing the error report.
+This file used to test ``run_anuga.run._report_run_error`` (TASK-1078, W6.2 of
+TASK-1048), which POSTed the originating run failure to
+``/api/v2/anuga/runs/<id>/error/`` from ``main()``'s exception handler.
 
-Coverage:
-* Token-auth path (HYDRATA_INTERNAL_COMPUTE_TOKEN set) — POSTs with
-  ``X-Internal-Token`` header on a session, no ``auth=`` kwarg.
-* Legacy BasicAuth path (username/password, no token) — POSTs with
-  ``auth=HTTPBasicAuth(...)``, no ``session=`` kwarg.
-* Token takes precedence over BasicAuth — token-mode wins even if creds present.
-* No-creds-and-no-token early returns without POSTing (defensive — caller
-  passes user-supplied CLI args; the function must not 401-loop).
-* Outer try/except swallows post failures (must never mask the originating
-  run exception).
+W5 turns that route into a 410 tombstone, and the function had no honest
+successor:
+
+* it could not be CONVERTED to the events protocol — the protocol is keyed on a
+  TaskMonitor Process uuid that a dispatcher hands to the container, and nothing
+  dispatches ``python -m run_anuga.run`` (the packaged console script is
+  ``run-anuga = run_anuga.cli:main``; both dispatchers shell
+  ``run_anuga.cli run-and-report``). The entry point also has NO result channel
+  at all, so an events port would be an error-only half-dialect that can flip a
+  Run to ERROR but never complete one;
+* it could not be SILENTLY DROPPED either — that would leave a duplicate of
+  ``run_anuga.cli run`` still wearing the legacy username/password signature, a
+  live trap where a developer points it at a real ``control_server`` and the
+  server learns NOTHING, not even the failure.
+
+So the entry point refuses, and these tests pin that refusal plus the absence of
+any surviving caller of a tombstoned route anywhere in the shipped package.
 """
 
 from __future__ import annotations
 
-import json
-from unittest import mock
+import re
+import subprocess
+import sys
+from pathlib import Path
 
 import pytest
 
-
-@pytest.fixture
-def fake_package(tmp_path):
-    """A package_dir with a minimal scenario.json (run_id + control_server)."""
-    package = tmp_path / 'pkg'
-    package.mkdir()
-    (package / 'scenario.json').write_text(json.dumps({
-        'run_id': 42,
-        'control_server': 'https://example.test/',
-    }))
-    return str(package)
+PACKAGE_ROOT = Path(__file__).resolve().parent.parent / "run_anuga"
 
 
-def test_run_error_token_path(fake_package, monkeypatch):
-    """Token set → POST with X-Internal-Token header (RAW), no auth= kwarg."""
-    monkeypatch.setenv('HYDRATA_INTERNAL_COMPUTE_TOKEN', 'tok123')
-    from run_anuga.run import _report_run_error
-    from run_anuga.run_utils import RunContext
+def test_report_run_error_is_gone():
+    import run_anuga.run as run_module
 
-    with mock.patch('run_anuga._http.post_to_control_server') as mocked:
-        _report_run_error(RunContext(fake_package, None, None), 'boom')
-
-    assert mocked.call_count == 1
-    args, kwargs = mocked.call_args
-    assert args[0] == 'https://example.test/api/v2/anuga/runs/42/error/'
-    assert kwargs.get('method') == 'POST'
-    assert kwargs.get('data') == {'message': 'boom'}
-    assert kwargs.get('timeout') == 30
-    # Token-mode contract: session passed in with pre-set header, NO auth= kwarg.
-    session = kwargs.get('session')
-    assert session is not None
-    assert session.headers.get('X-Internal-Token') == 'tok123'
-    # Explicit RAW token — never "Bearer <token>".
-    assert not session.headers.get('X-Internal-Token', '').startswith('Bearer ')
-    assert kwargs.get('auth') is None
+    assert not hasattr(run_module, "_report_run_error"), (
+        "_report_run_error POSTed /api/v2/anuga/runs/<id>/error/, a 410 "
+        "tombstone since TASK-2692; it must not come back"
+    )
 
 
-def test_run_error_username_password_path(fake_package, monkeypatch):
-    """Token unset + username/password set → BasicAuth path still works."""
-    monkeypatch.delenv('HYDRATA_INTERNAL_COMPUTE_TOKEN', raising=False)
-    from run_anuga.run import _report_run_error
-    from run_anuga.run_utils import RunContext
+def test_main_refuses_and_returns_non_zero(capsys):
+    import run_anuga.run as run_module
 
-    with mock.patch('run_anuga._http.post_to_control_server') as mocked:
-        _report_run_error(RunContext(fake_package, 'user@test', 'pw'), 'boom')
-
-    assert mocked.call_count == 1
-    args, kwargs = mocked.call_args
-    assert args[0] == 'https://example.test/api/v2/anuga/runs/42/error/'
-    assert kwargs.get('method') == 'POST'
-    assert kwargs.get('data') == {'message': 'boom'}
-    assert kwargs.get('timeout') == 30
-    # BasicAuth-mode contract: auth= kwarg set, session= not set.
-    auth = kwargs.get('auth')
-    assert auth is not None
-    assert getattr(auth, 'username', None) == 'user@test'
-    assert getattr(auth, 'password', None) == 'pw'
-    assert kwargs.get('session') is None
+    assert run_module.main() == 2
+    err = capsys.readouterr().err
+    assert "no longer a supported entry point" in err
+    # It must name BOTH supported replacements, or the refusal is a dead end.
+    assert "run_anuga.cli run " in err or "run_anuga.cli run <" in err
+    assert "run_anuga.cli run-and-report" in err
 
 
-def test_run_error_token_takes_precedence_over_basic_auth(fake_package, monkeypatch):
-    """Token + creds both present → token wins (BasicAuth not attempted)."""
-    monkeypatch.setenv('HYDRATA_INTERNAL_COMPUTE_TOKEN', 'tok-wins')
-    from run_anuga.run import _report_run_error
-    from run_anuga.run_utils import RunContext
-
-    with mock.patch('run_anuga._http.post_to_control_server') as mocked:
-        _report_run_error(RunContext(fake_package, 'user@test', 'pw'), 'boom')
-
-    assert mocked.call_count == 1
-    _, kwargs = mocked.call_args
-    session = kwargs.get('session')
-    assert session is not None
-    assert session.headers.get('X-Internal-Token') == 'tok-wins'
-    # Confirm BasicAuth is NOT attempted (no auth= kwarg in token mode).
-    assert kwargs.get('auth') is None
+def test_module_invocation_exits_non_zero(tmp_path):
+    """End to end: `python -m run_anuga.run` must not silently run a sim."""
+    proc = subprocess.run(
+        [sys.executable, "-m", "run_anuga.run"],
+        capture_output=True, text=True, timeout=300,
+        cwd=str(tmp_path),
+        # run_anuga is not necessarily pip-installed for this interpreter
+        # (same constraint test_handoff.test_module_imports_without_django
+        # works around) — point at the repo root explicitly.
+        env={"PYTHONPATH": str(PACKAGE_ROOT.parent), "PATH": "/usr/bin:/bin"},
+    )
+    assert proc.returncode == 2, (proc.returncode, proc.stdout[-2000:], proc.stderr[-2000:])
+    assert "no longer a supported entry point" in proc.stderr
 
 
-def test_run_error_no_creds_no_token_returns(fake_package, monkeypatch):
-    """No token AND no creds → silent early return (no POST attempted)."""
-    monkeypatch.delenv('HYDRATA_INTERNAL_COMPUTE_TOKEN', raising=False)
-    from run_anuga.run import _report_run_error
-    from run_anuga.run_utils import RunContext
+@pytest.mark.parametrize("module_path", sorted(PACKAGE_ROOT.rglob("*.py")),
+                         ids=lambda p: p.name)
+def test_no_module_builds_a_tombstoned_run_scoped_url(module_path: Path):
+    """Repo-wide: nothing in the shipped package may BUILD a legacy per-run URL.
 
-    with mock.patch('run_anuga._http.post_to_control_server') as mocked:
-        _report_run_error(RunContext(fake_package, None, None), 'boom')
-
-    assert mocked.call_count == 0
-
-
-def test_run_error_swallows_exceptions(fake_package, monkeypatch, caplog):
-    """Outer try/except must never propagate — would mask the run exception."""
-    import logging
-    monkeypatch.setenv('HYDRATA_INTERNAL_COMPUTE_TOKEN', 'tok-raise')
-    from run_anuga.run import _report_run_error
-    from run_anuga.run_utils import RunContext
-
-    with mock.patch(
-        'run_anuga._http.post_to_control_server',
-        side_effect=RuntimeError('network kaboom'),
-    ):
-        with caplog.at_level(logging.ERROR, logger='run_anuga.run'):
-            # Must NOT raise.
-            _report_run_error(RunContext(fake_package, None, None), 'boom')
-
-    # The failure was logged at ERROR level via logger.exception.
-    assert 'Failed to report run error to control server' in caplog.text
+    Prose may still NAME the dead routes when explaining the deletion (several
+    docstrings do). What must never come back is a live URL, which every
+    deleted caller built by interpolating the run id — so the ban is on exactly
+    that shape.
+    """
+    text = module_path.read_text()
+    offenders = re.findall(r"anuga/runs/\{[^}]*\}", text)
+    assert not offenders, (
+        f"{module_path.name} builds a legacy /api/v2/anuga/runs/<id>/ URL "
+        f"({offenders!r}); those routes are 410 tombstones since TASK-2692"
+    )
