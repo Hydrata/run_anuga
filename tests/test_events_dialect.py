@@ -5,12 +5,14 @@ Covers the events-dialect wiring end to end (with a stubbed
 is deliberately NOT importable from a bare run_anuga env):
 
 * ``TelemetryCallback`` maps the SimulationCallback protocol onto typed events.
-* ``_make_telemetry_client`` — the ONE explicit construction site: absent
-  ``HYDRATA_PROCESS_ID`` / unimportable batch_common degrade LOUDLY to the
-  legacy dialect, never silently.
+* ``_make_telemetry_client`` — the ONE explicit construction site. TASK-2692
+  (W5) made it FAIL-CLOSED: absent ``HYDRATA_PROCESS_ID`` / unimportable
+  batch_common now RAISE (there is no legacy dialect left to degrade to), with
+  one explicit env opt-out for deliberately-unreported ad-hoc runs.
 * ``run_and_report`` arms started(placement)/watchdog/phase-listener, posts
-  the result event (legacy /process-result/ POST only as fallback), posts the
-  error event on a sim crash, and tears the channels down in ``finally``.
+  the result event (no legacy fallback since W5 — an undeliverable terminal
+  event raises), posts the error event on a sim crash AND on a zip/upload
+  failure, and tears the channels down in ``finally``.
 * ``phase_tracker.set_phase_listener`` — transition events, None skipped,
   listener exceptions swallowed, ``reset()`` keeps the registration.
 * ``setup_logger`` — web/telemetry log shipping is rank-0 only (the 32x
@@ -30,7 +32,11 @@ from unittest import mock
 import pytest
 
 from run_anuga import phase_tracker
-from run_anuga._handoff import _make_telemetry_client, run_and_report
+from run_anuga._handoff import (
+    ALLOW_UNREPORTED_ENV,
+    _make_telemetry_client,
+    run_and_report,
+)
 from run_anuga.callbacks import TelemetryCallback
 
 
@@ -170,16 +176,64 @@ class TestTelemetryCallbackMapping:
 # ---------------------------------------------------------------------------
 
 class TestMakeTelemetryClient:
-    def test_no_process_id_is_loud_legacy_fallback(self, monkeypatch, caplog):
+    """TASK-2692 (W5): the construction site is FAIL-CLOSED.
+
+    Both former ``return None`` degrades handed the run back to the legacy
+    ``/process-result/`` + ``/error/`` dialect. W5 deletes that dialect and
+    tombstones the routes, so ``None`` now means NO channel at all — the
+    container would compute for hours and bin the result. Both conditions
+    raise, and the only escape is the explicit opt-out env var.
+    """
+
+    def test_no_process_id_raises(self, monkeypatch):
         monkeypatch.delenv('HYDRATA_PROCESS_ID', raising=False)
-        with caplog.at_level(logging.INFO, logger='run_anuga._handoff'):
+        monkeypatch.delenv(ALLOW_UNREPORTED_ENV, raising=False)
+        with pytest.raises(RuntimeError, match='HYDRATA_PROCESS_ID is not set'):
+            _make_telemetry_client({'control_server': 'http://cs'})
+
+    def test_no_process_id_message_names_both_dispatchers(self, monkeypatch):
+        """The operator must be told WHERE to look — both dispatch paths."""
+        monkeypatch.delenv('HYDRATA_PROCESS_ID', raising=False)
+        monkeypatch.delenv(ALLOW_UNREPORTED_ENV, raising=False)
+        with pytest.raises(RuntimeError) as excinfo:
+            _make_telemetry_client({'control_server': 'http://cs'})
+        message = str(excinfo.value)
+        assert '_dispatch_batch' in message
+        assert 'dispatch_local_anuga_run' in message
+        assert ALLOW_UNREPORTED_ENV in message
+
+    def test_unimportable_batch_common_raises(self, monkeypatch):
+        monkeypatch.setenv('HYDRATA_PROCESS_ID', 'proc-uuid')
+        monkeypatch.delenv(ALLOW_UNREPORTED_ENV, raising=False)
+        for name in list(sys.modules):
+            if name == 'gn_anuga' or name.startswith('gn_anuga.'):
+                monkeypatch.delitem(sys.modules, name, raising=False)
+        with pytest.raises(RuntimeError, match='not importable'):
+            _make_telemetry_client({'control_server': 'http://cs'})
+
+    @pytest.mark.parametrize('value', ['1', 'true', 'TRUE', 'yes', 'on'])
+    def test_opt_out_downgrades_missing_process_id_to_a_warning(
+            self, monkeypatch, caplog, value):
+        monkeypatch.delenv('HYDRATA_PROCESS_ID', raising=False)
+        monkeypatch.setenv(ALLOW_UNREPORTED_ENV, value)
+        with caplog.at_level(logging.WARNING, logger='run_anuga._handoff'):
             client = _make_telemetry_client({'control_server': 'http://cs'})
         assert client is None
-        assert 'events dialect NOT armed' in caplog.text
+        assert 'NO telemetry channel' in caplog.text
 
-    def test_unimportable_batch_common_is_loud_legacy_fallback(
+    @pytest.mark.parametrize('value', ['', '0', 'false', 'no', 'off', 'maybe'])
+    def test_non_truthy_opt_out_values_stay_fail_closed(self, monkeypatch, value):
+        """A stray `RUN_ANUGA_ALLOW_UNREPORTED_RUN=0` in a job definition must
+        not accidentally disarm the lock."""
+        monkeypatch.delenv('HYDRATA_PROCESS_ID', raising=False)
+        monkeypatch.setenv(ALLOW_UNREPORTED_ENV, value)
+        with pytest.raises(RuntimeError, match='HYDRATA_PROCESS_ID is not set'):
+            _make_telemetry_client({'control_server': 'http://cs'})
+
+    def test_opt_out_downgrades_unimportable_batch_common(
             self, monkeypatch, caplog):
         monkeypatch.setenv('HYDRATA_PROCESS_ID', 'proc-uuid')
+        monkeypatch.setenv(ALLOW_UNREPORTED_ENV, '1')
         for name in list(sys.modules):
             if name == 'gn_anuga' or name.startswith('gn_anuga.'):
                 monkeypatch.delitem(sys.modules, name, raising=False)
@@ -187,6 +241,31 @@ class TestMakeTelemetryClient:
             client = _make_telemetry_client({'control_server': 'http://cs'})
         assert client is None
         assert 'not importable' in caplog.text
+
+    def test_cli_run_never_reaches_the_construction_site(
+            self, tmp_path, monkeypatch):
+        """The ad-hoc escape is STRUCTURAL, not a flag.
+
+        ``run_anuga.cli run`` calls ``run_sim`` directly and never builds a
+        telemetry client, so the fail-closed raise cannot reach it even with
+        NO env vars set at all. This is why the gate is "run_and_report is
+        fail-closed" and not an ``AWS_BATCH_JOB_ID`` context sniff — the
+        celery-native localhost dispatcher shells ``run-and-report`` WITHOUT
+        that variable, so a Batch-context gate would have left the entire
+        localhost path silently unarmed.
+        """
+        from run_anuga import cli
+
+        monkeypatch.delenv('HYDRATA_PROCESS_ID', raising=False)
+        monkeypatch.delenv(ALLOW_UNREPORTED_ENV, raising=False)
+        args = types.SimpleNamespace(
+            package_dir=str(tmp_path), username=None, password=None,
+            batch_number=None, checkpoint_time=None, log_to_stdout=False,
+        )
+        with mock.patch('run_anuga.run.run_sim') as mock_run_sim:
+            cli.cmd_run(args)  # must NOT raise
+        mock_run_sim.assert_called_once()
+        assert 'telemetry_client' not in mock_run_sim.call_args.kwargs
 
     def test_constructs_client_with_config(self, monkeypatch):
         monkeypatch.setenv('HYDRATA_PROCESS_ID', 'proc-uuid')
@@ -270,23 +349,20 @@ def _capture_client(mock_run_sim):
 
 
 class TestRunAndReportEventsDialect:
-    def _patches(self, mock_run_sim, post_response=None):
+    def _patches(self, mock_run_sim):
+        # TASK-2692 (W5): report_result/report_error are DELETED — there is no
+        # legacy dialect left to patch out.
         from run_anuga import _handoff
-        if post_response is None:
-            post_response = mock.MagicMock(status_code=202, text='')
         return [
             mock.patch('run_anuga.run.run_sim', mock_run_sim),
             mock.patch.object(_handoff, 'upload_cold_archive'),
             mock.patch.object(_handoff, 'upload_result_to_s3'),
-            mock.patch.object(_handoff, 'report_result', return_value=post_response),
-            mock.patch.object(_handoff, 'report_error'),
         ]
 
     def test_events_dialect_full_wiring(self, package, events_env):
         mock_run_sim = mock.MagicMock(return_value=None)
         patches = self._patches(mock_run_sim)
-        with patches[0], patches[1], patches[2], \
-                patches[3] as p_result, patches[4] as p_error:
+        with patches[0], patches[1], patches[2]:
             out = run_and_report(package, result_bucket='bucket')
 
         client = _capture_client(mock_run_sim)
@@ -310,13 +386,12 @@ class TestRunAndReportEventsDialect:
         phase_tracker.set_phase(phase_tracker.PHASE_MESH_GEN)
         assert len(client.of('phase')) == n_phase
 
-        # ONE result event with key + cold prefix; legacy POSTs never fired
+        # ONE result event with key + cold prefix; no error event on success
         assert client.of('result') == [('result', {
             'result_package_key': '601_384_1243_results.zip',
             'cold_archive_prefix': 'cold-archive/601_384_1243/',
         })]
-        p_result.assert_not_called()
-        p_error.assert_not_called()
+        assert client.of('error') == []
         assert out == {'result_key': '601_384_1243_results.zip',
                        'process_result_status': 'events'}
 
@@ -328,16 +403,21 @@ class TestRunAndReportEventsDialect:
 
         mock_run_sim = mock.MagicMock(side_effect=fake_sim)
         patches = self._patches(mock_run_sim)
-        with patches[0], patches[1], patches[2], patches[3], patches[4]:
+        with patches[0], patches[1], patches[2]:
             run_and_report(package, result_bucket='bucket')
         client = _capture_client(mock_run_sim)
         # mesh-gen (from inside run_sim) first, then the handoff's own archive
         assert client.of('phase')[0] == ('phase', phase_tracker.PHASE_MESH_GEN)
 
-    def test_result_event_failure_falls_back_to_legacy_post(
+    def test_undeliverable_result_event_raises_naming_the_s3_key(
             self, package, events_env):
-        """Wedge defence: a dropped result event must not leave the run
-        unprocessed — the legacy /process-result/ POST fires instead."""
+        """TASK-2692 (W5): the legacy /process-result/ wedge-defence fallback is
+        deleted with its 410'd route. An undeliverable terminal result event now
+        RAISES — a non-zero container makes the Batch job FAILED (a signal the
+        reaper and an operator can both see) instead of a SUCCEEDED job that
+        looks like a wedge for an hour. The zip IS in S3, so the message must
+        name the key for hand-recovery.
+        """
         mock_run_sim = mock.MagicMock(return_value=None)
 
         real_make = _make_telemetry_client
@@ -350,28 +430,37 @@ class TestRunAndReportEventsDialect:
         from run_anuga import _handoff
         patches = self._patches(mock_run_sim)
         with mock.patch.object(_handoff, '_make_telemetry_client', make_failing), \
-                patches[0], patches[1], patches[2], \
-                patches[3] as p_result, patches[4]:
-            out = run_and_report(package, result_bucket='bucket')
-        p_result.assert_called_once()
-        assert out['process_result_status'] == 202
+                patches[0], patches[1], patches[2]:
+            with pytest.raises(RuntimeError) as excinfo:
+                run_and_report(package, result_bucket='bucket')
+        message = str(excinfo.value)
+        assert 's3://bucket/601_384_1243_results.zip' in message
+        client = _capture_client(mock_run_sim)
+        # best-effort: still tries to flip the run to ERROR carrying that message
+        assert len(client.of('error')) == 1
+        assert 's3://bucket/601_384_1243_results.zip' in client.of('error')[0][1]
+        # channels still torn down on this path
+        assert client.names()[-1] == 'stop_watchdog'
 
-    def test_sim_crash_posts_error_event_not_legacy(self, package, events_env):
+    def test_sim_crash_posts_error_event(self, package, events_env):
         mock_run_sim = mock.MagicMock(side_effect=RuntimeError('sim exploded'))
         patches = self._patches(mock_run_sim)
-        with patches[0], patches[1], patches[2], patches[3], \
-                patches[4] as p_error:
+        with patches[0], patches[1], patches[2]:
             with pytest.raises(RuntimeError, match='sim exploded'):
                 run_and_report(package, result_bucket='bucket')
         client = _capture_client(mock_run_sim)
         errors = client.of('error')
         assert len(errors) == 1 and 'sim exploded' in errors[0][1]
-        p_error.assert_not_called()
         # teardown still ran on the crash path
         assert client.names()[-1] == 'stop_watchdog'
 
-    def test_sim_crash_error_event_failure_falls_back_to_legacy(
+    def test_sim_crash_error_event_failure_still_re_raises(
             self, package, events_env):
+        """A dropped terminal error event is NOT masked and has no legacy
+        fallback left: the client's bounded retry (spec §2.4) is the
+        in-protocol replacement, the W3.3 reaper is the outer net, and the
+        originating exception still propagates so the container exits non-zero.
+        """
         mock_run_sim = mock.MagicMock(side_effect=RuntimeError('sim exploded'))
 
         real_make = _make_telemetry_client
@@ -384,38 +473,72 @@ class TestRunAndReportEventsDialect:
         from run_anuga import _handoff
         patches = self._patches(mock_run_sim)
         with mock.patch.object(_handoff, '_make_telemetry_client', make_failing), \
-                patches[0], patches[1], patches[2], patches[3], \
-                patches[4] as p_error:
+                patches[0], patches[1], patches[2]:
             with pytest.raises(RuntimeError, match='sim exploded'):
                 run_and_report(package, result_bucket='bucket')
-        p_error.assert_called_once()
+        client = _capture_client(mock_run_sim)
+        assert len(client.of('error')) == 1
 
-    def test_no_process_id_runs_silent_and_still_reports_its_result(
+    def test_handoff_zip_upload_failure_posts_an_error_event(
+            self, package, events_env):
+        """TASK-2692: this site POSTed the legacy /error/ route with NO events
+        attempt at all before W5 — one of the three call sites that had to be
+        CONVERTED, not merely unhooked."""
+        from run_anuga import _handoff
+        mock_run_sim = mock.MagicMock(return_value=None)
+        patches = self._patches(mock_run_sim)
+        with patches[0], patches[1], \
+                mock.patch.object(_handoff, 'upload_result_to_s3',
+                                  side_effect=RuntimeError('s3 exploded')):
+            with pytest.raises(RuntimeError, match='s3 exploded'):
+                run_and_report(package, result_bucket='bucket')
+        client = _capture_client(mock_run_sim)
+        errors = client.of('error')
+        assert len(errors) == 1, errors
+        assert 'run_and_report handoff failed' in errors[0][1]
+        assert 's3 exploded' in errors[0][1]
+        assert client.of('result') == []
+
+    def test_no_process_id_refuses_before_running_the_sim(
             self, package, monkeypatch):
-        """TASK-2681: without HYDRATA_PROCESS_ID there is no second dialect.
+        """TASK-2692 (W5): the anuga tool is fail-closed like terrain now.
 
-        The anuga tool differs from terrain/idf here BY DESIGN: its terminal
-        channel (/process-result/ + /error/) was deliberately NOT tombstoned,
-        so a run with no Process uuid still lands its result — it just reports
-        no progress/log telemetry. Pinning that asymmetry explicitly so a
-        future sweep does not "tidy" it into a fail-closed raise without
-        noticing the result path it would break.
+        Until W5 this asymmetry was deliberate — anuga's terminal channel
+        (/process-result/ + /error/) was NOT tombstoned, so a run with no
+        Process uuid still landed its result. W5 deletes that channel, so a
+        run with no Process uuid has nowhere to report AT ALL. It must refuse
+        BEFORE run_sim rather than compute for hours and bin the answer.
         """
         monkeypatch.setenv('HYDRATA_INTERNAL_COMPUTE_TOKEN', 'test-token')
         monkeypatch.delenv('HYDRATA_PROCESS_ID', raising=False)
+        monkeypatch.delenv(ALLOW_UNREPORTED_ENV, raising=False)
         mock_run_sim = mock.MagicMock(return_value=None)
         patches = self._patches(mock_run_sim)
-        with patches[0], patches[1], patches[2], \
-                patches[3] as p_result, patches[4]:
+        with patches[0], patches[1], patches[2]:
+            with pytest.raises(RuntimeError, match='HYDRATA_PROCESS_ID is not set'):
+                run_and_report(package, result_bucket='bucket')
+        mock_run_sim.assert_not_called()
+
+    def test_opt_out_runs_the_sim_with_no_channel_at_all(
+            self, package, monkeypatch):
+        """The escape hatch is honest: the sim runs, nothing is reported."""
+        monkeypatch.setenv('HYDRATA_INTERNAL_COMPUTE_TOKEN', 'test-token')
+        monkeypatch.delenv('HYDRATA_PROCESS_ID', raising=False)
+        monkeypatch.setenv(ALLOW_UNREPORTED_ENV, '1')
+        mock_run_sim = mock.MagicMock(return_value=None)
+        patches = self._patches(mock_run_sim)
+        with patches[0], patches[1], patches[2]:
             out = run_and_report(package, result_bucket='bucket')
+        mock_run_sim.assert_called_once()
         wrapper = mock_run_sim.call_args.kwargs['callback']
         assert wrapper._inner is None, (
             'no telemetry client -> no web reporter; the deleted '
             'HydrataCallback must not come back'
         )
         assert mock_run_sim.call_args.kwargs['telemetry_client'] is None
-        p_result.assert_called_once()
-        assert out['process_result_status'] == 202
+        assert out['result_key'] == '601_384_1243_results.zip'
+        # NOTHING was reported: there is no second dialect to pick it up.
+        assert out['process_result_status'] is None
 
 
 # ---------------------------------------------------------------------------
