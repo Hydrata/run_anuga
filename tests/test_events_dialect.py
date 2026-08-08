@@ -390,12 +390,17 @@ class TestRunAndReportEventsDialect:
                 run_and_report(package, result_bucket='bucket')
         p_error.assert_called_once()
 
-    def test_legacy_dialect_untouched_without_process_id(
+    def test_no_process_id_runs_silent_and_still_reports_its_result(
             self, package, monkeypatch):
-        """No HYDRATA_PROCESS_ID -> byte-identical legacy behaviour (the
-        TASK-2663 wiring, pinned separately in test_handoff.py)."""
-        from run_anuga.callbacks import HydrataCallback
+        """TASK-2681: without HYDRATA_PROCESS_ID there is no second dialect.
 
+        The anuga tool differs from terrain/idf here BY DESIGN: its terminal
+        channel (/process-result/ + /error/) was deliberately NOT tombstoned,
+        so a run with no Process uuid still lands its result — it just reports
+        no progress/log telemetry. Pinning that asymmetry explicitly so a
+        future sweep does not "tidy" it into a fail-closed raise without
+        noticing the result path it would break.
+        """
         monkeypatch.setenv('HYDRATA_INTERNAL_COMPUTE_TOKEN', 'test-token')
         monkeypatch.delenv('HYDRATA_PROCESS_ID', raising=False)
         mock_run_sim = mock.MagicMock(return_value=None)
@@ -404,7 +409,10 @@ class TestRunAndReportEventsDialect:
                 patches[3] as p_result, patches[4]:
             out = run_and_report(package, result_bucket='bucket')
         wrapper = mock_run_sim.call_args.kwargs['callback']
-        assert isinstance(wrapper._inner, HydrataCallback)
+        assert wrapper._inner is None, (
+            'no telemetry client -> no web reporter; the deleted '
+            'HydrataCallback must not come back'
+        )
         assert mock_run_sim.call_args.kwargs['telemetry_client'] is None
         p_result.assert_called_once()
         assert out['process_result_status'] == 202
@@ -435,7 +443,6 @@ class TestSetupLoggerEventsAndRankGating:
         monkeypatch.setenv('HYDRATA_INTERNAL_COMPUTE_TOKEN', 'tok')
         monkeypatch.setenv('OMPI_COMM_WORLD_RANK', '3')
         run_utils.setup_logger(_input_data(tmp_path), batch_number=1)
-        assert self._handlers(run_utils._V2LogHandler) == []
         assert self._handlers(run_utils._TelemetryLogHandler) == []
 
     def test_rank_zero_with_client_ships_log_events(self, tmp_path, monkeypatch):
@@ -447,7 +454,6 @@ class TestSetupLoggerEventsAndRankGating:
             _input_data(tmp_path), batch_number=1, telemetry_client=client)
         try:
             assert len(self._handlers(run_utils._TelemetryLogHandler)) == 1
-            assert self._handlers(run_utils._V2LogHandler) == []
             lg.info('run_sim started with batch_number=1')
             logged = [c for c in client.calls if c[0] == 'log']
             assert len(logged) == 1
@@ -455,15 +461,23 @@ class TestSetupLoggerEventsAndRankGating:
         finally:
             run_utils.setup_logger(_input_data(tmp_path), batch_number=1)
 
-    def test_rank_zero_without_client_keeps_legacy_handler(
+    def test_rank_zero_without_client_installs_no_web_handler(
             self, tmp_path, monkeypatch):
+        """TASK-2681: there is no legacy handler left to fall back to.
+
+        A token alone used to arm ``_V2LogHandler`` (POSTing to the now-410
+        /log/ route). With one dialect, no client means no web log channel —
+        file/console only, which is the honest degrade.
+        """
         from run_anuga import run_utils
 
         monkeypatch.delenv('OMPI_COMM_WORLD_RANK', raising=False)
         monkeypatch.setenv('HYDRATA_INTERNAL_COMPUTE_TOKEN', 'tok')
         run_utils.setup_logger(_input_data(tmp_path), batch_number=1)
-        assert len(self._handlers(run_utils._V2LogHandler)) == 1
         assert self._handlers(run_utils._TelemetryLogHandler) == []
+        assert not hasattr(run_utils, '_V2LogHandler'), (
+            'the legacy /log/ handler must stay deleted'
+        )
 
 
 # ---------------------------------------------------------------------------

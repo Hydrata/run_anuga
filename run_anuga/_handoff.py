@@ -875,10 +875,12 @@ def run_and_report(
     package_dir
         Path to the unzipped scenario package (contains scenario.json + inputs/).
     callback
-        Optional ``SimulationCallback``. When ``None`` and the token env var
-        is set, ``run_sim`` auto-constructs a ``HydrataCallback``; when neither
-        the callback nor the token is present, ``run_sim`` falls back to
-        ``NullCallback``. Pass ``LoggingCallback()`` for a silent stdout-only run.
+        Optional ``SimulationCallback``. When ``None`` and a telemetry client
+        is armed (HYDRATA_PROCESS_ID present) a ``TelemetryCallback`` is built
+        here; otherwise ``run_sim`` falls back to ``NullCallback``. Pass
+        ``LoggingCallback()`` for a silent stdout-only run. (TASK-2681 removed
+        the token-gated ``HydrataCallback`` third path along with the
+        ``/log/`` + ``/progress/`` routes it POSTed to.)
     result_bucket
         S3 bucket for the result zip. Defaults to the ``RESULT_S3_BUCKET`` env
         var (matches ``batch/entrypoint.sh`` line 9).
@@ -950,29 +952,22 @@ def run_and_report(
         telemetry_client = _make_telemetry_client(scenario_config)
 
     if telemetry_client is not None and callback is None:
-        # Events dialect: the whole callback protocol rides typed events.
+        # The events dialect is THE callback protocol: everything the sim
+        # reports rides typed events.
+        #
+        # TASK-2663 (epic 2662 W0.1) root-caused the dead progress channel
+        # here: run_sim's token-gated HydrataCallback auto-construction only
+        # fired when ``callback is None``, but since TASK-1924 (W3, 049860a)
+        # this function has ALWAYS wrapped the callback in the truthy
+        # _EarlyPartialCallback below, so run_sim received wrapper(inner=None)
+        # and every on_progress/on_status/on_metric was silently dropped. W0.1
+        # fixed it by replicating the gate HERE, before wrapping. TASK-2681
+        # (W4.1) retires that whole second branch with HydrataCallback: there
+        # is now ONE construction site and one dialect, so the class of bug is
+        # gone rather than guarded.
         from run_anuga.callbacks import TelemetryCallback
 
         callback = TelemetryCallback(telemetry_client)
-    elif callback is None and os.environ.get("HYDRATA_INTERNAL_COMPUTE_TOKEN"):
-        # TASK-2663 (epic 2662 W0.1) — root cause of the dead progress
-        # channel: run_sim's token-gated HydrataCallback auto-construction
-        # only fires when ``callback is None``, but since TASK-1924 (W3,
-        # 049860a) this function has ALWAYS wrapped the callback in the
-        # truthy _EarlyPartialCallback below, so run_sim received
-        # wrapper(inner=None) and every on_progress/on_status/on_metric was
-        # silently dropped (the wrapper's delegation guards on
-        # ``if self._inner``). Replicate the gate HERE, before wrapping. The
-        # required-field guard above proves control_server/project/id/run_id
-        # are present, so ``from_config`` cannot raise KeyError. Rank>0 MPI
-        # processes construct a callback too, but run.py rank-0-gates every
-        # invocation that POSTs except (a) on_mesh_features_ready — a
-        # documented no-op on HydrataCallback — and (b) on_status('error')
-        # in the crash handler, where the failing rank POSTing (whichever
-        # rank it is) is the point.
-        from run_anuga.callbacks import HydrataCallback
-
-        callback = HydrataCallback.from_config(scenario_config)
 
     # Arm the events-side channels that do NOT ride the callback chain
     # (liveness must survive any future wrapper bug — TASK-2668 AC4):

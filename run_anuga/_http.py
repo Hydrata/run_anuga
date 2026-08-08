@@ -3,9 +3,13 @@
 Used by:
 
 * ``run.py::_report_run_error`` (POST /api/v2/anuga/runs/<id>/error/)
-* ``callbacks.py::HydrataCallback._post`` (POST /api/v2/anuga/runs/<id>/{log,progress}/)
-* ``run_utils.py::update_web_interface`` (legacy V1 PATCH path, kept for
-  backwards-compat with the 80-day-stale Batch image)
+* ``_handoff.py::report_result`` / ``report_error`` (POST
+  /api/v2/anuga/runs/<id>/{process-result,error}/)
+
+TASK-2681 (epic 2662 W4.1) removed this module's other two callers —
+``HydrataCallback`` (/log/ + /progress/) and ``update_web_interface`` (the V1
+PATCH path) — along with their server routes. What remains is the anuga
+tool's terminal channel, deliberately NOT tombstoned.
 
 Callers pass an owned ``requests.Session`` via ``session=`` to realise
 connection-reuse on hot paths (e.g. evolve loop 100+ POSTs per run).

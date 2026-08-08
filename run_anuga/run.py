@@ -16,7 +16,7 @@ from run_anuga.run_utils import is_dir_check, setup_input_data, create_anuga_mes
     compute_mesh_qa, extract_boundary_condition_types, compute_yieldstep  # W3 (TASK-1923)
 from run_anuga import defaults
 from run_anuga import phase_tracker
-from run_anuga.callbacks import NullCallback, HydrataCallback
+from run_anuga.callbacks import NullCallback
 from run_anuga.diagnostics import (
     SimulationMonitor, collect_flow_scalars, finalize_monitor_safely,
 )
@@ -290,13 +290,15 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
     # localhost celery-anuga worker is long-lived and reused (TASK-1910).
     phase_tracker.reset()
 
-    # Keep run_args for backward compat with update_web_interface in main() error handler.
     run_args = RunContext(package_dir, username, password)
     input_data = setup_input_data(package_dir)
     run_args.scenario_config = input_data['scenario_config']
 
-    if callback is None and os.environ.get('HYDRATA_INTERNAL_COMPUTE_TOKEN'):
-        callback = HydrataCallback.from_config(input_data['scenario_config'])
+    # TASK-2681 (epic 2662 W4.1): the token-gated HydrataCallback
+    # auto-construction that used to sit here is GONE with the /log/ +
+    # /progress/ routes it POSTed to. run_and_report builds the ONE web
+    # reporter (TelemetryCallback) at its single explicit site and passes it
+    # in; a caller with no callback runs silent, which is honest.
     callback = callback or NullCallback()
     # TASK-2672: the events client (when run_and_report armed one, rank 0
     # only) is threaded through EXPLICITLY so setup_logger can ship log lines

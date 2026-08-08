@@ -22,6 +22,7 @@ Covers:
 
 from __future__ import annotations
 
+import contextlib
 import json
 import sys
 import zipfile
@@ -944,10 +945,15 @@ class TestRunAndReportCallbackWiring:
 
     Since TASK-1924 (W3) run_and_report always passed a truthy
     _EarlyPartialCallback wrapper to run_sim, so run_sim's token-gated
-    ``if callback is None`` HydrataCallback auto-construction never fired and
-    the wrapper delegated every on_progress/on_status to inner=None (silent
-    drop). These tests pin the fix: with the token set and no explicit
-    callback, the wrapper's inner MUST be a live HydrataCallback.
+    ``HydrataCallback`` auto-construction (guarded on ``callback is None``)
+    never fired and the wrapper delegated every on_progress/on_status to
+    inner=None — a silent drop.
+
+    TASK-2681 (W4.1) retired that whole second construction path along with
+    the /log/ + /progress/ routes it POSTed to, so the class of bug is now
+    structurally impossible rather than guarded. The pin moves with it: with a
+    Process uuid present, the wrapper's inner MUST be a live TelemetryCallback
+    — never None.
     """
 
     @pytest.fixture
@@ -964,36 +970,51 @@ class TestRunAndReportCallbackWiring:
         (outputs / "result_depth_max.tif").write_bytes(b"fake tif")
         return tmp_path
 
-    def _run_and_capture_callback(self, package: Path):
+    def _run_and_capture_callback(self, package: Path, telemetry_client=None):
         from run_anuga import _handoff
 
         mock_run_sim = mock.MagicMock(return_value=None)
         post_response = mock.MagicMock(status_code=202, text="")
-        with mock.patch("run_anuga.run.run_sim", mock_run_sim), \
-             mock.patch.object(_handoff, "upload_cold_archive"), \
-             mock.patch.object(_handoff, "upload_result_to_s3"), \
-             mock.patch.object(_handoff, "report_result", return_value=post_response), \
-             mock.patch.object(_handoff, "report_error"):
+        stack = [
+            mock.patch("run_anuga.run.run_sim", mock_run_sim),
+            mock.patch.object(_handoff, "upload_cold_archive"),
+            mock.patch.object(_handoff, "upload_result_to_s3"),
+            mock.patch.object(_handoff, "report_result", return_value=post_response),
+            mock.patch.object(_handoff, "report_error"),
+        ]
+        if telemetry_client is not None:
+            # gn_anuga.batch_common is NOT importable from the run_anuga tree,
+            # so the real construction site would return None here for reasons
+            # unrelated to what this class pins. Inject the client instead —
+            # the assertion under test is what run_and_report WRAPS, not how
+            # the client is built (that is TestMakeTelemetryClient's job).
+            stack.append(mock.patch.object(
+                _handoff, "_make_telemetry_client",
+                return_value=telemetry_client,
+            ))
+        with contextlib.ExitStack() as es:
+            for ctx in stack:
+                es.enter_context(ctx)
             run_and_report(package, result_bucket="bucket")
         mock_run_sim.assert_called_once()
         return mock_run_sim.call_args.kwargs["callback"]
 
-    def test_token_env_wires_hydrata_callback_inside_wrapper(self, package: Path, monkeypatch):
-        """With the token set and callback=None, run_sim must receive a wrapper
-        whose inner is a HydrataCallback aimed at the packaged run — NOT
-        inner=None (the pre-fix silent-drop state)."""
-        from run_anuga.callbacks import HydrataCallback
+    def test_process_id_wires_telemetry_callback_inside_wrapper(self, package: Path, monkeypatch):
+        """With a Process uuid and callback=None, run_sim must receive a wrapper
+        whose inner is a live TelemetryCallback — NOT inner=None (the pre-fix
+        silent-drop state this class exists to lock out)."""
+        from run_anuga.callbacks import TelemetryCallback
 
         monkeypatch.setenv("HYDRATA_INTERNAL_COMPUTE_TOKEN", "test-token")
-        cb = self._run_and_capture_callback(package)
+        client = mock.MagicMock(name="TelemetryClient")
+        cb = self._run_and_capture_callback(package, telemetry_client=client)
         assert cb is not None
         inner = getattr(cb, "_inner", "MISSING")
-        assert isinstance(inner, HydrataCallback), (
+        assert isinstance(inner, TelemetryCallback), (
             f"run_sim's callback wrapper carries inner={inner!r}; the TASK-2663 "
             "regression (wrapper around None -> every on_progress dropped) is back"
         )
-        assert inner.run_id == 1243
-        assert inner.control_server == "https://hydrata.com/"
+        assert inner.client is client
 
     def test_explicit_callback_is_not_replaced(self, package: Path, monkeypatch):
         """An explicitly passed callback (e.g. LoggingCallback on the CLI
