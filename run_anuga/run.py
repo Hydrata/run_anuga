@@ -1,5 +1,3 @@
-import argparse
-import json
 import logging
 import os
 import signal
@@ -8,7 +6,7 @@ import time
 import traceback
 
 from run_anuga._imports import import_optional
-from run_anuga.run_utils import is_dir_check, setup_input_data, create_anuga_mesh, \
+from run_anuga.run_utils import setup_input_data, create_anuga_mesh, \
     make_frictions, post_process_sww, setup_logger, RunContext, \
     build_time_boundary_function, apply_inflows_to_domain, \
     assert_raster_has_no_nodata_inside_boundary, make_raised_elevation_pairs, \
@@ -772,85 +770,53 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Run an ANUGA flood simulation from a Hydrata scenario package.")
-    parser.add_argument("username", nargs='?', help="your username(email) at hydrata.com", type=str)
-    parser.add_argument("password", nargs='?', help="your password at hydrata.com", type=str)
-    parser.add_argument("--package_dir", "-pd", help="the base directory for your simulation, it contains the scenario.json file", type=is_dir_check)
-    parser.add_argument("--batch_number", "-bn", help="when using checkpointing, the batch_number, is the number of times the run has been restarted.", type=str)
-    parser.add_argument("--checkpoint_time", "-ct", help="when using checkpointing, the checkpoint_time, is the time in seconds, to restart the simulation from.", type=str)
-    args = parser.parse_args()
-    username = args.username
-    password = args.password
-    package_dir = args.package_dir
-    batch_number = args.batch_number
-    checkpoint_time = args.checkpoint_time
-    if not package_dir:
-        package_dir = os.path.join(os.path.dirname(__file__), '..')
-    try:
-        logger.info(f"run.py main() running {batch_number=}")
-        run_sim(package_dir, username, password, batch_number, checkpoint_time)
-    except Exception as e:
-        run_args = RunContext(package_dir, username, password)
-        logger.exception("run.py main() failed")
-        _report_run_error(run_args, str(e))
-        raise e
+    """REFUSED entry point (TASK-2692, epic 2662 W5).
 
+    ``python -m run_anuga.run`` was the pre-Batch, username/password dialect: it
+    ran the sim directly and, on failure, POSTed
+    ``/api/v2/anuga/runs/<id>/error/`` via ``_report_run_error``. That route is
+    a 410 tombstone as of this task, and there is no honest way to keep this
+    entry point:
 
-def _report_run_error(run_args, message):
-    """POST the run failure to the dedicated /error/ endpoint.
+    * CONVERTING it to the events protocol is impossible without inventing a
+      channel. The protocol is keyed on a TaskMonitor Process uuid handed to
+      the container by a dispatcher; nothing dispatches this entry point (the
+      packaged console script is ``run-anuga = run_anuga.cli:main``, both
+      dispatchers shell ``run_anuga.cli run-and-report``, and no caller of
+      ``python -m run_anuga.run`` exists in the fleet). It also has NO result
+      channel at all — it never reported a result even before W5 — so an
+      events port would be an error-only half-dialect that can flip a Run to
+      ERROR but never complete one. That is precisely the "half a channel"
+      defect epic 2662 exists to kill.
+    * SILENTLY DROPPING the reporter would leave a duplicate of
+      ``run_anuga.cli run`` still wearing the legacy username/password
+      signature — a live trap where a developer points it at a real
+      ``control_server`` and the server learns NOTHING, not even the failure.
 
-    The endpoint calls Run.mark_error() server-side, which appends to the
-    run log, mirrors onto any linked Compute row, and is idempotent on
-    already-terminal runs. Failures here are logged but never raised — we
-    must not mask the originating exception.
+    So it refuses, loudly, and names the two supported entry points. Nothing is
+    lost: ``run_anuga.cli run`` is the ad-hoc, deliberately-unreported runner
+    (same ``run_sim`` call, same arguments), and ``run_anuga.cli
+    run-and-report`` is the reported one.
     """
-    try:
-        package_dir = run_args.package_dir
-        username = run_args.username
-        password = run_args.password
-        # Prefer Batch token-auth (RAW X-Internal-Token header, not Bearer);
-        # fall back to BasicAuth for localhost/legacy.
-        token = os.environ.get('HYDRATA_INTERNAL_COMPUTE_TOKEN')
-        if not token and not (username and password):
-            return
-        if run_args.scenario_config is not None:
-            scenario_config = run_args.scenario_config
-        else:
-            # run_sim failed before setup_input_data populated the cache.
-            scenario_json_path = os.path.join(package_dir, 'scenario.json')
-            with open(scenario_json_path, 'r') as f:
-                scenario_config = json.load(f)
-        run_id = scenario_config.get('run_id')
-        control_server = scenario_config.get('control_server')
-        if not (control_server and run_id):
-            return
-        from run_anuga._http import make_internal_session, post_to_control_server
-
-        url = f"{control_server}api/v2/anuga/runs/{run_id}/error/"
-        # Small POST with a scalar message: a 30s upper bound is fine here
-        # (the helper default is None / no timeout, which is required for the
-        # PATCH-with-files callers but inappropriate for an error report).
-        if token:
-            session = make_internal_session(token)
-            try:
-                post_to_control_server(
-                    url,
-                    method="POST",
-                    data={'message': message},
-                    session=session,
-                    timeout=30,
-                )
-            finally:
-                session.close()
-        else:
-            requests = import_optional("requests")
-            auth = requests.auth.HTTPBasicAuth(username, password)
-            post_to_control_server(
-                url, auth=auth, method="POST", data={'message': message}, timeout=30,
-            )
-    except Exception:
-        logger.exception("Failed to report run error to control server")
+    print(
+        "python -m run_anuga.run is no longer a supported entry point.\n"
+        "\n"
+        "It was the pre-Batch username/password dialect, and its only channel to\n"
+        "the control server (POST /api/v2/anuga/runs/<id>/error/) was removed in\n"
+        "epic 2662 W5 (TASK-2692) along with the rest of the legacy per-tool\n"
+        "routes. It never had a result channel, so there is nothing to port.\n"
+        "\n"
+        "Use instead:\n"
+        "  python -m run_anuga.cli run <package_dir>              "
+        "# ad-hoc, reports nothing\n"
+        "  python -m run_anuga.cli run-and-report <package_dir>   "
+        "# reports via the events protocol\n"
+        "                                                        "
+        "# (needs HYDRATA_PROCESS_ID)\n",
+        file=sys.stderr,
+    )
+    return 2
 
 
 if __name__ == '__main__':
-    main()
+    sys.exit(main())

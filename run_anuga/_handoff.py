@@ -4,12 +4,21 @@ After ``run_sim`` finishes, the result outputs need to be:
 
 1. Zipped into a single archive (mirroring ``batch/entrypoint.sh`` lines 102-109).
 2. Uploaded to an S3 result bucket.
-3. Announced to the Hydrata control server via ``POST /api/v2/anuga/runs/<id>/process-result/``
-   so the BE can dispatch the ``process_result_async`` celery task.
+3. Announced to the Hydrata control server as a terminal ``result`` event on
+   ``POST /api/v2/tasks/processes/<uuid>/events/`` so the BE can dispatch the
+   ``process_result_async`` celery task.
 
-On a hard failure, the run must be reported via ``POST /error/`` so it does
-not wedge in ``COMPUTING`` until the 1h zombie watchdog flips it to ERROR
-(the surface that TASK-1158 just paid for under canary-19).
+On a hard failure, the run must be reported as a terminal ``error`` event on
+that same endpoint so it does not wedge in ``COMPUTING`` until the reaper flips
+it (the surface that TASK-1158 paid for under canary-19).
+
+TASK-2692 (epic 2662 W5) deleted the legacy per-tool dialect this module used
+to speak — ``report_result``/``report_error`` POSTing
+``/api/v2/anuga/runs/<id>/{process-result,error}/`` — along with those routes
+(410 tombstones). There is now exactly ONE reporting channel, and therefore
+:func:`_make_telemetry_client` is fail-closed: a container that cannot build
+the events client refuses to run rather than computing for hours and binning
+the answer. See that function's docstring for the gate and its one opt-out.
 
 Pre-F1 this lived in two places:
 
@@ -76,6 +85,22 @@ RESOURCE_REPORT_TOOL = "anuga"
 BUILD_PROVENANCE_PATH = os.environ.get(
     "BUILD_PROVENANCE_PATH", "/opt/hydrata/BUILD_PROVENANCE.json"
 )
+
+#: TASK-2692 (epic 2662 W5) — the ONE documented escape hatch from
+#: ``_make_telemetry_client``'s fail-closed rule. See that function's docstring
+#: for why this, and not an ``AWS_BATCH_JOB_ID`` context sniff, is the gate.
+ALLOW_UNREPORTED_ENV = "RUN_ANUGA_ALLOW_UNREPORTED_RUN"
+
+#: Values of :data:`ALLOW_UNREPORTED_ENV` that arm the escape hatch. Anything
+#: else (including ``"0"``, ``"false"`` and the empty string) leaves the run
+#: fail-closed, so a stray ``export RUN_ANUGA_ALLOW_UNREPORTED_RUN=0`` in a job
+#: definition cannot accidentally disarm it.
+_TRUTHY_ENV_VALUES = frozenset({"1", "true", "yes", "on"})
+
+
+def _allow_unreported_run() -> bool:
+    """True when the operator explicitly opted out of result reporting."""
+    return os.environ.get(ALLOW_UNREPORTED_ENV, "").strip().lower() in _TRUTHY_ENV_VALUES
 
 
 def load_build_provenance(path=None):
@@ -475,91 +500,15 @@ def upload_cold_archive(
         _upload(diag_path, diag_path.name)
 
 
-def report_result(
-    control_server: str,
-    run_id: int,
-    token: str,
-    result_key: str,
-    *,
-    cold_archive_prefix: str | None = None,
-    playback_store_prefix: str | None = None,
-    session: Any = None,
-    timeout: int = 30,
-) -> Any:
-    """POST ``{result_package_key: result_key}`` to ``/api/v2/anuga/runs/<run_id>/process-result/``.
-
-    W2 (TASK-1920): also carries ``cold_archive_prefix`` when the cold archive
-    completed successfully so the BE can persist it on ``Run.cold_archive_prefix``.
-
-    TASK-2623 (W1.2, epic 2618): also carries ``playback_store_prefix`` when
-    TASK-2622's exporter uploaded a playback store, so the BE can persist it
-    on ``Run.playback_store_prefix``.
-
-    Returns the ``requests.Response`` so callers can inspect the status code.
-    On non-2xx the helper logs (does not raise); callers MUST inspect the
-    response and surface a failure to keep the run from wedging in COMPUTING.
-    """
-    from run_anuga._http import make_internal_session, post_to_control_server
-
-    url = f"{control_server.rstrip('/')}/api/v2/anuga/runs/{run_id}/process-result/"
-    owns_session = session is None
-    if owns_session:
-        session = make_internal_session(token)
-    data: dict = {RESULT_PACKAGE_KEY_FIELD: result_key}
-    if cold_archive_prefix is not None:
-        data[COLD_ARCHIVE_PREFIX_FIELD] = cold_archive_prefix
-    if playback_store_prefix is not None:
-        data[PLAYBACK_STORE_PREFIX_FIELD] = playback_store_prefix
-    try:
-        return post_to_control_server(
-            url,
-            method="POST",
-            data=data,
-            session=session,
-            timeout=timeout,
-        )
-    finally:
-        if owns_session:
-            session.close()
-
-
-def report_error(
-    control_server: str,
-    run_id: int,
-    token: str,
-    message: str,
-    *,
-    source: str | None = None,
-    session: Any = None,
-    timeout: int = 30,
-) -> Any:
-    """POST ``{message, source?}`` to ``/api/v2/anuga/runs/<run_id>/error/``.
-
-    Mirrors the entrypoint EXIT trap (``batch/entrypoint.sh`` lines 44-51) so
-    a failed run flips to ERROR instead of wedging in COMPUTING. ``source``
-    is an optional free-text tag (``"entrypoint.sh"``, ``"run_and_report"``,
-    etc.) the BE writes verbatim into the run log.
-    """
-    from run_anuga._http import make_internal_session, post_to_control_server
-
-    url = f"{control_server.rstrip('/')}/api/v2/anuga/runs/{run_id}/error/"
-    payload: dict[str, Any] = {"message": message}
-    if source:
-        payload["source"] = source
-    owns_session = session is None
-    if owns_session:
-        session = make_internal_session(token)
-    try:
-        return post_to_control_server(
-            url,
-            method="POST",
-            data=payload,
-            session=session,
-            timeout=timeout,
-        )
-    finally:
-        if owns_session:
-            session.close()
+# TASK-2692 (epic 2662 W5, AC3) — ``report_result`` and ``report_error`` lived
+# here. They POSTed the legacy per-tool terminal dialect,
+# ``/api/v2/anuga/runs/<id>/{process-result,error}/``, which W5 turns into 410
+# tombstones. Every one of their call sites now rides the events client's
+# terminal ``result``/``error`` events instead (which carry their own bounded
+# retry — spec §2.4 — as the in-protocol replacement for this fallback, with
+# the W3.3 reaper as the outer net). The wire-field constants above survive:
+# they name fields the events payload carries, and the Django receiver still
+# imports them.
 
 
 def _make_telemetry_client(scenario_config):
@@ -572,37 +521,164 @@ def _make_telemetry_client(scenario_config):
     active class + events URL; after construction the client is total
     fail-open (posts return bool, never raise).
 
-    Returns ``None`` — each with its own LOUD log line — when:
-    * ``HYDRATA_PROCESS_ID`` is absent (legacy dispatcher / ad-hoc run: the
-      legacy callback dialect stays active during the D9 migration window);
-    * ``gn_anuga.batch_common`` is not importable (bare env without the
-      overlay / apps tree on PYTHONPATH).
+    TASK-2692 (epic 2662 W5) — FAIL-CLOSED. Both of the old ``return None``
+    degrades (no ``HYDRATA_PROCESS_ID``; ``gn_anuga.batch_common`` not
+    importable) used to hand the run back to the legacy
+    ``/api/v2/anuga/runs/<id>/{process-result,error}/`` dialect. W5 deletes
+    that dialect and tombstones those routes (410 Gone), so a ``None`` client
+    now means the container has NO reporting channel at all: it would run for
+    hours and then throw the result away silently. Both conditions therefore
+    RAISE, mirroring the terrain container lock in
+    ``gn_anuga.terrain_compute.merge._make_telemetry_client`` (TASK-2681).
+
+    **Where the raise applies, and why the gate is what it is.** This function
+    is reached from exactly ONE caller, :func:`run_and_report`, i.e. from
+    ``python -m run_anuga.cli run-and-report`` — which is precisely the command
+    BOTH real dispatch paths shell:
+
+    * AWS Batch: ``gn_anuga.services._dispatch_batch`` -> ``batch/entrypoint.sh``;
+    * celery-native localhost: ``gn_anuga.tasks.dispatch_local_anuga_run``.
+
+    Both inject ``HYDRATA_PROCESS_ID`` and (as of W5) both refuse to dispatch a
+    Run with no TaskMonitor Process, so this raise is the second of two locks,
+    not the only one. The gate is deliberately NOT ``AWS_BATCH_JOB_ID`` (a
+    "am I in Batch?" sniff): the celery-native dispatcher shells
+    ``run-and-report`` WITHOUT that variable, so a Batch-context gate would
+    leave the whole localhost path silently unarmed — the exact hole this task
+    exists to close.
+
+    Genuinely ad-hoc development stays usable two ways, neither of which needs
+    a flag:
+
+    * ``python -m run_anuga.cli run`` never reaches this function at all — it
+      calls ``run_sim`` directly with ``NullCallback``/``LoggingCallback`` and
+      reports nothing to any server by design;
+    * ``run_and_report`` itself can be run unreported by exporting
+      ``RUN_ANUGA_ALLOW_UNREPORTED_RUN=1`` (:data:`ALLOW_UNREPORTED_ENV`),
+      which downgrades both raises to an **ERROR** log and returns ``None``.
+      That is an explicit "I accept that nothing is reported anywhere" switch:
+      with no client, ``run_and_report`` posts no result and no error.
+
+      ERROR, not WARNING, because the opt-out is INHERITABLE and produces NO
+      server-side signal whatsoever. On the celery-native localhost path the
+      dispatcher builds the child env as ``dict(os.environ)``, so an operator
+      who exports the variable in the shell that restarts celery arms it for
+      every subsequent run in that worker — silently, since a run with no
+      client never reaches the control server to say so. The container log line
+      is then the ONLY evidence, and the eventual "why did this run go dark"
+      investigation has to find it: it names the variable, states that NOTHING
+      (result or error) will be reported, and says how to disarm it.
 
     With a process id present, a missing control_server/token raises
     ValueError from the client constructor — a misconfigured container must
     die noisily at startup, not run dark for hours.
     """
+    allow_unreported = _allow_unreported_run()
     process_id = os.environ.get("HYDRATA_PROCESS_ID", "").strip()
     if not process_id:
-        logger.info(
-            "run_and_report: events dialect NOT armed — no HYDRATA_PROCESS_ID "
-            "in the environment; using the legacy callback dialect",
+        if allow_unreported:
+            logger.error(
+                "run_and_report: no HYDRATA_PROCESS_ID and %s=%r is set — "
+                "running with NO telemetry channel. Nothing (result OR error) "
+                "will be reported to the control server, and the server has no "
+                "way to know: this log line is the ONLY record. If you did not "
+                "mean to do this, unset %s (note it is INHERITED from the "
+                "environment of whoever started this process — on the "
+                "celery-native path the worker's own env is copied into the "
+                "child) and re-dispatch.",
+                ALLOW_UNREPORTED_ENV, os.environ.get(ALLOW_UNREPORTED_ENV, ""),
+                ALLOW_UNREPORTED_ENV,
+            )
+            return None
+        raise RuntimeError(
+            "run_and_report: HYDRATA_PROCESS_ID is not set — this container has "
+            "NO telemetry channel (the legacy /api/v2/anuga/runs/<id>/"
+            "{process-result,error}/ routes were removed in epic 2662 W5 / "
+            "TASK-2692). Refusing to run a simulation whose result could not be "
+            "reported. Check the dispatcher that submitted this job: "
+            "gn_anuga.services._dispatch_batch (AWS Batch) or "
+            "gn_anuga.tasks.dispatch_local_anuga_run (celery-native localhost) "
+            "— both inject HYDRATA_PROCESS_ID and both refuse a Run with no "
+            f"TaskMonitor Process. For a deliberately unreported ad-hoc run set "
+            f"{ALLOW_UNREPORTED_ENV}=1, or use `python -m run_anuga.cli run`, "
+            "which reports nothing by design."
         )
-        return None
     try:
         from gn_anuga.batch_common.telemetry_client import TelemetryClient
-    except Exception:
-        logger.warning(
-            "run_and_report: HYDRATA_PROCESS_ID=%s is set but "
-            "gn_anuga.batch_common is not importable — falling back to the "
-            "legacy callback dialect", process_id,
-        )
-        return None
+    except Exception as exc:
+        if allow_unreported:
+            logger.error(
+                "run_and_report: HYDRATA_PROCESS_ID=%s is set but "
+                "gn_anuga.batch_common is not importable, and %s=%r is set — "
+                "running with NO telemetry channel. Nothing (result OR error) "
+                "will be reported to the control server, and the server has no "
+                "way to know: this log line is the ONLY record. If you did not "
+                "mean to do this, unset %s (note it is INHERITED from the "
+                "environment of whoever started this process — on the "
+                "celery-native path the worker's own env is copied into the "
+                "child) and re-dispatch.",
+                process_id, ALLOW_UNREPORTED_ENV,
+                os.environ.get(ALLOW_UNREPORTED_ENV, ""), ALLOW_UNREPORTED_ENV,
+            )
+            return None
+        raise RuntimeError(
+            f"run_and_report: HYDRATA_PROCESS_ID={process_id} is set but "
+            "gn_anuga.batch_common is not importable, so this container has NO "
+            "telemetry channel (the legacy /api/v2/anuga/runs/<id>/"
+            "{process-result,error}/ routes were removed in epic 2662 W5 / "
+            "TASK-2692). Refusing to run a simulation whose result could not be "
+            "reported. In a Batch container the leaf is staged by "
+            "deploy/scripts/rebuild-batch-image.sh (the `overlay` context) onto "
+            "PYTHONPATH=/app — a miss means the image was not baked by that "
+            "script. On the celery-native localhost path it comes from "
+            "settings.APPS_DIR, which gn_anuga.tasks.dispatch_local_anuga_run "
+            f"prepends to PYTHONPATH. For a deliberately unreported ad-hoc run "
+            f"set {ALLOW_UNREPORTED_ENV}=1."
+        ) from exc
     return TelemetryClient(
         scenario_config.get("control_server"),
         process_id,
         os.environ.get("HYDRATA_INTERNAL_COMPUTE_TOKEN"),
     )
+
+
+def _report_terminal_error(telemetry_client, message: str) -> bool:
+    """Post the terminal ``error`` event — the ONE failure reporter (TASK-2692).
+
+    Before W5 each failure site in :func:`run_and_report` open-coded its own
+    "try the event, then fall back to ``report_error``" (and three of the four
+    sites skipped the event entirely and only POSTed the legacy route). That
+    route is a 410 tombstone now, so there is exactly one channel and exactly
+    one helper.
+
+    No ``source`` is sent, per spec §2.5: the field exists for
+    ``Run.mark_error``'s TASK-2206 precedence rule, whose only recognised
+    values are ``BATCH_ENTRYPOINT_SOURCE`` and ``BUILD_GUARD_SOURCE``. The
+    deleted ``report_error`` calls passed ``source="run_and_report"``, which
+    matched neither and therefore changed nothing — dropping it is
+    behaviour-neutral and puts the in-process reporter back on the shape the
+    spec describes.
+
+    Returns the client's fail-open bool (``False`` when there is no client, or
+    when the post did not get through after its bounded terminal retries).
+    Never raises: this runs on paths that are already unwinding an exception.
+    """
+    if telemetry_client is None:
+        # Only reachable via the ALLOW_UNREPORTED_ENV opt-out.
+        logger.error(
+            "run_and_report: the run FAILED and there is NO telemetry channel "
+            "(%s opt-out) — the control server will NOT learn about it. The "
+            "failure was: %s", ALLOW_UNREPORTED_ENV, message,
+        )
+        return False
+    try:
+        return telemetry_client.error(message)
+    except Exception:  # pragma: no cover — the client is contractually fail-open
+        logger.exception(
+            "run_and_report: terminal error event raised despite the client's "
+            "fail-open contract; suppressed so it cannot mask the real failure",
+        )
+        return False
 
 
 def _make_resource_sampler(scratch_dir, *, control_server, ids):
@@ -864,11 +940,18 @@ def run_and_report(
     callback: Any = None,
     result_bucket: str | None = None,
 ) -> dict:
-    """Run an ANUGA simulation, zip+upload the results, and POST /process-result/.
+    """Run an ANUGA simulation, zip+upload the results, post a ``result`` event.
 
     Single entry point that both the Batch entrypoint and the F2 localhost
-    dispatcher invoke. On any failure, POSTs /error/ before re-raising so the
-    BE-side run row flips to ERROR instead of wedging in COMPUTING.
+    dispatcher invoke. On any failure, posts a terminal ``error`` event before
+    re-raising so the BE-side run row flips to ERROR instead of wedging in
+    COMPUTING.
+
+    TASK-2692 (epic 2662 W5): this function is FAIL-CLOSED. It refuses to start
+    the sim when :func:`_make_telemetry_client` cannot build a client (no
+    ``HYDRATA_PROCESS_ID``, or no importable ``gn_anuga.batch_common``) unless
+    the operator sets :data:`ALLOW_UNREPORTED_ENV`. ``run_anuga.cli run`` never
+    reaches here and is unaffected.
 
     Parameters
     ----------
@@ -888,11 +971,17 @@ def run_and_report(
     Returns
     -------
     dict
-        ``{"result_key": <s3 key>, "process_result_status": <int>}`` on success.
+        ``{"result_key": <s3 key>, "process_result_status": "events"}`` on
+        success. ``process_result_status`` is ``None`` on a non-rank-0 process
+        and on an :data:`ALLOW_UNREPORTED_ENV` run (nothing was reported).
 
     Raises
     ------
-    Any exception from ``run_sim`` (after /error/ is POSTed).
+    RuntimeError
+        Before the sim, when there is no telemetry channel and no opt-out
+        (:func:`_make_telemetry_client`); after the handoff, when the terminal
+        ``result`` event could not be delivered.
+    Any exception from ``run_sim`` (after the terminal ``error`` event).
     """
     package_dir = Path(package_dir).resolve()
 
@@ -937,6 +1026,17 @@ def run_and_report(
     sampler = None
     telemetry_client = None
     if _is_mpi_rank_zero():
+        # TASK-2672 (epic 2662 W2.2) — the events dialect. Constructed at
+        # THIS one explicit site (see _make_telemetry_client's contract);
+        # rank-0 only, like the sampler: one client covers the whole job.
+        #
+        # TASK-2692 (W5): this is now a fail-closed LOCK, so it runs FIRST in
+        # the rank-0 block — before the sampler, and long before run_sim — so a
+        # container with no reporting channel refuses at second zero instead of
+        # burning hours of ANUGA compute it could never hand back. Only rank 0
+        # checks, which is sufficient: mpirun aborts the whole job when a rank
+        # exits non-zero, and rank 0 raises before any rank reaches run_sim.
+        telemetry_client = _make_telemetry_client(scenario_config)
         sampler = _make_resource_sampler(
             tempfile.gettempdir(),
             control_server=control_server,
@@ -946,10 +1046,6 @@ def run_and_report(
                 "scenario_id": scenario_id,
             },
         )
-        # TASK-2672 (epic 2662 W2.2) — the events dialect. Constructed at
-        # THIS one explicit site (see _make_telemetry_client's contract);
-        # rank-0 only, like the sampler: one client covers the whole job.
-        telemetry_client = _make_telemetry_client(scenario_config)
 
     if telemetry_client is not None and callback is None:
         # The events dialect is THE callback protocol: everything the sim
@@ -1054,28 +1150,15 @@ def run_and_report(
                 # the sampler context already exited on the raise (its summary reflects
                 # the failure) — report both the ledger and the failure itself.
                 report_resource_summary(control_server, token, sampler)
-                # TASK-2672: events dialect first (server folds error ->
-                # Process ERROR + Run.mark_error fan-out); the legacy /error/
-                # POST is the wedge-defence FALLBACK when the event did not
-                # get through (client fail-open returns False) or no client
-                # is armed. Never both on success — mark_error is idempotent
-                # but the double log line is noise.
+                # TASK-2672: the events dialect reports the failure (server
+                # folds error -> Process ERROR + the full Run.mark_error
+                # fan-out, incl. the Batch diagnostics ported in ff5c888).
+                # TASK-2692 (W5): the legacy /error/ POST that used to back
+                # this up is deleted with its 410'd route — the in-protocol
+                # replacement is TelemetryClient's bounded terminal retry
+                # (spec §2.4), with the W3.3 reaper as the outer net.
                 message = f"{exc}\n{traceback.format_exc()}"
-                error_sent = (
-                    telemetry_client.error(message)
-                    if telemetry_client is not None else False
-                )
-                if not error_sent:
-                    try:
-                        report_error(
-                            control_server,
-                            run_id,
-                            token,
-                            message=message,
-                            source="run_and_report",
-                        )
-                    except Exception:
-                        logger.exception("run_and_report: /error/ POST failed; suppressed")
+                _report_terminal_error(telemetry_client, message)
             raise
 
         # Sim succeeded — rank-0 post-sim handoff: archive + zip + upload.
@@ -1105,8 +1188,8 @@ def run_and_report(
 
         # W2 (TASK-1920) — best-effort cold archive BEFORE the slim-result handoff.
         # A failed archive logs loudly but MUST NOT fail the run (the app result
-        # path is completely independent; report_result carries the prefix only when
-        # the archive succeeded).
+        # path is completely independent; the `result` event carries the prefix
+        # only when the archive succeeded).
         cold_prefix = make_cold_archive_prefix(project_id, scenario_id, run_id)
         completed_cold_prefix: str | None = None
 
@@ -1141,16 +1224,12 @@ def run_and_report(
             except Exception as exc:
                 _pt.set_phase(None)
                 report_resource_summary(control_server, token, sampler)
-                try:
-                    report_error(
-                        control_server,
-                        run_id,
-                        token,
-                        message=f"run_and_report handoff failed: {exc}",
-                        source="run_and_report",
-                    )
-                except Exception:
-                    logger.exception("run_and_report: /error/ POST failed; suppressed")
+                # TASK-2692 (W5): this site used to POST the legacy /error/
+                # route with NO events attempt at all — a hole the D9 migration
+                # window left open. It rides the events client now.
+                _report_terminal_error(
+                    telemetry_client, f"run_and_report handoff failed: {exc}"
+                )
                 raise
         finally:
             # Always end the archive phase timing (idempotent if already cleared).
@@ -1160,71 +1239,67 @@ def run_and_report(
         # cog-export + archive durations via lazy phase_durations_provider).
         report_resource_summary(control_server, token, sampler)
 
-        # TASK-2672: events dialect first — ONE result event carrying the
-        # result_package_key (+ cold_archive_prefix when the archive
-        # succeeded). The server folds it (Process -> complete) and fans out
-        # through the SAME process_result_async machinery the legacy
-        # /process-result/ endpoint drives. The legacy POST below survives as
-        # the wedge-defence FALLBACK for a dropped event (client fail-open
-        # returns False) or an unarmed client — deleted with the rest of the
-        # legacy dialect in W4.1.
-        if telemetry_client is not None:
-            result_fields = {}
-            if completed_cold_prefix is not None:
-                result_fields[COLD_ARCHIVE_PREFIX_FIELD] = completed_cold_prefix
-            # TASK-2623 (epic 2618) x TASK-2672 (epic 2662) integration: the
-            # events dialect must carry the playback prefix too, or a run
-            # reporting via events (the primary path) would silently lose its
-            # playback store while the legacy fallback kept it.
-            if completed_playback_store_prefix is not None:
-                result_fields[PLAYBACK_STORE_PREFIX_FIELD] = completed_playback_store_prefix
-            if telemetry_client.result(result_package_key=result_key, **result_fields):
-                logger.info(
-                    "run_and_report: result event accepted for run %s "
-                    "(events dialect)", run_id,
-                )
-                return {"result_key": result_key,
-                        "process_result_status": "events"}
-            logger.warning(
-                "run_and_report: result EVENT was not accepted — falling back "
-                "to the legacy /process-result/ POST (wedge defence)",
+        # TASK-2672: ONE result event carrying the result_package_key (+
+        # cold_archive_prefix when the archive succeeded). The server folds it
+        # (Process -> complete) and fans out through the SAME
+        # process_result_async machinery the legacy /process-result/ endpoint
+        # drove.
+        #
+        # TASK-2692 (W5): the legacy /process-result/ POST that used to sit
+        # under this as a wedge-defence fallback is deleted with its 410'd
+        # route. The client's bounded terminal retry (spec §2.4) is the
+        # in-protocol replacement, and the W3.3 reaper is the outer net —
+        # strictly stronger than the old fallback, which could not cover a
+        # container that died before POSTing anything at all.
+        if telemetry_client is None:
+            # Only reachable via the ALLOW_UNREPORTED_ENV opt-out (see
+            # _make_telemetry_client): the operator asked for an unreported
+            # run, so say so loudly and name the key the zip landed under.
+            logger.error(
+                "run_and_report: result zip uploaded to s3://%s/%s but this run "
+                "has NO telemetry channel (%s opt-out) — the control server will "
+                "NOT learn about it and run %s will not complete",
+                bucket, result_key, ALLOW_UNREPORTED_ENV, run_id,
             )
+            return {"result_key": result_key, "process_result_status": None}
 
-        try:
-            response = report_result(
-                control_server,
-                run_id,
-                token,
-                result_key,
-                cold_archive_prefix=completed_cold_prefix,
-                playback_store_prefix=completed_playback_store_prefix,
+        result_fields = {}
+        if completed_cold_prefix is not None:
+            result_fields[COLD_ARCHIVE_PREFIX_FIELD] = completed_cold_prefix
+        # TASK-2623 (epic 2618) x TASK-2672 (epic 2662) integration: the
+        # events dialect must carry the playback prefix too, or a run
+        # reporting via events (the primary path) would silently lose its
+        # playback store while the legacy fallback kept it.
+        if completed_playback_store_prefix is not None:
+            result_fields[PLAYBACK_STORE_PREFIX_FIELD] = completed_playback_store_prefix
+        if telemetry_client.result(result_package_key=result_key, **result_fields):
+            logger.info(
+                "run_and_report: result event accepted for run %s "
+                "(events dialect)", run_id,
             )
-        except Exception as exc:
-            try:
-                report_error(
-                    control_server,
-                    run_id,
-                    token,
-                    message=f"run_and_report handoff failed: {exc}",
-                    source="run_and_report",
-                )
-            except Exception:
-                logger.exception("run_and_report: /error/ POST failed; suppressed")
-            raise
+            return {"result_key": result_key,
+                    "process_result_status": "events"}
 
-        status_code = getattr(response, "status_code", None)
-        if status_code is None or status_code >= 400:
-            # Truncate the response body so a Django debug-HTML 500 doesn't bloat /error/.
-            body = (getattr(response, "text", "") or "")[:500]
-            message = f"/process-result/ returned HTTP {status_code}; body={body!r}"
-            try:
-                report_error(control_server, run_id, token, message=message, source="run_and_report")
-            except Exception:
-                logger.exception("run_and_report: /error/ POST failed; suppressed")
-            raise RuntimeError(message)
-
-        logger.info("run_and_report: /process-result/ returned %s for run %s", status_code, run_id)
-        return {"result_key": result_key, "process_result_status": status_code}
+        # Terminal event undeliverable after the client's bounded retries. RAISE
+        # rather than exit 0: a non-zero container makes the Batch job status
+        # FAILED, which is a signal the reaper and an operator can both see,
+        # whereas a SUCCEEDED job with no terminal event looks like a wedge for
+        # an hour. The result zip IS in S3 at the key named below, so the run is
+        # hand-recoverable.
+        message = (
+            f"run_and_report: the terminal result event for run {run_id} was not "
+            "accepted after the client's bounded terminal retries, and the legacy "
+            "/process-result/ fallback was removed with its 410'd route in epic "
+            f"2662 W5 (TASK-2692). The result zip IS uploaded at "
+            f"s3://{bucket}/{result_key} — recover by re-posting a `result` event "
+            "for this Process."
+        )
+        logger.error(message)
+        # Best-effort: if the result post failed for a reason the error post
+        # survives (a 400 on the result payload, say), the run at least flips to
+        # ERROR carrying the S3 key instead of wedging until the reaper.
+        _report_terminal_error(telemetry_client, message)
+        raise RuntimeError(message)
     finally:
         if telemetry_client is not None:
             try:

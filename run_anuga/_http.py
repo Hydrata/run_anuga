@@ -2,17 +2,30 @@
 
 Used by:
 
-* ``run.py::_report_run_error`` (POST /api/v2/anuga/runs/<id>/error/)
-* ``_handoff.py::report_result`` / ``report_error`` (POST
-  /api/v2/anuga/runs/<id>/{process-result,error}/)
+* ``_handoff.py::report_resource_summary`` and
+  ``_handoff.py::emit_early_resource_partial`` — they build the
+  ``X-Internal-Token`` Session this module owns and hand it to
+  ``gn_anuga.batch_common.emit`` for POST
+  /api/v2/anuga/jobs/resource-report/. The resource ledger is a SEPARATE
+  channel from the telemetry protocol and was never tombstoned.
 
-TASK-2681 (epic 2662 W4.1) removed this module's other two callers —
-``HydrataCallback`` (/log/ + /progress/) and ``update_web_interface`` (the V1
-PATCH path) — along with their server routes. What remains is the anuga
-tool's terminal channel, deliberately NOT tombstoned.
+TASK-2681 (epic 2662 W4.1) removed ``HydrataCallback`` (/log/ + /progress/)
+and ``update_web_interface`` (the V1 PATCH path); TASK-2692 (W5) removed the
+last three — ``_handoff.report_result`` / ``report_error`` and
+``run.py::_report_run_error``, which POSTed
+/api/v2/anuga/runs/<id>/{process-result,error}/ — along with their server
+routes. Everything a container reports about its own lifecycle now rides
+``gn_anuga.batch_common.telemetry_client`` (stdlib ``urllib``, not this
+module) to ``POST /api/v2/tasks/processes/<uuid>/events/``.
+
+⚠ As a result, :func:`post_to_control_server` has NO in-repo caller left —
+only ``make_internal_session`` above is still live. It is kept (with its
+tests) as the generic, URL-agnostic POST/PATCH helper rather than deleted in
+the same breath as the routes, because nothing about it is route-specific.
+If nothing has adopted it by the next sweep of this module, delete it.
 
 Callers pass an owned ``requests.Session`` via ``session=`` to realise
-connection-reuse on hot paths (e.g. evolve loop 100+ POSTs per run).
+connection-reuse on hot paths.
 When ``session`` is omitted a fresh Session is created and closed per call.
 """
 

@@ -9,15 +9,20 @@ Covers:
 * ``upload_result_to_s3`` routes through the hardened ``_make_s3_client()``
   factory and calls ``upload_file`` with an explicit ``TransferConfig``
   (TASK-2033: was bare ``boto3.client("s3")`` → S3 IncompleteBody in run-1266).
-* ``report_result`` POSTs ``{result_package_key: ...}`` to the V2
-  ``/process-result/`` endpoint and uses the shared constant.
-* ``report_error`` POSTs ``{message, source?}`` to the V2 ``/error/`` endpoint.
-* ``run_and_report`` orchestrates run_sim + zip + upload + POST, and
-  POSTs ``/error/`` on failure (the F0 wedge defence).
+* ``run_and_report`` orchestrates run_sim + zip + upload + the terminal
+  ``result`` event, and posts a terminal ``error`` event on failure (the F0
+  wedge defence).
 * The module imports cleanly without Django (run_anuga must stay Django-free).
 * TASK-2033: ``_make_s3_client`` factory uses
   ``request_checksum_calculation='when_required'`` so both upload paths are
   immune to the aws-chunked UploadPart IncompleteBody regression.
+
+TASK-2692 (epic 2662 W5) deleted ``report_result`` / ``report_error`` and their
+``/api/v2/anuga/runs/<id>/{process-result,error}/`` routes (410 tombstones), so
+the tests that pinned their wire shape are gone with them and the orchestration
+tests below read the terminal event off the events client instead. That also
+makes ``run_and_report`` fail-closed, which is why every test here that reaches
+it arms the ``events_env`` fixture.
 """
 
 from __future__ import annotations
@@ -32,16 +37,58 @@ from unittest import mock
 import pytest
 
 from run_anuga._handoff import (
+    ALLOW_UNREPORTED_ENV,
     COLD_ARCHIVE_PREFIX_FIELD,
+    PLAYBACK_STORE_PREFIX_FIELD,
     RESULT_PACKAGE_KEY_FIELD,
     make_cold_archive_prefix,
     make_result_key,
-    report_error,
-    report_result,
     run_and_report,
     upload_cold_archive,
     zip_outputs,
 )
+
+# The events-dialect test double lives with the tests that own it; reusing it
+# here keeps ONE stub client in the suite rather than a second, drifting copy.
+from tests.test_events_dialect import (  # noqa: E402
+    FakeTelemetryClient,
+    _install_stub_batch_common,
+)
+
+
+@pytest.fixture
+def events_env(monkeypatch):
+    """Arm the events dialect so ``run_and_report`` will run at all.
+
+    TASK-2692 (W5) made ``run_and_report`` fail-closed: with no
+    ``HYDRATA_PROCESS_ID`` and no importable ``gn_anuga.batch_common`` it
+    refuses before the sim. The orchestration tests below are about the
+    handoff, not about the construction site (that is
+    ``test_events_dialect.TestMakeTelemetryClient``'s job), so they arm the
+    same stub client and read the terminal event off it.
+    """
+    monkeypatch.setenv("HYDRATA_INTERNAL_COMPUTE_TOKEN", "test-token")
+    monkeypatch.setenv("HYDRATA_PROCESS_ID", "proc-uuid-2692")
+    monkeypatch.delenv(ALLOW_UNREPORTED_ENV, raising=False)
+    _install_stub_batch_common(monkeypatch)
+
+
+def _captured_client(mock_run_sim) -> FakeTelemetryClient:
+    """The telemetry client ``run_and_report`` built and handed to run_sim."""
+    return mock_run_sim.call_args.kwargs["telemetry_client"]
+
+
+def _result_event_fields(mock_run_sim) -> dict:
+    """The single terminal ``result`` event's payload fields."""
+    events = _captured_client(mock_run_sim).of("result")
+    assert len(events) == 1, events
+    return events[0][1]
+
+
+def _handoff_module_path() -> str:
+    from run_anuga import _handoff
+
+    return _handoff.__file__
 
 
 def test_shared_constant_value():
@@ -204,49 +251,33 @@ class TestUploadResultToS3:
         assert upload_pos_args == (str(zip_path), "test-bucket", "601_384_1243_results.zip")
 
 
-class TestReportResult:
-    def test_posts_result_package_key_shape(self, monkeypatch):
-        monkeypatch.setenv("HYDRATA_INTERNAL_COMPUTE_TOKEN", "test-token")
-        session = mock.MagicMock()
-        session.headers = {}
-        response = mock.MagicMock(status_code=202, text="")
-        session.post.return_value = response
+class TestLegacyReportersAreGone:
+    """TASK-2692 (epic 2662 W5, AC3) — the legacy terminal dialect is DELETED.
 
-        with mock.patch(
-            "run_anuga._http.import_optional"
-        ) as mock_import:
-            mock_import.return_value.Session.return_value = session
-            result = report_result(
-                "https://hydrata.com/", run_id=99, token="test-token", result_key="1_2_3_results.zip"
-            )
+    ``TestReportResult`` / ``TestReportError`` used to live here, pinning the
+    wire shape of ``POST /api/v2/anuga/runs/<id>/{process-result,error}/``.
+    Both routes are 410 tombstones now. These pins replace them so a future
+    "restore the fallback" patch fails loudly instead of quietly re-creating a
+    caller of a dead route.
+    """
 
-        # Receiver reads request.data via the shared constant; sender must send it.
-        called_url, called_kwargs = session.post.call_args[0], session.post.call_args[1]
-        assert called_url[0].endswith("/api/v2/anuga/runs/99/process-result/")
-        assert called_kwargs["data"] == {RESULT_PACKAGE_KEY_FIELD: "1_2_3_results.zip"}
-        assert result is response
+    def test_report_result_and_report_error_no_longer_exist(self):
+        from run_anuga import _handoff
 
+        assert not hasattr(_handoff, "report_result")
+        assert not hasattr(_handoff, "report_error")
 
-class TestReportError:
-    def test_posts_message_and_source(self, monkeypatch):
-        monkeypatch.setenv("HYDRATA_INTERNAL_COMPUTE_TOKEN", "test-token")
-        session = mock.MagicMock()
-        session.headers = {}
-        session.post.return_value = mock.MagicMock(status_code=201, text="")
+    def test_handoff_builds_no_legacy_run_scoped_url(self):
+        """A URL is BUILT by interpolating the run id — ban exactly that shape.
 
-        with mock.patch("run_anuga._http.import_optional") as mock_import:
-            mock_import.return_value.Session.return_value = session
-            report_error(
-                "https://hydrata.com/",
-                run_id=99,
-                token="test-token",
-                message="sim crashed",
-                source="run_and_report",
-            )
-
-        called_url, called_kwargs = session.post.call_args[0], session.post.call_args[1]
-        assert called_url[0].endswith("/api/v2/anuga/runs/99/error/")
-        assert called_kwargs["data"] == {"message": "sim crashed", "source": "run_and_report"}
+        Prose may still NAME the dead routes when explaining the deletion; what
+        must never come back is a live ``anuga/runs/{...}/`` URL.
+        """
+        source = Path(_handoff_module_path()).read_text()
+        assert "anuga/runs/{" not in source, (
+            "run_anuga/_handoff.py builds a legacy /api/v2/anuga/runs/<id>/ URL "
+            "again; those routes are 410 tombstones since TASK-2692"
+        )
 
 
 class TestRunAndReportOrchestration:
@@ -284,19 +315,15 @@ class TestRunAndReportOrchestration:
                 run_and_report(package)
         mock_run_sim.assert_not_called()
 
-    def test_happy_path_zips_uploads_and_posts(self, package: Path, monkeypatch):
-        monkeypatch.setenv("HYDRATA_INTERNAL_COMPUTE_TOKEN", "test-token")
+    def test_happy_path_zips_uploads_and_posts(self, package: Path, events_env):
         from run_anuga import _handoff
 
         mock_run_sim = mock.MagicMock(return_value=None)
-        post_response = mock.MagicMock(status_code=202, text="")
         # `run_sim` is imported lazily inside run_and_report (`from run_anuga.run
         # import run_sim`) so patch the source module, not _handoff.
         with mock.patch("run_anuga.run.run_sim", mock_run_sim), \
              mock.patch.object(_handoff, "upload_cold_archive") as mock_archive, \
-             mock.patch.object(_handoff, "upload_result_to_s3") as mock_upload, \
-             mock.patch.object(_handoff, "report_result", return_value=post_response) as mock_post, \
-             mock.patch.object(_handoff, "report_error") as mock_err:
+             mock.patch.object(_handoff, "upload_result_to_s3") as mock_upload:
             result = run_and_report(package, result_bucket="bucket")
 
         mock_run_sim.assert_called_once()
@@ -305,48 +332,54 @@ class TestRunAndReportOrchestration:
         upload_args = mock_upload.call_args[0]
         assert upload_args[1] == "bucket"
         assert upload_args[2] == "601_384_1243_results.zip"
-        # W2 (TASK-1920): report_result carries cold_archive_prefix kwarg.
-        # TASK-2623: also playback_store_prefix — None here since this
-        # fixture's package has no playback_store_export_result.json marker
-        # (run_sim is mocked out, so TASK-2622's exporter never ran).
-        mock_post.assert_called_once_with(
-            "https://hydrata.com/", 1243, "test-token", "601_384_1243_results.zip",
-            cold_archive_prefix="cold-archive/601_384_1243/",
-            playback_store_prefix=None,
-        )
-        # No /error/ POST on the happy path — a future regression that POSTed
-        # /error/ on success would otherwise silently slip through.
-        mock_err.assert_not_called()
-        assert result == {"result_key": "601_384_1243_results.zip", "process_result_status": 202}
+        # W2 (TASK-1920): the result event carries cold_archive_prefix.
+        # TASK-2623: playback_store_prefix is OMITTED here since this fixture's
+        # package has no playback_store_export_result.json marker (run_sim is
+        # mocked out, so TASK-2622's exporter never ran) — never a fabricated
+        # null.
+        assert _result_event_fields(mock_run_sim) == {
+            RESULT_PACKAGE_KEY_FIELD: "601_384_1243_results.zip",
+            COLD_ARCHIVE_PREFIX_FIELD: "cold-archive/601_384_1243/",
+        }
+        # No error event on the happy path — a future regression that reported
+        # an error on success would otherwise silently slip through.
+        assert _captured_client(mock_run_sim).of("error") == []
+        assert result == {"result_key": "601_384_1243_results.zip",
+                          "process_result_status": "events"}
 
-    def test_sim_failure_posts_error_then_raises(self, package: Path, monkeypatch):
-        monkeypatch.setenv("HYDRATA_INTERNAL_COMPUTE_TOKEN", "test-token")
+    def test_sim_failure_posts_error_then_raises(self, package: Path, events_env):
         from run_anuga import _handoff
 
-        with mock.patch("run_anuga.run.run_sim", side_effect=RuntimeError("sim boom")), \
-             mock.patch.object(_handoff, "report_error") as mock_err, \
+        mock_run_sim = mock.MagicMock(side_effect=RuntimeError("sim boom"))
+        with mock.patch("run_anuga.run.run_sim", mock_run_sim), \
              mock.patch.object(_handoff, "upload_result_to_s3") as mock_upload:
             with pytest.raises(RuntimeError, match="sim boom"):
                 run_and_report(package, result_bucket="bucket")
 
         mock_upload.assert_not_called()
-        mock_err.assert_called_once()
-        kwargs = mock_err.call_args.kwargs
-        assert kwargs["source"] == "run_and_report"
+        errors = _captured_client(mock_run_sim).of("error")
+        assert len(errors) == 1 and "sim boom" in errors[0][1]
 
-    def test_non_2xx_process_result_posts_error(self, package: Path, monkeypatch):
-        monkeypatch.setenv("HYDRATA_INTERNAL_COMPUTE_TOKEN", "test-token")
+    def test_undeliverable_result_event_raises(self, package: Path, events_env):
+        """TASK-2692 replaces the old "non-2xx /process-result/ -> POST /error/
+        -> raise" branch: the route is gone, so an undeliverable terminal
+        ``result`` event raises directly (container exits non-zero -> Batch job
+        FAILED, which the reaper and an operator can both see)."""
         from run_anuga import _handoff
 
-        bad_response = mock.MagicMock(status_code=500, text="boom")
-        with mock.patch("run_anuga.run.run_sim", return_value=None), \
-             mock.patch.object(_handoff, "upload_result_to_s3"), \
-             mock.patch.object(_handoff, "report_result", return_value=bad_response), \
-             mock.patch.object(_handoff, "report_error") as mock_err:
-            with pytest.raises(RuntimeError, match="HTTP 500"):
-                run_and_report(package, result_bucket="bucket")
+        mock_run_sim = mock.MagicMock(return_value=None)
+        failing = FakeTelemetryClient("http://cs", "proc-uuid-2692", "test-token")
+        failing.result_ok = False
 
-        mock_err.assert_called_once()
+        def make_failing(scenario_config):
+            return failing
+
+        with mock.patch("run_anuga.run.run_sim", mock_run_sim), \
+             mock.patch.object(_handoff, "upload_cold_archive"), \
+             mock.patch.object(_handoff, "upload_result_to_s3"), \
+             mock.patch.object(_handoff, "_make_telemetry_client", make_failing):
+            with pytest.raises(RuntimeError, match="was not accepted"):
+                run_and_report(package, result_bucket="bucket")
 
 
 # ---------------------------------------------------------------------------
@@ -530,8 +563,7 @@ class TestUploadColdArchive:
         with mock.patch("run_anuga.run.run_sim"), \
              mock.patch.object(_handoff, "_is_mpi_rank_zero", return_value=False), \
              mock.patch.object(_handoff, "upload_cold_archive") as mock_archive, \
-             mock.patch.object(_handoff, "upload_result_to_s3"), \
-             mock.patch.object(_handoff, "report_result"):
+             mock.patch.object(_handoff, "upload_result_to_s3"):
             result = run_and_report(tmp_path, result_bucket="bucket")
 
         # Non-rank-0: returns early, cold archive NOT called.
@@ -576,11 +608,10 @@ class TestUploadColdArchive:
             monkeypatch.delenv(var, raising=False)
         assert _is_mpi_rank_zero() is True
 
-    def test_cold_archive_best_effort_does_not_fail_run(self, tmp_path: Path, monkeypatch):
+    def test_cold_archive_best_effort_does_not_fail_run(self, tmp_path: Path, events_env):
         """A cold archive failure is logged but must NOT raise out of run_and_report."""
         from run_anuga import _handoff
 
-        monkeypatch.setenv("HYDRATA_INTERNAL_COMPUTE_TOKEN", "test-token")
         config = {
             "id": 384, "project": 601, "run_id": 1243,
             "control_server": "https://hydrata.com/",
@@ -590,27 +621,23 @@ class TestUploadColdArchive:
         outputs.mkdir()
         (outputs / "result_depth_max.tif").write_bytes(b"fake tif")
 
-        post_response = mock.MagicMock(status_code=202, text="")
-        with mock.patch("run_anuga.run.run_sim"), \
+        mock_run_sim = mock.MagicMock(return_value=None)
+        with mock.patch("run_anuga.run.run_sim", mock_run_sim), \
              mock.patch.object(_handoff, "upload_cold_archive",
                                side_effect=RuntimeError("S3 cold archive boom")), \
-             mock.patch.object(_handoff, "upload_result_to_s3"), \
-             mock.patch.object(_handoff, "report_result",
-                               return_value=post_response), \
-             mock.patch.object(_handoff, "report_error") as mock_err:
+             mock.patch.object(_handoff, "upload_result_to_s3"):
             # Must NOT raise even though cold archive failed.
             result = run_and_report(tmp_path, result_bucket="bucket")
 
         # The run completed successfully despite the archive failure.
-        assert result["process_result_status"] == 202
-        # No /error/ call for the cold-archive failure (best-effort).
-        mock_err.assert_not_called()
+        assert result["process_result_status"] == "events"
+        # No error event for the cold-archive failure (best-effort).
+        assert _captured_client(mock_run_sim).of("error") == []
 
-    def test_cold_archive_prefix_passed_to_report_result(self, tmp_path: Path, monkeypatch):
-        """When cold archive succeeds, report_result carries the prefix."""
+    def test_cold_archive_prefix_in_result_event(self, tmp_path: Path, events_env):
+        """When cold archive succeeds, the result event carries the prefix."""
         from run_anuga import _handoff
 
-        monkeypatch.setenv("HYDRATA_INTERNAL_COMPUTE_TOKEN", "test-token")
         config = {
             "id": 384, "project": 601, "run_id": 1243,
             "control_server": "https://hydrata.com/",
@@ -620,24 +647,22 @@ class TestUploadColdArchive:
         outputs.mkdir()
         (outputs / "result_depth_max.tif").write_bytes(b"fake tif")
 
-        post_response = mock.MagicMock(status_code=202, text="")
-        with mock.patch("run_anuga.run.run_sim"), \
+        mock_run_sim = mock.MagicMock(return_value=None)
+        with mock.patch("run_anuga.run.run_sim", mock_run_sim), \
              mock.patch.object(_handoff, "upload_cold_archive") as mock_archive, \
-             mock.patch.object(_handoff, "upload_result_to_s3"), \
-             mock.patch.object(_handoff, "report_result",
-                               return_value=post_response) as mock_post:
+             mock.patch.object(_handoff, "upload_result_to_s3"):
             run_and_report(tmp_path, result_bucket="bucket")
 
-        # The cold_archive_prefix kwarg must be the expected prefix.
         mock_archive.assert_called_once()
-        call_kwargs = mock_post.call_args.kwargs
-        assert call_kwargs.get("cold_archive_prefix") == "cold-archive/601_384_1243/"
+        fields = _result_event_fields(mock_run_sim)
+        assert fields[COLD_ARCHIVE_PREFIX_FIELD] == "cold-archive/601_384_1243/"
 
-    def test_cold_archive_prefix_none_when_archive_fails(self, tmp_path: Path, monkeypatch):
-        """When cold archive fails, report_result carries cold_archive_prefix=None."""
+    def test_cold_archive_prefix_omitted_when_archive_fails(self, tmp_path: Path, events_env):
+        """When cold archive fails the field is OMITTED — never a fabricated
+        prefix, and (unlike the deleted report_result kwarg) never an explicit
+        null either: the events envelope only carries what actually happened."""
         from run_anuga import _handoff
 
-        monkeypatch.setenv("HYDRATA_INTERNAL_COMPUTE_TOKEN", "test-token")
         config = {
             "id": 384, "project": 601, "run_id": 1243,
             "control_server": "https://hydrata.com/",
@@ -647,17 +672,14 @@ class TestUploadColdArchive:
         outputs.mkdir()
         (outputs / "result_depth_max.tif").write_bytes(b"fake tif")
 
-        post_response = mock.MagicMock(status_code=202, text="")
-        with mock.patch("run_anuga.run.run_sim"), \
+        mock_run_sim = mock.MagicMock(return_value=None)
+        with mock.patch("run_anuga.run.run_sim", mock_run_sim), \
              mock.patch.object(_handoff, "upload_cold_archive",
                                side_effect=RuntimeError("boom")), \
-             mock.patch.object(_handoff, "upload_result_to_s3"), \
-             mock.patch.object(_handoff, "report_result",
-                               return_value=post_response) as mock_post:
+             mock.patch.object(_handoff, "upload_result_to_s3"):
             run_and_report(tmp_path, result_bucket="bucket")
 
-        call_kwargs = mock_post.call_args.kwargs
-        assert call_kwargs.get("cold_archive_prefix") is None
+        assert COLD_ARCHIVE_PREFIX_FIELD not in _result_event_fields(mock_run_sim)
 
 
 class TestPlaybackStorePrefixInRunAndReport:
@@ -665,10 +687,9 @@ class TestPlaybackStorePrefixInRunAndReport:
     export_playback_store() left in the output dir (run_sim runs several
     frames above where the exporter actually executes — see
     playback_store.playback_store_prefix_for_run's docstring) and threads
-    it into report_result, mirroring cold_archive_prefix exactly."""
+    it into the terminal result event, mirroring cold_archive_prefix exactly."""
 
     def _base_setup(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("HYDRATA_INTERNAL_COMPUTE_TOKEN", "test-token")
         config = {
             "id": 384, "project": 601, "run_id": 1243,
             "control_server": "https://hydrata.com/",
@@ -679,151 +700,55 @@ class TestPlaybackStorePrefixInRunAndReport:
         (outputs / "result_depth_max.tif").write_bytes(b"fake tif")
         return outputs
 
-    def test_playback_store_prefix_posted_when_marker_present(self, tmp_path: Path, monkeypatch):
+    def test_playback_store_prefix_posted_when_marker_present(
+            self, tmp_path: Path, monkeypatch, events_env):
         outputs = self._base_setup(tmp_path, monkeypatch)
         (outputs / "playback_store_export_result.json").write_text(
             json.dumps({"status": "ok", "s3_prefix": "playback/601_384_1243/", "s3_bucket": "bucket"})
         )
         from run_anuga import _handoff
 
-        post_response = mock.MagicMock(status_code=202, text="")
-        with mock.patch("run_anuga.run.run_sim"), \
+        mock_run_sim = mock.MagicMock(return_value=None)
+        with mock.patch("run_anuga.run.run_sim", mock_run_sim), \
              mock.patch.object(_handoff, "upload_cold_archive"), \
-             mock.patch.object(_handoff, "upload_result_to_s3"), \
-             mock.patch.object(_handoff, "report_result",
-                               return_value=post_response) as mock_post:
+             mock.patch.object(_handoff, "upload_result_to_s3"):
             run_and_report(tmp_path, result_bucket="bucket")
 
-        call_kwargs = mock_post.call_args.kwargs
-        assert call_kwargs.get("playback_store_prefix") == "playback/601_384_1243/"
+        fields = _result_event_fields(mock_run_sim)
+        assert fields[PLAYBACK_STORE_PREFIX_FIELD] == "playback/601_384_1243/"
 
-    def test_playback_store_prefix_none_when_marker_absent(self, tmp_path: Path, monkeypatch):
-        """No marker (e.g. zarr wasn't installed / export skipped) -> None,
-        never a stale/fabricated prefix."""
+    def test_playback_store_prefix_omitted_when_marker_absent(
+            self, tmp_path: Path, monkeypatch, events_env):
+        """No marker (e.g. zarr wasn't installed / export skipped) -> the field
+        is omitted, never a stale/fabricated prefix."""
         self._base_setup(tmp_path, monkeypatch)
         from run_anuga import _handoff
 
-        post_response = mock.MagicMock(status_code=202, text="")
-        with mock.patch("run_anuga.run.run_sim"), \
+        mock_run_sim = mock.MagicMock(return_value=None)
+        with mock.patch("run_anuga.run.run_sim", mock_run_sim), \
              mock.patch.object(_handoff, "upload_cold_archive"), \
-             mock.patch.object(_handoff, "upload_result_to_s3"), \
-             mock.patch.object(_handoff, "report_result",
-                               return_value=post_response) as mock_post:
+             mock.patch.object(_handoff, "upload_result_to_s3"):
             run_and_report(tmp_path, result_bucket="bucket")
 
-        call_kwargs = mock_post.call_args.kwargs
-        assert call_kwargs.get("playback_store_prefix") is None
+        assert PLAYBACK_STORE_PREFIX_FIELD not in _result_event_fields(mock_run_sim)
 
-    def test_playback_store_prefix_none_when_marker_status_not_ok(self, tmp_path: Path, monkeypatch):
+    def test_playback_store_prefix_omitted_when_marker_status_not_ok(
+            self, tmp_path: Path, monkeypatch, events_env):
         outputs = self._base_setup(tmp_path, monkeypatch)
         (outputs / "playback_store_export_result.json").write_text(
             json.dumps({"status": "skipped_no_zarr"})
         )
         from run_anuga import _handoff
 
-        post_response = mock.MagicMock(status_code=202, text="")
-        with mock.patch("run_anuga.run.run_sim"), \
+        mock_run_sim = mock.MagicMock(return_value=None)
+        with mock.patch("run_anuga.run.run_sim", mock_run_sim), \
              mock.patch.object(_handoff, "upload_cold_archive"), \
-             mock.patch.object(_handoff, "upload_result_to_s3"), \
-             mock.patch.object(_handoff, "report_result",
-                               return_value=post_response) as mock_post:
+             mock.patch.object(_handoff, "upload_result_to_s3"):
             run_and_report(tmp_path, result_bucket="bucket")
 
-        call_kwargs = mock_post.call_args.kwargs
-        assert call_kwargs.get("playback_store_prefix") is None
+        assert PLAYBACK_STORE_PREFIX_FIELD not in _result_event_fields(mock_run_sim)
 
 
-class TestReportResultColdArchivePrefix:
-    """report_result includes cold_archive_prefix in the POST body when provided."""
-
-    def test_posts_cold_archive_prefix_when_provided(self, monkeypatch):
-        monkeypatch.setenv("HYDRATA_INTERNAL_COMPUTE_TOKEN", "test-token")
-        session = mock.MagicMock()
-        session.headers = {}
-        response = mock.MagicMock(status_code=202, text="")
-        session.post.return_value = response
-
-        with mock.patch("run_anuga._http.import_optional") as mock_import:
-            mock_import.return_value.Session.return_value = session
-            report_result(
-                "https://hydrata.com/",
-                run_id=99,
-                token="test-token",
-                result_key="1_2_3_results.zip",
-                cold_archive_prefix="cold-archive/1_2_3/",
-            )
-
-        _, called_kwargs = session.post.call_args[0], session.post.call_args[1]
-        assert called_kwargs["data"][COLD_ARCHIVE_PREFIX_FIELD] == "cold-archive/1_2_3/"
-        assert called_kwargs["data"][RESULT_PACKAGE_KEY_FIELD] == "1_2_3_results.zip"
-
-    def test_omits_cold_archive_prefix_when_none(self, monkeypatch):
-        """report_result does NOT include cold_archive_prefix in the body when None."""
-        monkeypatch.setenv("HYDRATA_INTERNAL_COMPUTE_TOKEN", "test-token")
-        session = mock.MagicMock()
-        session.headers = {}
-        response = mock.MagicMock(status_code=202, text="")
-        session.post.return_value = response
-
-        with mock.patch("run_anuga._http.import_optional") as mock_import:
-            mock_import.return_value.Session.return_value = session
-            report_result(
-                "https://hydrata.com/",
-                run_id=99,
-                token="test-token",
-                result_key="1_2_3_results.zip",
-            )
-
-        _, called_kwargs = session.post.call_args[0], session.post.call_args[1]
-        assert COLD_ARCHIVE_PREFIX_FIELD not in called_kwargs["data"]
-
-
-class TestReportResultPlaybackStorePrefix:
-    """report_result includes playback_store_prefix in the POST body when
-    provided (TASK-2623, mirrors TestReportResultColdArchivePrefix)."""
-
-    def test_posts_playback_store_prefix_when_provided(self, monkeypatch):
-        from run_anuga._handoff import PLAYBACK_STORE_PREFIX_FIELD
-
-        monkeypatch.setenv("HYDRATA_INTERNAL_COMPUTE_TOKEN", "test-token")
-        session = mock.MagicMock()
-        session.headers = {}
-        response = mock.MagicMock(status_code=202, text="")
-        session.post.return_value = response
-
-        with mock.patch("run_anuga._http.import_optional") as mock_import:
-            mock_import.return_value.Session.return_value = session
-            report_result(
-                "https://hydrata.com/",
-                run_id=99,
-                token="test-token",
-                result_key="1_2_3_results.zip",
-                playback_store_prefix="playback/1_2_3/",
-            )
-
-        _, called_kwargs = session.post.call_args[0], session.post.call_args[1]
-        assert called_kwargs["data"][PLAYBACK_STORE_PREFIX_FIELD] == "playback/1_2_3/"
-
-    def test_omits_playback_store_prefix_when_none(self, monkeypatch):
-        from run_anuga._handoff import PLAYBACK_STORE_PREFIX_FIELD
-
-        monkeypatch.setenv("HYDRATA_INTERNAL_COMPUTE_TOKEN", "test-token")
-        session = mock.MagicMock()
-        session.headers = {}
-        response = mock.MagicMock(status_code=202, text="")
-        session.post.return_value = response
-
-        with mock.patch("run_anuga._http.import_optional") as mock_import:
-            mock_import.return_value.Session.return_value = session
-            report_result(
-                "https://hydrata.com/",
-                run_id=99,
-                token="test-token",
-                result_key="1_2_3_results.zip",
-            )
-
-        _, called_kwargs = session.post.call_args[0], session.post.call_args[1]
-        assert PLAYBACK_STORE_PREFIX_FIELD not in called_kwargs["data"]
 
 
 # ---------------------------------------------------------------------------
@@ -974,24 +899,20 @@ class TestRunAndReportCallbackWiring:
         from run_anuga import _handoff
 
         mock_run_sim = mock.MagicMock(return_value=None)
-        post_response = mock.MagicMock(status_code=202, text="")
         stack = [
             mock.patch("run_anuga.run.run_sim", mock_run_sim),
             mock.patch.object(_handoff, "upload_cold_archive"),
             mock.patch.object(_handoff, "upload_result_to_s3"),
-            mock.patch.object(_handoff, "report_result", return_value=post_response),
-            mock.patch.object(_handoff, "report_error"),
         ]
-        if telemetry_client is not None:
-            # gn_anuga.batch_common is NOT importable from the run_anuga tree,
-            # so the real construction site would return None here for reasons
-            # unrelated to what this class pins. Inject the client instead —
-            # the assertion under test is what run_and_report WRAPS, not how
-            # the client is built (that is TestMakeTelemetryClient's job).
-            stack.append(mock.patch.object(
-                _handoff, "_make_telemetry_client",
-                return_value=telemetry_client,
-            ))
+        # gn_anuga.batch_common is NOT importable from the run_anuga tree, so
+        # the real construction site would RAISE here (TASK-2692 fail-closed)
+        # for reasons unrelated to what this class pins. Inject the client
+        # instead — the assertion under test is what run_and_report WRAPS, not
+        # how the client is built (that is TestMakeTelemetryClient's job).
+        stack.append(mock.patch.object(
+            _handoff, "_make_telemetry_client",
+            return_value=telemetry_client,
+        ))
         with contextlib.ExitStack() as es:
             for ctx in stack:
                 es.enter_context(ctx)
@@ -1025,12 +946,12 @@ class TestRunAndReportCallbackWiring:
         monkeypatch.setenv("HYDRATA_INTERNAL_COMPUTE_TOKEN", "test-token")
         explicit = LoggingCallback()
         mock_run_sim = mock.MagicMock(return_value=None)
-        post_response = mock.MagicMock(status_code=202, text="")
         with mock.patch("run_anuga.run.run_sim", mock_run_sim), \
              mock.patch.object(_handoff, "upload_cold_archive"), \
              mock.patch.object(_handoff, "upload_result_to_s3"), \
-             mock.patch.object(_handoff, "report_result", return_value=post_response), \
-             mock.patch.object(_handoff, "report_error"):
+             mock.patch.object(_handoff, "_make_telemetry_client",
+                               return_value=None), \
+             mock.patch.dict("os.environ", {ALLOW_UNREPORTED_ENV: "1"}):
             run_and_report(package, callback=explicit, result_bucket="bucket")
         cb = mock_run_sim.call_args.kwargs["callback"]
         assert cb._inner is explicit
