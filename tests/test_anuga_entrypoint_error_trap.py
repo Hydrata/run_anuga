@@ -62,9 +62,18 @@ ENTRYPOINT = REPO_ROOT / "batch" / "entrypoint.sh"
 #: the shell actually produces it.
 EVENTS_PATH_RE = r"/api/v2/tasks/processes/\$\{HYDRATA_PROCESS_ID\}/events/"
 
-#: The commit this script was ported ON. Used ONLY by the known-negative, which
-#: needs the pre-port bytes to prove the harness has detection power.
+#: The commit this script was ported ON — provenance for the fixture below.
+#: Regenerate with:
+#:   git show 1a8d6c05a0c99146f7dbb8a3ba4ff2cb11811d4c:batch/entrypoint.sh \
+#:     > tests/data/entrypoint_baselines/entrypoint.pre-2692.sh
 PRE_PORT_REF = "1a8d6c05a0c99146f7dbb8a3ba4ff2cb11811d4c"
+
+#: The pre-port bytes, checked in so the known-negative proves the harness has
+#: detection power in CI too — not only where the full history happens to exist.
+PRE_PORT_SCRIPT = (
+    Path(__file__).resolve().parent
+    / "data" / "entrypoint_baselines" / "entrypoint.pre-2692.sh"
+)
 
 PROCESS_ID = "2b3f6a10-5f8e-4a1b-9c7d-8e0f1a2b3c4d"
 TOKEN = "test-internal-compute-token"
@@ -334,15 +343,20 @@ def test_successful_run_posts_nothing(tmp_path):
 # ---------------------------------------------------------------------------
 
 def _pre_port_script(tmp_path: Path) -> Path:
-    """Materialise batch/entrypoint.sh as it was BEFORE this port."""
-    proc = subprocess.run(
-        ["git", "show", f"{PRE_PORT_REF}:batch/entrypoint.sh"],
-        cwd=str(REPO_ROOT), capture_output=True, text=True, timeout=60,
-    )
-    if proc.returncode != 0:
-        pytest.skip(f"pre-port blob {PRE_PORT_REF} unavailable (shallow clone?)")
+    """Materialise batch/entrypoint.sh as it was BEFORE this port.
+
+    Read from a CHECKED-IN fixture, not from ``git show <ref>``. The blob form
+    made this test's own precondition depend on clone depth, and
+    ``actions/checkout@v4`` defaults to ``fetch-depth: 1`` — so in CI the
+    ``git show`` failed and the known-negative SKIPPED. A detector that only
+    proves itself on a developer box is not proven where it matters
+    (``marker_lint`` counted that runtime skip against run_anuga's
+    conditional-skip cap, which is how this surfaced). The fixture is the
+    verbatim blob from ``PRE_PORT_REF``; it never changes, because the commit
+    it came from never changes.
+    """
     path = tmp_path / "entrypoint.pre-port.sh"
-    path.write_text(proc.stdout)
+    path.write_text(PRE_PORT_SCRIPT.read_text())
     return path
 
 
