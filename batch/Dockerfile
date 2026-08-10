@@ -20,6 +20,13 @@
 # the engine from the shared `src` checkout on every build — the base
 # supplies only the toolchain (nvhpc/CUDA/venv), never the engine.
 #
+# SECOND STRUCTURAL GUARANTEE (TASK-2700): both targets set ANUGA_VERSION from
+# the pin (so the engine self-reports `0.0.0+g<sha>` instead of `0.0.0+unknown`)
+# and then run batch/assert-anuga-provenance.py after their LAST pip install —
+# a build-time proof, via PEP 610 direct_url.json, that the importable anuga is
+# still the one built from /app/anuga_core and not a PyPI wheel pip substituted
+# in to satisfy some later `anuga>=` constraint.
+#
 # The three SHA LABELs are declared per-target from the SAME global ARGs
 # (LABELs cannot be inherited across different FROM bases); the
 # assert-image-sha-lock script (batch/assert-image-sha-lock.sh) compares
@@ -52,6 +59,31 @@
 # parity gate on the cpu build is the acceptance evidence). Prev: 8abd3aef
 # (fork main @ upstream anuga-community/main 2d3696ea, epic 2147 W1.1).
 ARG ANUGA_CORE_SHA=7f1a4847df34cd2527101d4e10dbbf0b81668e23
+
+# ---- BARE-TAG RULE: a `v`-prefixed anuga_core tag is a SILENT no-op --------
+# (TASK-2700. Recorded here and in deploy's install-anuga.yml pin comment —
+# the two places a person deciding to tag the fork will actually be looking.)
+#
+# If Hydrata/anuga_core is ever TAGGED for release, the tag MUST be BARE
+# NUMERIC — `3.3.11`, never `v3.3.11`. anuga_core is `dynamic = ['version']`:
+# meson.build calls _git_version.py, which maps `git describe` output to PEP 440
+# with `^(\d+\.\d+(?:\.\d+)?(?:[a-z]\w*)?)...` — the base tag must START WITH A
+# DIGIT. A leading `v` fails that regex and falls through to the
+# no-reachable-tag branch, so `git tag v3.3.11` does NOT raise the version; the
+# engine keeps reporting 0.0.0. The tagger sees a tag, the fleet sees nothing.
+#
+# The trap is armed RIGHT NOW: the fork's tags are 3.1.1 3.1.3 3.1.4 3.1.5
+# v3.2.0-wheels.8 v3.2.0-wheels.9 — the two NEWEST are v-prefixed, and
+# `git describe` always picks the newest reachable tag. Measured on hydrata.com
+# 2026-08-10: describe -> `v3.2.0-wheels.9-1221-g7f1a4847`, __version__ ->
+# `0.0.0+gv3.2.0-wheels.9-1221-g7f1a4847`. anuga_core's own meson.build comment
+# ("no `v` prefix, matching the existing tag convention") is ASPIRATIONAL, not
+# descriptive — the existing convention contains v tags.
+#
+# Nothing needs a tag today: TASK-2695 removed the `anuga>=3.3.0` floor from the
+# web (and this file has never carried one), so tagging is optional hygiene, not
+# a fix. A CORRECT bare-numeric tag is safe for both provenance gates below —
+# they key on the `+g<sha>` local segment, which survives as `3.3.11.dev4+g<sha>`.
 
 # Provenance ARGs (stamped as LABELs in both targets; passed by
 # rebuild-batch-image.sh / CI — "unknown" on a plain local build).
@@ -129,8 +161,21 @@ RUN pip install --no-cache-dir \
     mpi4py requests boto3 awscli fiona "zarr>=3.0"
 
 # ---- the engine, from the SHARED checkout (never a second clone/pin) ------
+# ANUGA_VERSION (TASK-2700): the src stage deletes .git, so `git describe` fails
+# in-build and the engine used to self-report the literal `0.0.0+unknown` — an
+# image that could not say WHICH anuga it carried. _git_version.py has always
+# supported an ANUGA_VERSION override for exactly this case ("a Docker build
+# whose context excludes .git"); nobody used it. Feed it the ONE pin.
+# The `0.0.0+g<sha>` shape is _git_version.py's OWN no-reachable-tag mapping,
+# and is the dialect deploy's roles/ansible-geonode/tasks/anuga-engine-verify.yml
+# already parses (prefix-tolerant `g<sha>` tokens) — so the web box and the
+# container report engine provenance identically. The 0.0.0 base is correct
+# rather than a placeholder: the fork has no bare-numeric reachable tag (see the
+# BARE-TAG RULE at the pin above).
+ARG ANUGA_CORE_SHA
 COPY --from=src /src/anuga_core /app/anuga_core
-RUN pip install --no-cache-dir --no-build-isolation /app/anuga_core
+RUN ANUGA_VERSION="0.0.0+g${ANUGA_CORE_SHA}" \
+    pip install --no-cache-dir --no-build-isolation /app/anuga_core
 
 # Unbuffered stdout/stderr so CloudWatch shows every print/logger output as
 # it happens, not in 4KB chunks.
@@ -153,6 +198,15 @@ COPY --from=src /src/run_anuga/gn_anuga /app/gn_anuga
 COPY --from=src /src/run_anuga /app/run_anuga_src
 RUN pip install --no-cache-dir "/app/run_anuga_src[sim,platform,playback]"
 
+# ---- substitution guard (TASK-2700) ---------------------------------------
+# KEEP THIS AFTER THE LAST pip install OF THE STAGE. It asserts (via PEP 610
+# direct_url.json, NOT a version compare) that the anuga this image will import
+# is still the one built from /app/anuga_core above. Its entire purpose is to
+# turn a LATER pip line silently swapping in PyPI anuga — one `[full]` away —
+# into a red build. Rationale in the script's docstring.
+RUN python /app/run_anuga_src/batch/assert-anuga-provenance.py \
+        /app/anuga_core "${ANUGA_CORE_SHA}"
+
 # --- Baked build-provenance manifest (epic 2280 W3.1 / TASK-2286) -----------
 # The CONTAINER reads THIS FILE at runtime to self-report the exact cross-repo
 # code it ran (run_anuga._handoff). A running container CANNOT read its own
@@ -167,6 +221,8 @@ RUN mkdir -p /opt/hydrata \
 
 # SHA-lock labels (TASK-2671): declared from the SAME global ARGs as the gpu
 # target; assert-image-sha-lock.sh compares these across both built targets.
+# (ANUGA_CORE_SHA is already in ARG scope from the engine build above — kept
+# here so the LABEL's inputs stay readable at the point of use.)
 ARG ANUGA_CORE_SHA
 ARG RUN_ANUGA_SHA
 ARG HYDRATA_SHA
@@ -202,8 +258,16 @@ ENV PYTHONUNBUFFERED=1
 # same list the multiarch base used.
 ARG GPU_ARCH=cc70,cc75,cc86,cc89
 ARG GPU_AWARE_MPI=false
+# ANUGA_VERSION: same override, same `0.0.0+g<sha>` dialect as the cpu target
+# (TASK-2700 — see the note there). MEASURED, not assumed: the gpu target's
+# engine really does come from the shared `src` stage, not the GPU_BASE image.
+# The live gpu image's dist-info records direct_url.json url
+# "file:///app/anuga_core" and the base's baked /app/anuga_core-gpu is gone —
+# so this line, and the guard below, both bite on the gpu target.
+ARG ANUGA_CORE_SHA
 COPY --from=src /src/anuga_core /app/anuga_core
 RUN cd /app/anuga_core && rm -rf build && \
+    ANUGA_VERSION="0.0.0+g${ANUGA_CORE_SHA}" \
     CC=nvc CXX=nvc++ pip install --no-cache-dir --no-build-isolation /app/anuga_core \
       -Csetup-args=-Dgpu_offload=true \
       -Csetup-args=-Dgpu_arch=${GPU_ARCH} \
@@ -236,6 +300,15 @@ COPY --from=src /src/run_anuga/gn_anuga /app/gn_anuga
 # Source tree + local-package install (into the base's /opt/venv).
 COPY --from=src /src/run_anuga /app/run_anuga_src
 RUN pip install --no-cache-dir "/app/run_anuga_src[sim,platform]"
+
+# ---- substitution guard (TASK-2700) — same contract as the cpu target ------
+# This is the COSTLY case: a PyPI wheel landing here replaces the nvc +
+# OpenMP-target-offload engine with a generic CPU build. The offload-linkage
+# check above CANNOT catch that — it inspects whichever sw_domain_gpu_ext it
+# finds, and a wholesale package swap removes the module rather than mislinking
+# it. This guard checks the package's build provenance instead.
+RUN python /app/run_anuga_src/batch/assert-anuga-provenance.py \
+        /app/anuga_core "${ANUGA_CORE_SHA}"
 
 # --- Baked build-provenance manifest (same contract as the cpu target) -----
 ARG BUILD_PROVENANCE_JSON="{}"
