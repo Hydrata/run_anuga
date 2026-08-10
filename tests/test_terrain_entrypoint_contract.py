@@ -19,6 +19,12 @@ tests are deliberately split:
   that fails, against a raw-socket HTTP stub, and asserts the request line and
   the JSON envelope byte-for-byte. That is the only way to catch a quoting bug,
   a ``set -u`` explosion inside the trap, or a trap that masks the exit code.
+
+Static gating is two-layer: ``bash -n`` PARSES the script, and ``shellcheck``
+(added in the epic 2662 cleanup pass) catches the quoting / word-splitting class
+that a parse is structurally blind to. See ``test_entrypoint_passes_shellcheck``
+below for the severity and exclusion reasoning — both are load-bearing, not
+stylistic.
 """
 
 from __future__ import annotations
@@ -30,6 +36,7 @@ import shutil
 import socket
 import subprocess
 import threading
+import warnings
 from pathlib import Path
 
 import pytest
@@ -128,6 +135,58 @@ def test_entrypoint_is_syntactically_valid_bash():
         ["bash", "-n", str(ENTRYPOINT)], capture_output=True, text=True, timeout=60
     )
     assert proc.returncode == 0, proc.stderr
+
+
+def test_entrypoint_passes_shellcheck():
+    """shellcheck the shipped entrypoint at shellcheck's DEFAULT severity.
+
+    Byte-identical twin of the same test in
+    ``tests/test_anuga_entrypoint_error_trap.py`` — the two Batch entrypoints
+    are the only shell on the compute critical path and both get the gate.
+
+    ``bash -n`` above only PARSES. It is structurally blind to the quoting /
+    word-splitting class that actually breaks these scripts — an unquoted
+    ``${MANIFEST_S3_KEY}`` containing a space silently truncates the ``aws s3
+    cp`` and the container dies before Python, i.e. exactly the pre-Python death
+    the trap above exists to report. Measured, not assumed: injecting that
+    defect leaves ``bash -n`` at rc=0 while shellcheck reds with SC2086.
+
+    Severity is left at the DEFAULT deliberately. ``-S warning`` would NOT catch
+    the injected quoting bug, because SC2086 is info-level — a warnings-only
+    gate here is VACUOUS. Do not "tighten" it by raising the threshold.
+
+    SC2154 is excluded via the FLAG, never an inline ``# shellcheck disable``
+    directive, so the shipped .sh stays byte-identical to its checked-in bytes.
+    It is a proven false positive: shellcheck cannot follow ``exit_code=$?``
+    assigned as the first statement INSIDE a single-quoted ``trap '...' EXIT``
+    body, so it fires on every trap of this shape.
+
+    Never passes vacuously in CI: GitHub-hosted ubuntu runners ship shellcheck,
+    so its absence THERE is a runner regression, not a reason to go green.
+    Locally it degrades to a warning rather than ``pytest.skip`` because the
+    TASK-2329 marker-lint ratchet caps this repo at ``conditional-skip=29`` and
+    the repo already sits exactly on that cap — a new skip call site would red
+    `marker-lint`, and raising the cap means editing .github/**.
+    """
+    if shutil.which("shellcheck") is None:
+        assert not os.environ.get("GITHUB_ACTIONS"), (
+            "shellcheck is missing on a GitHub runner — this gate would pass "
+            "vacuously. Fix the runner image or install shellcheck explicitly; "
+            "do not relax this assertion."
+        )
+        warnings.warn(
+            "shellcheck not installed locally — static gate degraded to `bash -n` "
+            "for this run (CI still enforces it)",
+            stacklevel=2,
+        )
+        return
+    proc = subprocess.run(
+        ["shellcheck", "-e", "SC2154", str(ENTRYPOINT)],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
 
 
 # ---------------------------------------------------------------------------
