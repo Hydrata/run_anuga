@@ -48,6 +48,20 @@ CODEC_LEVEL = 6
 #: Zero code for the symmetric velocity range (B3) — exactly representable.
 VELOCITY_FILL_VALUE = 32767
 DEPTH_FILL_VALUE = 0
+#: TASK-2709 (W2.1, epic 2706) — the cache directive written on EVERY playback
+#: object at export. S3 cannot add one later without rewriting the object, so
+#: it has to be set here or not at all (existing stores can never satisfy it;
+#: only a fresh export does).
+#:
+#: A store is write-once under a per-run prefix
+#: (``playback/{project}_{scenario}_{run}/``), so its bytes genuinely are
+#: immutable — ``immutable`` is what stops the browser spending a conditional
+#: GET round-trip per chunk just to be told 304.
+#:
+#: The nominal year is NOT how long a stale object can be served: the browser
+#: caches against the full presigned URL, and TASK-2710 rotates that URL every
+#: time bucket, so the effective ceiling is one bucket, not a year.
+PLAYBACK_CACHE_CONTROL = "public, max-age=31536000, immutable"
 
 
 def zarr_available() -> bool:
@@ -285,6 +299,11 @@ def _upload_store_to_s3(store_path, bucket: str, prefix: str) -> str:
     """Upload every file under ``store_path`` to ``s3://bucket/prefix``,
     preserving the store's relative directory structure (mirrors the
     multipart-config pattern in ``_handoff.py`` upload_cold_archive).
+
+    Every object is written with ``PLAYBACK_CACHE_CONTROL`` (TASK-2709) —
+    metadata and chunks alike, since the browser fetches both through the same
+    presigned manifest URLs and re-downloading 62.7 MiB of geometry per page
+    load is exactly the cost this removes.
     """
     import boto3
     from boto3.s3.transfer import TransferConfig
@@ -301,7 +320,11 @@ def _upload_store_to_s3(store_path, bucket: str, prefix: str) -> str:
             continue
         rel = local_file.relative_to(store_path).as_posix()
         key = f"{prefix}{rel}"
-        s3.upload_file(str(local_file), bucket, key, Config=transfer_config)
+        s3.upload_file(
+            str(local_file), bucket, key,
+            ExtraArgs={"CacheControl": PLAYBACK_CACHE_CONTROL},
+            Config=transfer_config,
+        )
         n_files += 1
     logger.info(
         "playback_store: uploaded %d files to s3://%s/%s", n_files, bucket, prefix

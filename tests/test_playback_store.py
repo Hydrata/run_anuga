@@ -324,6 +324,63 @@ class TestExportAgainstFixtureSww:
         assert root.attrs["flow_algorithm"] == "DE1"
 
 
+class TestUploadWritesCacheControl:
+    """TASK-2709 (W2.1, epic 2706) — every uploaded playback object must carry
+    a Cache-Control header, written at EXPORT (S3 has no way to add one later
+    without rewriting the object).
+
+    Why it matters: the manifest's chunk URLs are the ONLY way the browser
+    fetches the store, and without a cache directive the browser revalidates
+    (or simply re-downloads) all 62.7 MiB of geometry on every single page
+    load. This pairs with TASK-2710: a stable-within-a-time-bucket URL is what
+    gives the browser cache a stable key to hit, and the rotating bucket is
+    what bounds how long a stale object can be served despite max-age=1y.
+    """
+
+    def _upload_with_fake_client(self, tmp_path):
+        """Injects fake boto3 modules via sys.modules rather than patching
+        ``boto3.client``: boto3 is NOT installed under /usr/bin/python, which
+        is the interpreter the documented `python -m pytest tests -k playback`
+        command uses. Patching a module that cannot be imported would make this
+        test silently env-dependent."""
+        import sys
+
+        store = tmp_path / "store"
+        (store / "depth" / "c" / "0").mkdir(parents=True)
+        (store / "zarr.json").write_text("{}")
+        (store / "depth" / "c" / "0" / "0").write_bytes(b"\x00\x01")
+
+        fake_s3 = mock.MagicMock()
+        fake_boto3 = mock.MagicMock()
+        fake_boto3.client.return_value = fake_s3
+        fake_modules = {
+            "boto3": fake_boto3,
+            "boto3.s3": mock.MagicMock(),
+            "boto3.s3.transfer": mock.MagicMock(),
+        }
+        with mock.patch.dict(sys.modules, fake_modules):
+            ps._upload_store_to_s3(store, "test-bucket", "playback/1_1_1/")
+        return fake_s3
+
+    def test_every_object_is_uploaded_with_cache_control(self, tmp_path):
+        fake_s3 = self._upload_with_fake_client(tmp_path)
+
+        assert fake_s3.upload_file.call_count == 2, "both store files must upload"
+        for call in fake_s3.upload_file.call_args_list:
+            extra_args = call.kwargs.get("ExtraArgs")
+            assert extra_args is not None, (
+                f"upload_file({call.args[2]!r}) passed no ExtraArgs, so no "
+                f"cache directive is written on the object"
+            )
+            assert extra_args.get("CacheControl") == ps.PLAYBACK_CACHE_CONTROL
+
+    def test_cache_control_value_is_immutable_and_long_lived(self):
+        """Pins the exact directive the AC names. `immutable` is what stops the
+        browser issuing a revalidation request per chunk; without it a
+        conditional GET per chunk still costs a round-trip each."""
+        assert ps.PLAYBACK_CACHE_CONTROL == "public, max-age=31536000, immutable"
+
+
 @requires_zarr
 class TestValidatorCatchesRealDefects:
     """Proves the validator is a real detector, not a rubber stamp —
@@ -463,6 +520,50 @@ live_s3_opt_in = pytest.mark.skipif(
 )
 
 
+@live_s3_opt_in
+class TestLiveS3CacheControl:
+    """TASK-2709 (W2.1, epic 2706) — the Cache-Control directive must survive
+    the REAL boto3 upload, checked with a real ``head_object``.
+
+    Deliberately NOT gated on zarr/ANUGA (unlike TestLiveS3Upload below): the
+    thing under test is ``_upload_store_to_s3``'s ExtraArgs plumbing, which
+    uploads whatever files it is given and has no zarr dependency at all. A
+    directory of bytes is a faithful stand-in for a store here, and dropping
+    the gate is what lets this proof actually run on a box where zarr is
+    absent — which is every interpreter on the 2026-08-10 workstation.
+    """
+
+    def test_cache_control_lands_on_real_s3_objects(self, tmp_path):
+        import time
+
+        import boto3
+
+        bucket = "anuga-test-storage"  # NEVER anuga-result-storage from a test
+        prefix = f"playback/pytest-cachecontrol-{int(time.time())}/"
+
+        store = tmp_path / "store"
+        (store / "depth" / "c" / "0").mkdir(parents=True)
+        (store / "zarr.json").write_text('{"zarr_format": 3}')
+        # >8 MiB so upload_file takes the MULTIPART branch (the exporter's
+        # TransferConfig multipart_threshold): ExtraArgs is easiest to lose
+        # there, because multipart carries it on create_multipart_upload
+        # rather than on the PUT.
+        (store / "depth" / "c" / "0" / "0").write_bytes(b"\x00" * (9 * 1024 * 1024))
+
+        ps._upload_store_to_s3(store, bucket, prefix)
+
+        s3 = boto3.client("s3")
+        keys = [
+            o["Key"]
+            for o in s3.list_objects_v2(Bucket=bucket, Prefix=prefix).get("Contents", [])
+        ]
+        assert len(keys) == 2, keys
+        for key in keys:
+            head = s3.head_object(Bucket=bucket, Key=key)
+            assert head.get("CacheControl") == ps.PLAYBACK_CACHE_CONTROL, key
+        # Never deletes — wave brief hard rule.
+
+
 @requires_zarr
 @live_s3_opt_in
 @pytest.mark.requires_anuga
@@ -497,5 +598,14 @@ class TestLiveS3Upload:
         resp = s3.list_objects_v2(Bucket=bucket, Prefix=prefix)
         keys = [o["Key"] for o in resp.get("Contents", [])]
         assert any(k.endswith("zarr.json") for k in keys)
+
+        # TASK-2709 (W2.1, epic 2706) — the cache directive must survive the
+        # REAL boto3 upload path, not just a mocked call assertion: ExtraArgs
+        # is exactly the kind of argument that a TransferConfig/multipart path
+        # can drop, and a mocked verify step is an unverified step.
+        for key in keys:
+            head = s3.head_object(Bucket=bucket, Key=key)
+            assert head.get("CacheControl") == ps.PLAYBACK_CACHE_CONTROL, key
+
         # Deliberately does NOT delete the uploaded objects — never delete
         # any S3 object from a test (wave brief hard rule).
