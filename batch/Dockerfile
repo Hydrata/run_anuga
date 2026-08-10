@@ -74,8 +74,8 @@ ARG ANUGA_CORE_SHA=7f1a4847df34cd2527101d4e10dbbf0b81668e23
 #
 # The trap is armed RIGHT NOW: the fork's tags are 3.1.1 3.1.3 3.1.4 3.1.5
 # v3.2.0-wheels.8 v3.2.0-wheels.9 — the two NEWEST are v-prefixed, and
-# `git describe` always picks the newest reachable tag. Measured on hydrata.com
-# 2026-08-10: describe -> `v3.2.0-wheels.9-1221-g7f1a4847`, __version__ ->
+# `git describe` always picks the newest reachable tag. Measured on a deployed
+# web box 2026-08-10: describe -> `v3.2.0-wheels.9-1221-g7f1a4847`, __version__ ->
 # `0.0.0+gv3.2.0-wheels.9-1221-g7f1a4847`. anuga_core's own meson.build comment
 # ("no `v` prefix, matching the existing tag convention") is ASPIRATIONAL, not
 # descriptive — the existing convention contains v tags.

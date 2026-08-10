@@ -23,10 +23,10 @@ offload detector cannot see it: that detector inspects whichever engine it
 finds, so a WHOLESALE package swap is exactly the shape it misses.
 
 This is not hypothetical. A cp312 manylinux wheel for anuga 3.3.x is on PyPI
-today, so the substitution is a fast, silent success. The web side paid ~19h of
-hydrata.com ANUGA outage for this same bug before TASK-2695 removed ``[full]``
-from install-anuga.yml; the container was protected only by the accident that
-nobody had typed ``[full]`` into the Dockerfile.
+today, so the substitution is a fast, silent success. The web side hit this same
+bug in production before TASK-2695 removed ``[full]`` from install-anuga.yml;
+the container was protected only by the accident that nobody had typed
+``[full]`` into the Dockerfile.
 
 WHAT PROVES IDENTITY — AND WHAT DELIBERATELY DOES NOT
 -----------------------------------------------------
