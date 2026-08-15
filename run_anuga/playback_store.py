@@ -59,22 +59,6 @@ CHUNK_LENGTH_T_FLOOR = 2
 #: un-shared number (cross-repo duplication would let the two drift silently
 #: — see the task's "DO NOT copy gmc's memory constants into python" note).
 PLAYBACK_TARGET_CHUNK_BYTES = 16 * 1024 * 1024
-
-
-def derive_chunk_length_t(n_node: int) -> int:
-    """The adaptive time-chunk length for a store with ``n_node`` mesh nodes.
-
-    A PURE function of n_node alone (D5) — same n_node, any n_time, same
-    result. ``min(CHUNK_LENGTH_T, max(CHUNK_LENGTH_T_FLOOR, bytes_budget //
-    (n_node * 2)))``: 2 stored bytes per (timestep, node) uint16 cell, clamped
-    to [2, 10]. n_node <= 838,860 -> 10 (byte-identical to every store
-    exported before TASK-2719 — nothing to re-export); n_node >= 2,796,203 ->
-    2 (the FLOOR — run 1328's n_node=3,393,075 lands here).
-    """
-    return min(
-        CHUNK_LENGTH_T,
-        max(CHUNK_LENGTH_T_FLOOR, PLAYBACK_TARGET_CHUNK_BYTES // (n_node * 2)),
-    )
 #: B7 — the solver's own convention (q/(h + h0/h)), NOT plot_utils' masked
 #: q/(h+1e-12). The two differ by up to ~5e-2 m/s at the wet/dry fringe.
 VELOCITY_CONVENTION = "solver_epsilon"
@@ -111,6 +95,22 @@ def zarr_available() -> bool:
         return True
     except ImportError:
         return False
+
+
+def derive_chunk_length_t(n_node: int) -> int:
+    """The adaptive time-chunk length for a store with ``n_node`` mesh nodes.
+
+    A PURE function of n_node alone (D5) — same n_node, any n_time, same
+    result. ``min(CHUNK_LENGTH_T, max(CHUNK_LENGTH_T_FLOOR, bytes_budget //
+    (n_node * 2)))``: 2 stored bytes per (timestep, node) uint16 cell, clamped
+    to [2, 10]. n_node <= 838,860 -> 10 (byte-identical to every store
+    exported before TASK-2719 — nothing to re-export); n_node >= 2,796,203 ->
+    2 (the FLOOR — run 1328's n_node=3,393,075 lands here).
+    """
+    return min(
+        CHUNK_LENGTH_T,
+        max(CHUNK_LENGTH_T_FLOOR, PLAYBACK_TARGET_CHUNK_BYTES // (n_node * 2)),
+    )
 
 
 # --- Quantization math (schema §3 "Quantization contract") ------------------

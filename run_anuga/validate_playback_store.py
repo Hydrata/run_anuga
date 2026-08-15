@@ -96,10 +96,11 @@ def validate_store(store_path) -> list[str]:
     # fixed-10 rule still applies unconditionally there.
     declared_chunk_length_t = root.attrs.get("chunk_length_t")
     if declared_chunk_length_t is not None and not (
-        _CHUNK_LENGTH_T_FLOOR <= declared_chunk_length_t <= _CHUNK_LENGTH_T_CAP
+        isinstance(declared_chunk_length_t, int)
+        and _CHUNK_LENGTH_T_FLOOR <= declared_chunk_length_t <= _CHUNK_LENGTH_T_CAP
     ):
         violations.append(
-            f"chunk_length_t={declared_chunk_length_t!r}, outside "
+            f"chunk_length_t={declared_chunk_length_t!r}, expected an int in "
             f"[{_CHUNK_LENGTH_T_FLOOR}, {_CHUNK_LENGTH_T_CAP}] (D5)"
         )
 
