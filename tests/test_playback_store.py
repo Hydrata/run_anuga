@@ -100,6 +100,43 @@ class TestQuantizeRoundTrip:
         assert q[1] == 65535
 
 
+class TestDeriveChunkLengthT:
+    """TASK-2719 (epic 2706 W8, decision D5) — adaptive time-chunk length,
+    a PURE function of n_node alone. No store written here (AC1)."""
+
+    def test_floor_at_run_1328_scale(self):
+        """n_node=3,393,075 (run 1328) lands on the FLOOR, never 1 — D5
+        forbids chunk length 1 (it recreates the 2618 client-side LRU
+        thrash by construction)."""
+        result = ps.derive_chunk_length_t(3_393_075)
+        assert result == 2, (
+            f"expected the D5 floor of 2 for run-1328 scale, got {result} — "
+            "D5 forbids chunk length 1"
+        )
+
+    def test_cap_for_small_meshes_byte_identical_to_today(self):
+        """n_node=50,000 is well under the 838,860 crossover -> the CAP, 10,
+        byte-identical to every store exported before this task."""
+        assert ps.derive_chunk_length_t(50_000) == 10
+
+    def test_interior_value(self):
+        assert ps.derive_chunk_length_t(1_000_000) == 8
+
+    def test_floor_crossover_pinned_exactly(self):
+        """The exact boundary, both sides, per the verified clamp ladder."""
+        assert ps.derive_chunk_length_t(2_796_202) == 3
+        assert ps.derive_chunk_length_t(2_796_203) == 2
+
+    def test_floor_never_goes_below_two_arbitrarily_large_mesh(self):
+        assert ps.derive_chunk_length_t(50_000_000) == 2
+
+    def test_pure_function_of_n_node_alone(self):
+        """Same n_node, called independently (no n_time argument exists) ->
+        same result every time — the function has no other input."""
+        assert ps.derive_chunk_length_t(1_300_000) == ps.derive_chunk_length_t(1_300_000)
+        assert ps.derive_chunk_length_t(1_300_000) == 6
+
+
 # ---------------------------------------------------------------------------
 # Geometry / physics
 # ---------------------------------------------------------------------------
@@ -324,6 +361,97 @@ class TestExportAgainstFixtureSww:
         assert root.attrs["flow_algorithm"] == "DE1"
 
 
+@requires_zarr
+class TestAdaptiveChunkLengthWrittenStore:
+    """TASK-2719 AC2/AC3 (epic 2706 W8) — a WRITTEN store at prod scale, not
+    just the pure derivation (TestDeriveChunkLengthT above).
+
+    Real ANUGA runs at run-1328 scale (n_node=3,393,075) cannot be produced
+    in a unit test, so ``_read_sww_arrays`` is monkeypatched to return a
+    fabricated array set at exactly the D5 floor crossover (n_node=2,796,203)
+    — small enough to allocate and gzip in-process, large enough to prove the
+    exporter takes the adaptive chunk length rather than the old fixed 10.
+    The exporter still needs ``anuga.config`` importable (for its g/rho_w/
+    velocity_protection defaults) even though no simulation runs.
+    """
+
+    @staticmethod
+    def _fabricate_sww_arrays(n_node, n_time=2):
+        x = np.linspace(0.0, 100.0, n_node, dtype=np.float32)
+        y = np.zeros(n_node, dtype=np.float32)
+        # One triangle over the first three nodes — enough for
+        # compute_inradius; the exporter never requires full mesh coverage.
+        volumes = np.array([[0, 1, 2]], dtype=np.int32)
+        elevation = np.zeros(n_node, dtype=np.float32)
+        friction = np.full(n_node, 0.04, dtype=np.float32)
+        stage = np.tile(elevation, (n_time, 1)).astype(np.float32)
+        xmomentum = np.zeros((n_time, n_node), dtype=np.float32)
+        ymomentum = np.zeros((n_time, n_node), dtype=np.float32)
+        return dict(
+            x=x, y=y, volumes=volumes, elevation=elevation, friction=friction,
+            time=np.arange(n_time, dtype=np.float64), stage=stage,
+            xmomentum=xmomentum, ymomentum=ymomentum,
+            xllcorner=0.0, yllcorner=0.0, false_easting=0.0, false_northing=0.0,
+            zone=55, anuga_version="0.0.0+test", revision_number="", revision_date="",
+        )
+
+    def _export_at_scale(self, tmp_path, n_node, n_time=2, run_id=1):
+        fake_sww = self._fabricate_sww_arrays(n_node, n_time=n_time)
+        with mock.patch.object(ps, "_read_sww_arrays", return_value=fake_sww):
+            return ps.export_playback_store(
+                input_data={
+                    "run_label": f"run_synthetic_{run_id}",
+                    "scenario_config": {
+                        "project": 9, "id": 9, "run_id": run_id, "epsg": "EPSG:28355",
+                    },
+                },
+                sww_path="unused-_read_sww_arrays-is-mocked",
+                output_dir=str(tmp_path),
+                upload=False,
+            )
+
+    def test_written_store_at_the_floor_crossover(self, tmp_path):
+        """AC2 + AC3 combined (one export, both checks) — n_node is exactly
+        the D5 floor crossover (2,796,203), so chunk_length_t must be 2 on
+        ALL THREE quantized arrays AND declared in the group attrs alongside
+        n_node/n_time."""
+        import zarr
+
+        n_node = 2_796_203
+        n_time = 2
+        result = self._export_at_scale(tmp_path, n_node, n_time=n_time, run_id=1)
+        assert result["status"] == "ok", result
+
+        root = zarr.open_group(result["local_path"], mode="r")
+        # AC3 — the store declares its own dimensions.
+        assert root.attrs["format_version"] == 2
+        assert root.attrs["n_node"] == n_node
+        assert root.attrs["n_time"] == n_time
+        assert root.attrs["chunk_length_t"] == 2
+
+        # AC2 — all three quantized arrays AGREE with the declared length.
+        for name in ("depth", "x_velocity", "y_velocity"):
+            arr = root[name]
+            assert arr.chunks == (2, n_node), (
+                f"{name}: chunks={arr.chunks}, expected (2, {n_node}) — "
+                "quantized arrays must not drift from each other or from "
+                "the declared chunk_length_t (playbackChunkShape.js refuses "
+                "a store whose arrays disagree)"
+            )
+
+    def test_written_store_under_the_crossover_still_caps_at_ten(self, tmp_path):
+        """A mesh just BELOW the CAP crossover (838,860) still gets the
+        byte-identical-to-today chunk length of 10 — the adaptive rule does
+        not touch small/typical-scale stores."""
+        import zarr
+
+        n_node = 500_000
+        result = self._export_at_scale(tmp_path, n_node, run_id=2)
+        root = zarr.open_group(result["local_path"], mode="r")
+        assert root.attrs["chunk_length_t"] == 10
+        assert root["depth"].chunks == (10, n_node)
+
+
 class TestUploadWritesCacheControl:
     """TASK-2709 (W2.1, epic 2706) — every uploaded playback object must carry
     a Cache-Control header, written at EXPORT (S3 has no way to add one later
@@ -440,6 +568,65 @@ class TestValidatorCatchesRealDefects:
             output_dir=str(tmp_path), upload=False,
         )
         assert validate_store(result["local_path"]) == []
+
+    def test_v1_store_without_new_attrs_still_validates_clean(self, tmp_path, fixture_sww):
+        """TASK-2719 AC4 backward compatibility — a v1 store (predating the
+        n_node/n_time/chunk_length_t attrs and the adaptive chunk-length
+        rule) must keep validating with ZERO violations FOREVER, including
+        run 1328's real one — the store epic 2706's AC7 is measured against
+        on prod. Simulated by exporting for real (this fixture's n_node is
+        tiny, so the adaptive rule already gives chunk length 10 — the CAP,
+        byte-identical to what a real pre-TASK-2719 export always wrote)
+        then stripping the v2-only attrs and rolling format_version back to
+        1 — exactly what a genuine pre-2719 store looks like on disk."""
+        import zarr
+        from run_anuga.validate_playback_store import validate_store
+
+        input_data = {
+            "run_label": "run_1_1_2",
+            "scenario_config": {"project": 1, "id": 1, "run_id": 2, "epsg": "EPSG:28355"},
+        }
+        result = ps.export_playback_store(
+            input_data=input_data, sww_path=str(fixture_sww),
+            output_dir=str(tmp_path), upload=False,
+        )
+        root = zarr.open_group(result["local_path"], mode="a")
+        assert root.attrs["chunk_length_t"] == 10, (
+            "fixture mesh must stay small enough that CAP=10 applies, or "
+            "this test stops simulating a real v1 store"
+        )
+        attrs = dict(root.attrs)
+        attrs["format_version"] = 1
+        del attrs["n_node"]
+        del attrs["n_time"]
+        del attrs["chunk_length_t"]
+        root.attrs.put(attrs)
+
+        assert validate_store(result["local_path"]) == []
+
+    def test_v2_store_missing_new_attrs_is_caught(self, tmp_path, fixture_sww):
+        """The gate is a real detector, not just permissive: a store that
+        CLAIMS format_version=2 but is missing the new attrs must fail, not
+        silently pass like a v1 store would."""
+        import zarr
+        from run_anuga.validate_playback_store import validate_store
+
+        input_data = {
+            "run_label": "run_1_1_3",
+            "scenario_config": {"project": 1, "id": 1, "run_id": 3, "epsg": "EPSG:28355"},
+        }
+        result = ps.export_playback_store(
+            input_data=input_data, sww_path=str(fixture_sww),
+            output_dir=str(tmp_path), upload=False,
+        )
+        root = zarr.open_group(result["local_path"], mode="a")
+        attrs = dict(root.attrs)
+        assert attrs["format_version"] == 2
+        del attrs["chunk_length_t"]
+        root.attrs.put(attrs)
+
+        violations = validate_store(result["local_path"])
+        assert any("chunk_length_t" in v for v in violations), violations
 
 
 class TestMakePlaybackStorePrefix:

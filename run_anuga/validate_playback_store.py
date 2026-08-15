@@ -46,6 +46,13 @@ _REQUIRED_GROUP_ATTRS = [
     "dt_source", "smoothing", "anuga_version", "revision_number", "revision_date",
     "codec", "codec_level",
 ]
+#: TASK-2719 (v2, epic 2706 W8) — n_node/n_time/chunk_length_t are required
+#: ONLY for format_version >= 2. A v1 store (chunk length always 10, none of
+#: these attrs present — including every store exported before this task,
+#: e.g. run 1328's) must keep validating with ZERO violations forever.
+_REQUIRED_GROUP_ATTRS_V2 = ["n_node", "n_time", "chunk_length_t"]
+_CHUNK_LENGTH_T_FLOOR = 2
+_CHUNK_LENGTH_T_CAP = 10
 _REQUIRED_QUANT_ATTRS = ["scale", "offset", "quantized_dtype", "byteorder", "valid_min", "valid_max"]
 _EXPECTED_CODECS = [
     {"name": "bytes", "configuration": {"endian": "little"}},
@@ -73,6 +80,28 @@ def validate_store(store_path) -> list[str]:
     for attr in _REQUIRED_GROUP_ATTRS:
         if attr not in root.attrs:
             violations.append(f"group attrs missing '{attr}' (schema §5)")
+
+    format_version = root.attrs.get("format_version")
+    if isinstance(format_version, (int, float)) and format_version >= 2:
+        for attr in _REQUIRED_GROUP_ATTRS_V2:
+            if attr not in root.attrs:
+                violations.append(
+                    f"group attrs missing '{attr}' (schema §5, required for format_version >= 2)"
+                )
+
+    # TASK-2719 (v2) — the store's OWN declared chunk_length_t is the law
+    # for its three quantized arrays' time-chunk length (O1/D5: "clients
+    # MUST read them from zarr.json and MUST NOT hardcode them" applies to
+    # this validator too). A v1 store never declares it, so O1's original
+    # fixed-10 rule still applies unconditionally there.
+    declared_chunk_length_t = root.attrs.get("chunk_length_t")
+    if declared_chunk_length_t is not None and not (
+        _CHUNK_LENGTH_T_FLOOR <= declared_chunk_length_t <= _CHUNK_LENGTH_T_CAP
+    ):
+        violations.append(
+            f"chunk_length_t={declared_chunk_length_t!r}, outside "
+            f"[{_CHUNK_LENGTH_T_FLOOR}, {_CHUNK_LENGTH_T_CAP}] (D5)"
+        )
 
     names = set(root.array_keys())
     n_node = None
@@ -137,8 +166,15 @@ def validate_store(store_path) -> list[str]:
         cke = arr.metadata.chunk_key_encoding.to_dict()
         if cke != _EXPECTED_CHUNK_KEY_ENCODING:
             violations.append(f"{name}: chunk_key_encoding={cke}, expected {_EXPECTED_CHUNK_KEY_ENCODING}")
-        if arr.chunks[0] != 10:
-            violations.append(f"{name}: time-chunk length={arr.chunks[0]}, expected 10 (O1)")
+        if declared_chunk_length_t is not None:
+            if arr.chunks[0] != declared_chunk_length_t:
+                violations.append(
+                    f"{name}: time-chunk length={arr.chunks[0]}, expected "
+                    f"{declared_chunk_length_t} (the store's own declared "
+                    "chunk_length_t, O1/D5)"
+                )
+        elif arr.chunks[0] != 10:
+            violations.append(f"{name}: time-chunk length={arr.chunks[0]}, expected 10 (O1, v1 store)")
 
         for qattr in _REQUIRED_QUANT_ATTRS:
             if qattr not in arr.attrs:

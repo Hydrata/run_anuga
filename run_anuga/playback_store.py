@@ -31,11 +31,50 @@ logger = logging.getLogger(__name__)
 
 # --- Schema constants (§0-§6 of the signed doc) -----------------------------
 
-FORMAT_VERSION = 1
-#: O1 — ratified at 10, NOT 20: time-blocking buys zero compression (DEFLATE's
-#: 32 KiB window cannot span a 1.17 MB timestep row). Chunk length is a pure
-#: seek-latency/request-count tradeoff with no byte cost either way.
+#: v2 (TASK-2719, epic 2706 W8, decision D5) — the store now declares its own
+#: n_node/n_time/chunk_length_t group attrs and the time-chunk length is
+#: ADAPTIVE (derive_chunk_length_t) rather than the v1 fixed CHUNK_LENGTH_T.
+#: v1 stores (no new attrs, chunk length always 10) remain valid forever —
+#: validate_playback_store.py gates the three new required attrs on
+#: format_version >= 2.
+FORMAT_VERSION = 2
+#: O1 (v1) — ratified at 10, NOT 20: time-blocking buys zero compression
+#: (DEFLATE's 32 KiB window cannot span a 1.17 MB timestep row). Chunk length
+#: is a pure seek-latency/request-count tradeoff with no byte cost either way.
+#: SUPERSEDED for n_node > 838,860 by decision D5 (TASK-2719): the client's
+#: per-chunk decode/decompress cost at prod scale (run 1328, n_node
+#: 3,393,075) makes chunk 10 the wrong tradeoff — see derive_chunk_length_t.
+#: Kept as the CAP (and the exact value every store <= 838,860 nodes still
+#: gets, byte-identical to today).
 CHUNK_LENGTH_T = 10
+#: D5 (TASK-2719) — floor: chunk length 1 recreates the 2618 client-side LRU
+#: thrash by construction (one static mesh array, face_node_connectivity, is
+#: 1.33x the whole chunk-1 cache ceiling — see the task's Context for the
+#: verified arithmetic). 2 is the smallest length that keeps the static
+#: arrays inside the cache ceiling at run-1328 scale.
+CHUNK_LENGTH_T_FLOOR = 2
+#: D5 (TASK-2719) — the per-chunk, per-quantity STORED (uint16, pre-gzip)
+#: byte budget the adaptive rule targets. Derived once from the exporter
+#: side; gmc's memory-policy constants are a SEPARATE, deliberately
+#: un-shared number (cross-repo duplication would let the two drift silently
+#: — see the task's "DO NOT copy gmc's memory constants into python" note).
+PLAYBACK_TARGET_CHUNK_BYTES = 16 * 1024 * 1024
+
+
+def derive_chunk_length_t(n_node: int) -> int:
+    """The adaptive time-chunk length for a store with ``n_node`` mesh nodes.
+
+    A PURE function of n_node alone (D5) — same n_node, any n_time, same
+    result. ``min(CHUNK_LENGTH_T, max(CHUNK_LENGTH_T_FLOOR, bytes_budget //
+    (n_node * 2)))``: 2 stored bytes per (timestep, node) uint16 cell, clamped
+    to [2, 10]. n_node <= 838,860 -> 10 (byte-identical to every store
+    exported before TASK-2719 — nothing to re-export); n_node >= 2,796,203 ->
+    2 (the FLOOR — run 1328's n_node=3,393,075 lands here).
+    """
+    return min(
+        CHUNK_LENGTH_T,
+        max(CHUNK_LENGTH_T_FLOOR, PLAYBACK_TARGET_CHUNK_BYTES // (n_node * 2)),
+    )
 #: B7 — the solver's own convention (q/(h + h0/h)), NOT plot_utils' masked
 #: q/(h+1e-12). The two differ by up to ~5e-2 m/s at the wet/dry fringe.
 VELOCITY_CONVENTION = "solver_epsilon"
@@ -505,6 +544,8 @@ def _export_playback_store_impl(
     epsg = scenario_config.get("epsg")
     model_start = scenario_config.get("model_start", "1970-01-01T00:00:00+00:00")
 
+    chunk_length_t = derive_chunk_length_t(n_node)
+
     group_attrs = dict(
         format_version=FORMAT_VERSION,
         xllcorner=sww["xllcorner"],
@@ -533,9 +574,15 @@ def _export_playback_store_impl(
         revision_date=sww["revision_date"],
         codec=CODEC_NAME,
         codec_level=CODEC_LEVEL,
+        # TASK-2719 (v2) — the store declares its own dimensions and the
+        # adaptive rule that produced chunk_length_t, rather than making a
+        # future reader re-derive them from the chunk grid.
+        n_node=int(n_node),
+        n_time=int(n_time),
+        chunk_length_t=int(chunk_length_t),
     )
 
-    t_chunks = (CHUNK_LENGTH_T, n_node)
+    t_chunks = (chunk_length_t, n_node)
     arrays = {
         "node_x": dict(data=sww["x"], chunks=(n_node,), fill_value=0.0),
         "node_y": dict(data=sww["y"], chunks=(n_node,), fill_value=0.0),
