@@ -198,6 +198,14 @@ COPY --from=src /src/run_anuga/gn_anuga /app/gn_anuga
 COPY --from=src /src/run_anuga /app/run_anuga_src
 RUN pip install --no-cache-dir "/app/run_anuga_src[sim,platform,playback]"
 
+# ---- playback-capability guard (TASK-2749) --------------------------------
+# Symmetric with the gpu target's guard. The cpu target has always carried the
+# playback extra, but the two stages must stay symmetric or the next
+# unification can drop one silently — which is precisely how TASK-2749
+# happened. See the gpu stage for the full rationale.
+RUN python -c "import run_anuga.playback_store as p; assert p.zarr_available(), \
+'TASK-2749: playback extra missing from this image — export_playback_store() would silently skip'"
+
 # ---- substitution guard (TASK-2700) ---------------------------------------
 # KEEP THIS AFTER THE LAST pip install OF THE STAGE. It asserts (via PEP 610
 # direct_url.json, NOT a version compare) that the anuga this image will import
@@ -298,8 +306,27 @@ ENV PYTHONPATH=/app
 COPY --from=src /src/run_anuga/gn_anuga /app/gn_anuga
 
 # Source tree + local-package install (into the base's /opt/venv).
+# NOTE the extras MUST match the cpu target's line exactly. TASK-2749: this
+# line read [sim,platform] from the TASK-2671 unification (2026-08-07) until
+# 2026-08-11, so every GPU run silently produced NO playback store —
+# export_playback_store() degrades to {"status": "skipped_no_zarr"} and the
+# simulation still SUCCEEDS, so the only trace was a CloudWatch warning while
+# the customer just saw a completed run with nothing to play back. Both GPU
+# targets are user-selectable on hydrata.com (anuga_compute_targets carries
+# batch-gpu-a10g + batch-gpu-l40s), so this was reachable in production.
 COPY --from=src /src/run_anuga /app/run_anuga_src
-RUN pip install --no-cache-dir "/app/run_anuga_src[sim,platform]"
+RUN pip install --no-cache-dir "/app/run_anuga_src[sim,platform,playback]"
+
+# ---- playback-capability guard (TASK-2749) --------------------------------
+# KEEP THIS AFTER THE LAST pip install OF THE STAGE, same placement rule as the
+# substitution guard below. Probes the capability through the runtime's OWN
+# predicate (run_anuga.playback_store.zarr_available), not a bare `import
+# zarr`, because that predicate is what export_playback_store() actually
+# branches on — so this fails for exactly the reason the runtime would skip.
+# Its purpose is to turn a future extras-list edit into a RED BUILD instead of
+# a fleet of successful runs with no playback data.
+RUN python -c "import run_anuga.playback_store as p; assert p.zarr_available(), \
+'TASK-2749: playback extra missing from this image — export_playback_store() would silently skip'"
 
 # ---- substitution guard (TASK-2700) — same contract as the cpu target ------
 # This is the COSTLY case: a PyPI wheel landing here replaces the nvc +
