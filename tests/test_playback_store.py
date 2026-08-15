@@ -198,6 +198,79 @@ class TestComputeVelocity:
 
 
 # ---------------------------------------------------------------------------
+# TASK-2752 (W8.2, epic 2706) — the temporal-max envelope. AC1/AC2.
+# ---------------------------------------------------------------------------
+
+class TestComputeEnvelopes:
+    """AC2 "THE TRAP IS TESTED": a fixture where x_velocity and y_velocity
+    peak at DIFFERENT timesteps must prove ``velocity_max !=
+    magnitude(x_velocity_max, y_velocity_max)`` and that the shipped array is
+    the former (max-of-derived-speed), not the latter (derived-of-component-
+    max).
+
+    Node 0 is the trap: x_velocity peaks at t=0 (vx=3, vy=0 -> speed 3),
+    y_velocity peaks at t=1 (vx=0, vy=4 -> speed 4) — the classic 3-4-5
+    triangle, chosen so a naive `sqrt(max(vx)**2 + max(vy)**2)` answers
+    exactly 5 (combining two different instants' peaks) where the correct
+    per-timestep-derived-then-maxed answer is 4 (t=1's real speed).
+    Node 1 is a no-trap control (velocity never rotates directions), where
+    naive and correct agree — proving this isn't a fixture that happens to
+    disagree with everything.
+
+    RED PROOF (recorded, not re-run here): this test was run once against a
+    deliberately naive `compute_envelopes` that computed
+    `sqrt(max(|x_velocity|)**2 + max(|y_velocity|)**2)` in place of the
+    correct max-of-derived-speed; it failed exactly as this test asserts it
+    must. See docs/epic-state/wave-reports/TASK-2706-W8.2-evidence/
+    2752-ac2-trap-red-proof.txt for the captured pytest output.
+    """
+
+    DEPTH = np.array([[1.0, 1.0], [1.0, 1.0], [1.0, 1.0]], dtype=np.float32)
+    X_VEL = np.array([[3.0, 2.0], [0.0, 2.0], [0.0, 2.0]], dtype=np.float32)
+    Y_VEL = np.array([[0.0, 0.0], [4.0, 0.0], [0.0, 0.0]], dtype=np.float32)
+
+    def test_velocity_max_is_max_of_derived_speed_not_derived_of_component_max(self):
+        result = ps.compute_envelopes(self.DEPTH, self.X_VEL, self.Y_VEL)
+        naive_component_max = np.sqrt(
+            np.max(np.abs(self.X_VEL), axis=0) ** 2 + np.max(np.abs(self.Y_VEL), axis=0) ** 2
+        )
+        # The fixture itself must actually distinguish the two orders of
+        # operation at node 0, or the assertion below proves nothing.
+        assert naive_component_max[0] != 4.0, "trap fixture is degenerate — naive and correct coincide"
+        assert result["velocity"][0] != naive_component_max[0]
+        np.testing.assert_allclose(result["velocity"], [4.0, 2.0])
+        np.testing.assert_allclose(naive_component_max, [5.0, 2.0])
+
+    def test_depth_max_is_max_over_time(self):
+        result = ps.compute_envelopes(self.DEPTH, self.X_VEL, self.Y_VEL)
+        np.testing.assert_allclose(result["depth"], [1.0, 1.0])
+
+    def test_div_max_is_max_of_depth_times_derived_speed_same_instant(self):
+        """dIV = depth * speed, derived PER TIMESTEP then maxed — mirrors the
+        velocity trap: div at node 0 is [3, 4, 0] (depth 1 * speed at each t),
+        max 4, NOT depth_max * velocity_max (which would give 1*4=4 here by
+        coincidence, but is the wrong formula in general — dIV_max is its own
+        max-of-derived quantity, not a product of two other envelopes)."""
+        result = ps.compute_envelopes(self.DEPTH, self.X_VEL, self.Y_VEL)
+        np.testing.assert_allclose(result["div"], [4.0, 2.0])
+
+    def test_all_three_envelopes_present_non_negative_float32(self):
+        result = ps.compute_envelopes(self.DEPTH, self.X_VEL, self.Y_VEL)
+        assert set(result.keys()) == set(ps.ENVELOPE_QUANTITIES)
+        for arr in result.values():
+            assert arr.dtype == np.float32
+            assert np.all(arr >= 0)
+
+    def test_empty_arrays_return_zeros_not_crash(self):
+        empty_depth = np.zeros((0, 3), dtype=np.float32)
+        empty_v = np.zeros((0, 3), dtype=np.float32)
+        result = ps.compute_envelopes(empty_depth, empty_v, empty_v)
+        for name in ps.ENVELOPE_QUANTITIES:
+            assert result[name].shape == (3,)
+            assert np.all(result[name] == 0)
+
+
+# ---------------------------------------------------------------------------
 # Import-guard / missing-zarr degradation (AC: "missing-zarr degradation
 # test green")
 # ---------------------------------------------------------------------------
@@ -359,6 +432,39 @@ class TestExportAgainstFixtureSww:
         root = zarr.open_group(result["local_path"], mode="r")
         assert root.attrs["minimum_allowed_height"] == 1.23e-12
         assert root.attrs["flow_algorithm"] == "DE1"
+
+    def test_envelope_arrays_present_and_declared(self, tmp_path):
+        """AC1/AC4 — the producer writes depth_max/velocity_max/div_max and
+        declares them in group attrs, following has_dt's first-class-
+        absence shape (a fresh export always declares all three today)."""
+        import zarr
+
+        result = self._export(tmp_path)
+        root = zarr.open_group(result["local_path"], mode="r")
+        assert list(root.attrs["envelope_quantities"]) == list(ps.ENVELOPE_QUANTITIES)
+        n_node = result["n_node"]
+        for name in ps.ENVELOPE_QUANTITIES:
+            arr = root[f"{name}_max"]
+            assert arr.shape == (n_node,), f"{name}_max: shape={arr.shape}, expected ({n_node},)"
+            assert str(arr.dtype) == "uint16", f"{name}_max: dtype={arr.dtype}"
+            for qattr in ("scale", "offset", "quantized_dtype", "byteorder", "valid_min", "valid_max"):
+                assert qattr in arr.attrs, f"{name}_max missing quantization attr '{qattr}'"
+
+    def test_depth_max_dequantizes_to_the_true_temporal_maximum(self, tmp_path):
+        """A real correctness check, not just a shape check: depth_max's own
+        (dequantized) maximum across every node must equal the store's
+        depth valid_max — both are, by definition, max over ALL (t, node)
+        of depth. Proves the envelope pipeline computed a genuine max-over-
+        time, not zeros or a copy of frame 0."""
+        import zarr
+
+        result = self._export(tmp_path)
+        root = zarr.open_group(result["local_path"], mode="r")
+        depth_max_attrs = root["depth_max"].attrs
+        depth_attrs = root["depth"].attrs
+        stored = root["depth_max"][:]
+        dequantized = depth_max_attrs["offset"] + stored.astype(np.float32) * depth_max_attrs["scale"]
+        assert abs(float(dequantized.max()) - depth_attrs["valid_max"]) < 1e-2
 
 
 @requires_zarr
@@ -627,6 +733,82 @@ class TestValidatorCatchesRealDefects:
 
         violations = validate_store(result["local_path"])
         assert any("chunk_length_t" in v for v in violations), violations
+
+    @pytest.mark.requires_anuga
+    def test_v2_store_with_no_declared_envelopes_still_validates_clean(self, tmp_path, fixture_sww):
+        """AC3/AC4 — a v2 store that declares NO envelopes (every store
+        exported before TASK-2752, including run 1328's) must keep
+        validating with ZERO violations. Simulated the same way the sibling
+        v1 test above does: export for real, then strip the one new attr."""
+        import zarr
+        from run_anuga.validate_playback_store import validate_store
+
+        input_data = {
+            "run_label": "run_1_1_4",
+            "scenario_config": {"project": 1, "id": 1, "run_id": 4, "epsg": "EPSG:28355"},
+        }
+        result = ps.export_playback_store(
+            input_data=input_data, sww_path=str(fixture_sww),
+            output_dir=str(tmp_path), upload=False,
+        )
+        root = zarr.open_group(result["local_path"], mode="a")
+        attrs = dict(root.attrs)
+        del attrs["envelope_quantities"]
+        root.attrs.put(attrs)
+        for name in ps.ENVELOPE_QUANTITIES:
+            del root[f"{name}_max"]
+
+        assert validate_store(result["local_path"]) == []
+
+    @pytest.mark.requires_anuga
+    def test_catches_a_declared_envelope_the_store_does_not_contain(self, tmp_path, fixture_sww):
+        """AC3 — 'REJECTS a store that declares an envelope it does not
+        contain'. A store that CLAIMS an envelope but has no backing array
+        (or backing array for a name outside ENVELOPE_QUANTITIES) must fail,
+        never silently pass."""
+        import zarr
+        from run_anuga.validate_playback_store import validate_store
+
+        input_data = {
+            "run_label": "run_1_1_5",
+            "scenario_config": {"project": 1, "id": 1, "run_id": 5, "epsg": "EPSG:28355"},
+        }
+        result = ps.export_playback_store(
+            input_data=input_data, sww_path=str(fixture_sww),
+            output_dir=str(tmp_path), upload=False,
+        )
+        root = zarr.open_group(result["local_path"], mode="a")
+        attrs = dict(root.attrs)
+        attrs["envelope_quantities"] = list(attrs["envelope_quantities"]) + ["froude"]
+        root.attrs.put(attrs)
+
+        violations = validate_store(result["local_path"])
+        assert any("froude" in v for v in violations), violations
+
+    @pytest.mark.requires_anuga
+    def test_catches_an_envelope_array_missing_a_quantization_attr(self, tmp_path, fixture_sww):
+        """AC3 — a declared-and-present envelope array must still carry the
+        full quantization attr set (schema §3); a real one with one stripped
+        must be caught, exactly like the primitive quantity arrays are."""
+        import zarr
+        from run_anuga.validate_playback_store import validate_store
+
+        input_data = {
+            "run_label": "run_1_1_6",
+            "scenario_config": {"project": 1, "id": 1, "run_id": 6, "epsg": "EPSG:28355"},
+        }
+        result = ps.export_playback_store(
+            input_data=input_data, sww_path=str(fixture_sww),
+            output_dir=str(tmp_path), upload=False,
+        )
+        root = zarr.open_group(result["local_path"], mode="a")
+        arr = root["depth_max"]
+        attrs = dict(arr.attrs)
+        del attrs["scale"]
+        arr.attrs.put(attrs)
+
+        violations = validate_store(result["local_path"])
+        assert any("depth_max" in v and "scale" in v for v in violations), violations
 
 
 class TestMakePlaybackStorePrefix:

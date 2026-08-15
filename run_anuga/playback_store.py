@@ -16,7 +16,11 @@ list, and the web venv). A missing zarr degrades the export to a logged
 warning, never a failed run — see :func:`export_playback_store`.
 
 NOT touched by this module: the SWW file (read-only) and the ``*_max.tif``
-max-envelope rasters (unchanged sibling artifact, cold-archived separately).
+max-envelope rasters themselves (unchanged sibling artifact, cold-archived
+separately). TASK-2752 (v2, epic 2706 W8.2) DOES add this module's own
+in-browser equivalent of them — ``depth_max``/``velocity_max``/``div_max``
+per-vertex arrays, declared via the ``envelope_quantities`` group attr — see
+:func:`compute_envelopes`.
 """
 from __future__ import annotations
 
@@ -71,6 +75,19 @@ CODEC_LEVEL = 6
 #: Zero code for the symmetric velocity range (B3) — exactly representable.
 VELOCITY_FILL_VALUE = 32767
 DEPTH_FILL_VALUE = 0
+#: TASK-2752 (W8.2, epic 2706) — the temporal-max envelope quantities, matching
+#: the `*_max.tif` raster set the batch pipeline already produces (module
+#: header above: "NOT touched by this module ... unchanged sibling artifact").
+#: Order is deterministic (written to group_attrs verbatim) — do not reorder
+#: casually, it is part of the manifest's advertised capability list.
+ENVELOPE_QUANTITIES = ("depth", "velocity", "div")
+#: Every envelope quantity is a non-negative MAGNITUDE (max depth, max speed,
+#: max depth*speed) — quantize_range(0.0, max) always maps code 0 -> physical
+#: 0.0, so a single shared fill value works for all three (mirrors
+#: DEPTH_FILL_VALUE's reasoning, not VELOCITY_FILL_VALUE's — velocity_max is a
+#: magnitude, never signed, so it does NOT get the symmetric [-v,+v] treatment
+#: x_velocity/y_velocity use).
+ENVELOPE_FILL_VALUE = 0
 #: TASK-2709 (W2.1, epic 2706) — the cache directive written on EVERY playback
 #: object at export. S3 cannot add one later without rewriting the object, so
 #: it has to be set here or not at all (existing stores can never satisfy it;
@@ -194,6 +211,51 @@ def compute_velocity(momentum: np.ndarray, depth: np.ndarray, h0: float) -> np.n
         denom = depth[wet] + h0 / depth[wet]
         u[wet] = momentum[wet] / denom
     return u
+
+
+def compute_envelopes(
+    depth: np.ndarray, x_velocity: np.ndarray, y_velocity: np.ndarray
+) -> dict[str, np.ndarray]:
+    """TASK-2752 (W8.2, epic 2706) — per-vertex temporal-max envelopes.
+
+    THE TRAP: max-of-derived is NOT derived-of-max. ``velocity`` here is the
+    per-timestep speed ``sqrt(x_velocity**2 + y_velocity**2)`` — i.e. it is
+    derived FIRST, at every timestep, and ONLY THEN maxed over time. The wrong
+    (and cheaper-looking) shortcut — ``sqrt(max(x_velocity)**2 +
+    max(y_velocity)**2)`` — silently combines the x- and y-peaks from
+    DIFFERENT timesteps into a magnitude neither timestep ever produced,
+    which is exactly why ``depth_max``, ``velocity_max`` and ``dIV_max``
+    already exist as three separate rasters in the batch pipeline rather than
+    being reconstructed from the component maxima.
+
+    ``depth``, ``x_velocity``, ``y_velocity`` are the exporter's already-
+    physical (post ``compute_velocity``) ``[n_time, n_node]`` arrays — the
+    SAME arrays quantize_range/quantize are then run over for the primitive
+    depth/x_velocity/y_velocity arrays, so this function must run BEFORE
+    those are overwritten by their quantized (uint16) counterparts.
+
+    @returns dict with keys :data:`ENVELOPE_QUANTITIES` ('depth', 'velocity',
+    'div'), each a ``(n_node,)`` float32 array, all >= 0 by construction.
+    """
+    depth = np.asarray(depth, dtype=np.float64)
+    x_velocity = np.asarray(x_velocity, dtype=np.float64)
+    y_velocity = np.asarray(y_velocity, dtype=np.float64)
+    if depth.size == 0:
+        n_node = depth.shape[1] if depth.ndim == 2 else 0
+        zeros = np.zeros(n_node, dtype=np.float32)
+        return {name: zeros.copy() for name in ENVELOPE_QUANTITIES}
+
+    depth_clamped = np.maximum(depth, 0.0)
+    # DERIVED FIRST, at every (t, node) — the speed a viewer would actually
+    # see rendered at that instant — THEN maxed over t. Never the other order.
+    speed = np.sqrt(np.square(x_velocity) + np.square(y_velocity))
+    div = depth_clamped * speed
+
+    return {
+        "depth": np.max(depth_clamped, axis=0).astype(np.float32),
+        "velocity": np.max(speed, axis=0).astype(np.float32),
+        "div": np.max(div, axis=0).astype(np.float32),
+    }
 
 
 # --- SWW reading --------------------------------------------------------------
@@ -527,6 +589,12 @@ def _export_playback_store_impl(
 
     dt_ms, has_dt, dt_source = _load_dt_ms_series(output_dir, run_label, n_time)
 
+    # TASK-2752 — computed from the same physical (pre-quantization)
+    # depth/x_velocity/y_velocity arrays quantize_range/quantize are about to
+    # consume below. Must run before those names are shadowed by their
+    # quantized (uint16) counterparts a few lines down.
+    envelopes = compute_envelopes(depth, x_velocity, y_velocity)
+
     max_depth = float(np.max(depth)) if depth.size else 0.0
     depth_scale, depth_offset = quantize_range(0.0, max_depth)
     depth_q = quantize(depth, depth_scale, depth_offset)
@@ -540,6 +608,24 @@ def _export_playback_store_impl(
     v_scale, v_offset = symmetric_velocity_range(v_absmax)
     x_velocity_q = quantize(x_velocity, v_scale, v_offset)
     y_velocity_q = quantize(y_velocity, v_scale, v_offset)
+
+    # TASK-2752 — each envelope gets its OWN [0, max] quantization range,
+    # independent of the primitive arrays' ranges: velocity_max (a speed
+    # MAGNITUDE, max sqrt(vx^2+vy^2)) is never smaller than v_absmax (the
+    # componentwise |vx|/|vy| max symmetric_velocity_range above is keyed on)
+    # and is frequently larger, so sharing v_scale/v_offset would silently
+    # clip the envelope's own peak.
+    envelope_quantized = {}
+    envelope_attrs = {}
+    for name in ENVELOPE_QUANTITIES:
+        raw = envelopes[name]
+        env_max = float(np.max(raw)) if raw.size else 0.0
+        env_scale, env_offset = quantize_range(0.0, env_max)
+        envelope_quantized[name] = quantize(raw, env_scale, env_offset)
+        envelope_attrs[name] = dict(
+            scale=env_scale, offset=env_offset, quantized_dtype="uint16",
+            byteorder="little", valid_min=0.0, valid_max=env_max,
+        )
 
     epsg = scenario_config.get("epsg")
     model_start = scenario_config.get("model_start", "1970-01-01T00:00:00+00:00")
@@ -580,6 +666,13 @@ def _export_playback_store_impl(
         n_node=int(n_node),
         n_time=int(n_time),
         chunk_length_t=int(chunk_length_t),
+        # TASK-2752 (v2, epic 2706 W8.2) — first-class-absence capability
+        # flag, the SAME shape has_dt already uses (schema §5): which
+        # temporal-max envelopes THIS store actually contains. A store
+        # exported before this task simply never declares the key (manifest
+        # relay + validator both treat that as "declares none" — no backfill,
+        # no 404, no throw; TASK-2752 AC4).
+        envelope_quantities=list(ENVELOPE_QUANTITIES),
     )
 
     t_chunks = (chunk_length_t, n_node)
@@ -622,6 +715,18 @@ def _export_playback_store_impl(
             ),
         ),
     }
+    # TASK-2752 — one (n_node,) array per declared envelope quantity, e.g.
+    # 'depth' -> 'depth_max'. Single node-chunk, same shape/codec/chunk-key
+    # pattern as elevation/friction/inradius (schema §2's static arrays), NOT
+    # time-chunked like depth/x_velocity/y_velocity — an envelope has no time
+    # axis left to chunk.
+    for name in ENVELOPE_QUANTITIES:
+        arrays[f"{name}_max"] = dict(
+            data=envelope_quantized[name],
+            chunks=(n_node,),
+            fill_value=ENVELOPE_FILL_VALUE,
+            attrs=envelope_attrs[name],
+        )
 
     store_path = Path(output_dir) / f"{run_label}_playback.zarr"
     _write_zarr_v3_store(store_path, group_attrs=group_attrs, arrays=arrays)

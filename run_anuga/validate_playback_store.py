@@ -18,6 +18,12 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+# TASK-2752 (W8.2, epic 2706) — imported (not re-declared) so the producer's
+# and the validator's idea of "which quantities can have an envelope" can
+# never drift apart. Safe: playback_store.py's only module-level import is
+# numpy, and it never imports this module (no cycle).
+from run_anuga.playback_store import ENVELOPE_QUANTITIES
+
 # name -> (expected dtype kind+itemsize via numpy dtype string, expected ndim)
 # Node-shaped static geometry — (nNode,). NOT inradius, which is per-FACE
 # (schema §2: "Per-triangle, matching the solver's per-cell self.radii").
@@ -193,6 +199,47 @@ def validate_store(store_path) -> list[str]:
                 violations.append(f"{name}: valid_min/valid_max non-finite (schema §3 assert)")
             elif valid_max < valid_min:
                 violations.append(f"{name}: valid_max < valid_min — range inverted (schema §3 assert)")
+
+    # TASK-2752 (v2, epic 2706 W8.2) — envelope arrays are OPTIONAL, declared
+    # capabilities (the has_dt shape): a v2 store that declares NONE is fully
+    # valid (zero violations from this block). Only a DECLARED-but-missing
+    # (or malformed) envelope is a violation — "declares an envelope it does
+    # not contain" is refused, absence itself is not.
+    declared_envelopes = root.attrs.get("envelope_quantities")
+    if declared_envelopes:
+        if not isinstance(declared_envelopes, (list, tuple)):
+            violations.append(
+                f"envelope_quantities={declared_envelopes!r}, expected a list (TASK-2752, schema §5)"
+            )
+        else:
+            for env_name in declared_envelopes:
+                if env_name not in ENVELOPE_QUANTITIES:
+                    violations.append(
+                        f"envelope_quantities declares unknown quantity '{env_name}', expected one of "
+                        f"{ENVELOPE_QUANTITIES} (TASK-2752)"
+                    )
+                    continue
+                arr_name = f"{env_name}_max"
+                if arr_name not in names:
+                    violations.append(
+                        f"group attrs declare envelope '{env_name}' but array '{arr_name}' is missing "
+                        "(TASK-2752 — a store must not advertise a capability it does not have)"
+                    )
+                    continue
+                arr = root[arr_name]
+                if str(arr.dtype) != "uint16":
+                    violations.append(f"{arr_name}: dtype={arr.dtype}, expected uint16 (TASK-2752)")
+                if arr.ndim != 1:
+                    violations.append(f"{arr_name}: ndim={arr.ndim}, expected 1 — (nNode,) (TASK-2752)")
+                elif n_node is not None and arr.shape[0] != n_node:
+                    violations.append(
+                        f"{arr_name}: shape[0]={arr.shape[0]} != nNode={n_node} (TASK-2752)"
+                    )
+                for qattr in _REQUIRED_QUANT_ATTRS:
+                    if qattr not in arr.attrs:
+                        violations.append(
+                            f"{arr_name}: missing quantization attr '{qattr}' (TASK-2752, schema §3)"
+                        )
 
     if _INRADIUS_ARRAY not in names:
         violations.append(f"missing required array '{_INRADIUS_ARRAY}' (schema §2)")
