@@ -468,6 +468,7 @@ class TestExportAgainstFixtureSww:
 
 
 @requires_zarr
+@pytest.mark.requires_anuga
 class TestAdaptiveChunkLengthWrittenStore:
     """TASK-2719 AC2/AC3 (epic 2706 W8) — a WRITTEN store at prod scale, not
     just the pure derivation (TestDeriveChunkLengthT above).
@@ -675,6 +676,7 @@ class TestValidatorCatchesRealDefects:
         )
         assert validate_store(result["local_path"]) == []
 
+    @pytest.mark.requires_anuga
     def test_v1_store_without_new_attrs_still_validates_clean(self, tmp_path, fixture_sww):
         """TASK-2719 AC4 backward compatibility — a v1 store (predating the
         n_node/n_time/chunk_length_t attrs and the adaptive chunk-length
@@ -710,6 +712,7 @@ class TestValidatorCatchesRealDefects:
 
         assert validate_store(result["local_path"]) == []
 
+    @pytest.mark.requires_anuga
     def test_v2_store_missing_new_attrs_is_caught(self, tmp_path, fixture_sww):
         """The gate is a real detector, not just permissive: a store that
         CLAIMS format_version=2 but is missing the new attrs must fail, not
