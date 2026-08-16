@@ -16,7 +16,11 @@ list, and the web venv). A missing zarr degrades the export to a logged
 warning, never a failed run — see :func:`export_playback_store`.
 
 NOT touched by this module: the SWW file (read-only) and the ``*_max.tif``
-max-envelope rasters (unchanged sibling artifact, cold-archived separately).
+max-envelope rasters themselves (unchanged sibling artifact, cold-archived
+separately). TASK-2752 (v2, epic 2706 W8.2) DOES add this module's own
+in-browser equivalent of them — ``depth_max``/``velocity_max``/``div_max``
+per-vertex arrays, declared via the ``envelope_quantities`` group attr — see
+:func:`compute_envelopes`.
 """
 from __future__ import annotations
 
@@ -31,11 +35,34 @@ logger = logging.getLogger(__name__)
 
 # --- Schema constants (§0-§6 of the signed doc) -----------------------------
 
-FORMAT_VERSION = 1
-#: O1 — ratified at 10, NOT 20: time-blocking buys zero compression (DEFLATE's
-#: 32 KiB window cannot span a 1.17 MB timestep row). Chunk length is a pure
-#: seek-latency/request-count tradeoff with no byte cost either way.
+#: v2 (TASK-2719, epic 2706 W8, decision D5) — the store now declares its own
+#: n_node/n_time/chunk_length_t group attrs and the time-chunk length is
+#: ADAPTIVE (derive_chunk_length_t) rather than the v1 fixed CHUNK_LENGTH_T.
+#: v1 stores (no new attrs, chunk length always 10) remain valid forever —
+#: validate_playback_store.py gates the three new required attrs on
+#: format_version >= 2.
+FORMAT_VERSION = 2
+#: O1 (v1) — ratified at 10, NOT 20: time-blocking buys zero compression
+#: (DEFLATE's 32 KiB window cannot span a 1.17 MB timestep row). Chunk length
+#: is a pure seek-latency/request-count tradeoff with no byte cost either way.
+#: SUPERSEDED for n_node > 838,860 by decision D5 (TASK-2719): the client's
+#: per-chunk decode/decompress cost at prod scale (run 1328, n_node
+#: 3,393,075) makes chunk 10 the wrong tradeoff — see derive_chunk_length_t.
+#: Kept as the CAP (and the exact value every store <= 838,860 nodes still
+#: gets, byte-identical to today).
 CHUNK_LENGTH_T = 10
+#: D5 (TASK-2719) — floor: chunk length 1 recreates the 2618 client-side LRU
+#: thrash by construction (one static mesh array, face_node_connectivity, is
+#: 1.33x the whole chunk-1 cache ceiling — see the task's Context for the
+#: verified arithmetic). 2 is the smallest length that keeps the static
+#: arrays inside the cache ceiling at run-1328 scale.
+CHUNK_LENGTH_T_FLOOR = 2
+#: D5 (TASK-2719) — the per-chunk, per-quantity STORED (uint16, pre-gzip)
+#: byte budget the adaptive rule targets. Derived once from the exporter
+#: side; gmc's memory-policy constants are a SEPARATE, deliberately
+#: un-shared number (cross-repo duplication would let the two drift silently
+#: — see the task's "DO NOT copy gmc's memory constants into python" note).
+PLAYBACK_TARGET_CHUNK_BYTES = 16 * 1024 * 1024
 #: B7 — the solver's own convention (q/(h + h0/h)), NOT plot_utils' masked
 #: q/(h+1e-12). The two differ by up to ~5e-2 m/s at the wet/dry fringe.
 VELOCITY_CONVENTION = "solver_epsilon"
@@ -48,6 +75,33 @@ CODEC_LEVEL = 6
 #: Zero code for the symmetric velocity range (B3) — exactly representable.
 VELOCITY_FILL_VALUE = 32767
 DEPTH_FILL_VALUE = 0
+#: TASK-2752 (W8.2, epic 2706) — the temporal-max envelope quantities, matching
+#: the `*_max.tif` raster set the batch pipeline already produces (module
+#: header above: "NOT touched by this module ... unchanged sibling artifact").
+#: Order is deterministic (written to group_attrs verbatim) — do not reorder
+#: casually, it is part of the manifest's advertised capability list.
+ENVELOPE_QUANTITIES = ("depth", "velocity", "div")
+#: Every envelope quantity is a non-negative MAGNITUDE (max depth, max speed,
+#: max depth*speed) — quantize_range(0.0, max) always maps code 0 -> physical
+#: 0.0, so a single shared fill value works for all three (mirrors
+#: DEPTH_FILL_VALUE's reasoning, not VELOCITY_FILL_VALUE's — velocity_max is a
+#: magnitude, never signed, so it does NOT get the symmetric [-v,+v] treatment
+#: x_velocity/y_velocity use).
+ENVELOPE_FILL_VALUE = 0
+#: TASK-2709 (W2.1, epic 2706) — the cache directive written on EVERY playback
+#: object at export. S3 cannot add one later without rewriting the object, so
+#: it has to be set here or not at all (existing stores can never satisfy it;
+#: only a fresh export does).
+#:
+#: A store is write-once under a per-run prefix
+#: (``playback/{project}_{scenario}_{run}/``), so its bytes genuinely are
+#: immutable — ``immutable`` is what stops the browser spending a conditional
+#: GET round-trip per chunk just to be told 304.
+#:
+#: The nominal year is NOT how long a stale object can be served: the browser
+#: caches against the full presigned URL, and TASK-2710 rotates that URL every
+#: time bucket, so the effective ceiling is one bucket, not a year.
+PLAYBACK_CACHE_CONTROL = "public, max-age=31536000, immutable"
 
 
 def zarr_available() -> bool:
@@ -58,6 +112,22 @@ def zarr_available() -> bool:
         return True
     except ImportError:
         return False
+
+
+def derive_chunk_length_t(n_node: int) -> int:
+    """The adaptive time-chunk length for a store with ``n_node`` mesh nodes.
+
+    A PURE function of n_node alone (D5) — same n_node, any n_time, same
+    result. ``min(CHUNK_LENGTH_T, max(CHUNK_LENGTH_T_FLOOR, bytes_budget //
+    (n_node * 2)))``: 2 stored bytes per (timestep, node) uint16 cell, clamped
+    to [2, 10]. n_node <= 838,860 -> 10 (byte-identical to every store
+    exported before TASK-2719 — nothing to re-export); n_node >= 2,796,203 ->
+    2 (the FLOOR — run 1328's n_node=3,393,075 lands here).
+    """
+    return min(
+        CHUNK_LENGTH_T,
+        max(CHUNK_LENGTH_T_FLOOR, PLAYBACK_TARGET_CHUNK_BYTES // (n_node * 2)),
+    )
 
 
 # --- Quantization math (schema §3 "Quantization contract") ------------------
@@ -141,6 +211,51 @@ def compute_velocity(momentum: np.ndarray, depth: np.ndarray, h0: float) -> np.n
         denom = depth[wet] + h0 / depth[wet]
         u[wet] = momentum[wet] / denom
     return u
+
+
+def compute_envelopes(
+    depth: np.ndarray, x_velocity: np.ndarray, y_velocity: np.ndarray
+) -> dict[str, np.ndarray]:
+    """TASK-2752 (W8.2, epic 2706) — per-vertex temporal-max envelopes.
+
+    THE TRAP: max-of-derived is NOT derived-of-max. ``velocity`` here is the
+    per-timestep speed ``sqrt(x_velocity**2 + y_velocity**2)`` — i.e. it is
+    derived FIRST, at every timestep, and ONLY THEN maxed over time. The wrong
+    (and cheaper-looking) shortcut — ``sqrt(max(x_velocity)**2 +
+    max(y_velocity)**2)`` — silently combines the x- and y-peaks from
+    DIFFERENT timesteps into a magnitude neither timestep ever produced,
+    which is exactly why ``depth_max``, ``velocity_max`` and ``dIV_max``
+    already exist as three separate rasters in the batch pipeline rather than
+    being reconstructed from the component maxima.
+
+    ``depth``, ``x_velocity``, ``y_velocity`` are the exporter's already-
+    physical (post ``compute_velocity``) ``[n_time, n_node]`` arrays — the
+    SAME arrays quantize_range/quantize are then run over for the primitive
+    depth/x_velocity/y_velocity arrays, so this function must run BEFORE
+    those are overwritten by their quantized (uint16) counterparts.
+
+    @returns dict with keys :data:`ENVELOPE_QUANTITIES` ('depth', 'velocity',
+    'div'), each a ``(n_node,)`` float32 array, all >= 0 by construction.
+    """
+    depth = np.asarray(depth, dtype=np.float64)
+    x_velocity = np.asarray(x_velocity, dtype=np.float64)
+    y_velocity = np.asarray(y_velocity, dtype=np.float64)
+    if depth.size == 0:
+        n_node = depth.shape[1] if depth.ndim == 2 else 0
+        zeros = np.zeros(n_node, dtype=np.float32)
+        return {name: zeros.copy() for name in ENVELOPE_QUANTITIES}
+
+    depth_clamped = np.maximum(depth, 0.0)
+    # DERIVED FIRST, at every (t, node) — the speed a viewer would actually
+    # see rendered at that instant — THEN maxed over t. Never the other order.
+    speed = np.sqrt(np.square(x_velocity) + np.square(y_velocity))
+    div = depth_clamped * speed
+
+    return {
+        "depth": np.max(depth_clamped, axis=0).astype(np.float32),
+        "velocity": np.max(speed, axis=0).astype(np.float32),
+        "div": np.max(div, axis=0).astype(np.float32),
+    }
 
 
 # --- SWW reading --------------------------------------------------------------
@@ -285,6 +400,11 @@ def _upload_store_to_s3(store_path, bucket: str, prefix: str) -> str:
     """Upload every file under ``store_path`` to ``s3://bucket/prefix``,
     preserving the store's relative directory structure (mirrors the
     multipart-config pattern in ``_handoff.py`` upload_cold_archive).
+
+    Every object is written with ``PLAYBACK_CACHE_CONTROL`` (TASK-2709) —
+    metadata and chunks alike, since the browser fetches both through the same
+    presigned manifest URLs and re-downloading 62.7 MiB of geometry per page
+    load is exactly the cost this removes.
     """
     import boto3
     from boto3.s3.transfer import TransferConfig
@@ -301,7 +421,11 @@ def _upload_store_to_s3(store_path, bucket: str, prefix: str) -> str:
             continue
         rel = local_file.relative_to(store_path).as_posix()
         key = f"{prefix}{rel}"
-        s3.upload_file(str(local_file), bucket, key, Config=transfer_config)
+        s3.upload_file(
+            str(local_file), bucket, key,
+            ExtraArgs={"CacheControl": PLAYBACK_CACHE_CONTROL},
+            Config=transfer_config,
+        )
         n_files += 1
     logger.info(
         "playback_store: uploaded %d files to s3://%s/%s", n_files, bucket, prefix
@@ -465,6 +589,12 @@ def _export_playback_store_impl(
 
     dt_ms, has_dt, dt_source = _load_dt_ms_series(output_dir, run_label, n_time)
 
+    # TASK-2752 — computed from the same physical (pre-quantization)
+    # depth/x_velocity/y_velocity arrays quantize_range/quantize are about to
+    # consume below. Must run before those names are shadowed by their
+    # quantized (uint16) counterparts a few lines down.
+    envelopes = compute_envelopes(depth, x_velocity, y_velocity)
+
     max_depth = float(np.max(depth)) if depth.size else 0.0
     depth_scale, depth_offset = quantize_range(0.0, max_depth)
     depth_q = quantize(depth, depth_scale, depth_offset)
@@ -479,8 +609,28 @@ def _export_playback_store_impl(
     x_velocity_q = quantize(x_velocity, v_scale, v_offset)
     y_velocity_q = quantize(y_velocity, v_scale, v_offset)
 
+    # TASK-2752 — each envelope gets its OWN [0, max] quantization range,
+    # independent of the primitive arrays' ranges: velocity_max (a speed
+    # MAGNITUDE, max sqrt(vx^2+vy^2)) is never smaller than v_absmax (the
+    # componentwise |vx|/|vy| max symmetric_velocity_range above is keyed on)
+    # and is frequently larger, so sharing v_scale/v_offset would silently
+    # clip the envelope's own peak.
+    envelope_quantized = {}
+    envelope_attrs = {}
+    for name in ENVELOPE_QUANTITIES:
+        raw = envelopes[name]
+        env_max = float(np.max(raw)) if raw.size else 0.0
+        env_scale, env_offset = quantize_range(0.0, env_max)
+        envelope_quantized[name] = quantize(raw, env_scale, env_offset)
+        envelope_attrs[name] = dict(
+            scale=env_scale, offset=env_offset, quantized_dtype="uint16",
+            byteorder="little", valid_min=0.0, valid_max=env_max,
+        )
+
     epsg = scenario_config.get("epsg")
     model_start = scenario_config.get("model_start", "1970-01-01T00:00:00+00:00")
+
+    chunk_length_t = derive_chunk_length_t(n_node)
 
     group_attrs = dict(
         format_version=FORMAT_VERSION,
@@ -510,9 +660,22 @@ def _export_playback_store_impl(
         revision_date=sww["revision_date"],
         codec=CODEC_NAME,
         codec_level=CODEC_LEVEL,
+        # TASK-2719 (v2) — the store declares its own dimensions and the
+        # adaptive rule that produced chunk_length_t, rather than making a
+        # future reader re-derive them from the chunk grid.
+        n_node=int(n_node),
+        n_time=int(n_time),
+        chunk_length_t=int(chunk_length_t),
+        # TASK-2752 (v2, epic 2706 W8.2) — first-class-absence capability
+        # flag, the SAME shape has_dt already uses (schema §5): which
+        # temporal-max envelopes THIS store actually contains. A store
+        # exported before this task simply never declares the key (manifest
+        # relay + validator both treat that as "declares none" — no backfill,
+        # no 404, no throw; TASK-2752 AC4).
+        envelope_quantities=list(ENVELOPE_QUANTITIES),
     )
 
-    t_chunks = (CHUNK_LENGTH_T, n_node)
+    t_chunks = (chunk_length_t, n_node)
     arrays = {
         "node_x": dict(data=sww["x"], chunks=(n_node,), fill_value=0.0),
         "node_y": dict(data=sww["y"], chunks=(n_node,), fill_value=0.0),
@@ -552,6 +715,18 @@ def _export_playback_store_impl(
             ),
         ),
     }
+    # TASK-2752 — one (n_node,) array per declared envelope quantity, e.g.
+    # 'depth' -> 'depth_max'. Single node-chunk, same shape/codec/chunk-key
+    # pattern as elevation/friction/inradius (schema §2's static arrays), NOT
+    # time-chunked like depth/x_velocity/y_velocity — an envelope has no time
+    # axis left to chunk.
+    for name in ENVELOPE_QUANTITIES:
+        arrays[f"{name}_max"] = dict(
+            data=envelope_quantized[name],
+            chunks=(n_node,),
+            fill_value=ENVELOPE_FILL_VALUE,
+            attrs=envelope_attrs[name],
+        )
 
     store_path = Path(output_dir) / f"{run_label}_playback.zarr"
     _write_zarr_v3_store(store_path, group_attrs=group_attrs, arrays=arrays)

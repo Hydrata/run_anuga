@@ -100,6 +100,43 @@ class TestQuantizeRoundTrip:
         assert q[1] == 65535
 
 
+class TestDeriveChunkLengthT:
+    """TASK-2719 (epic 2706 W8, decision D5) — adaptive time-chunk length,
+    a PURE function of n_node alone. No store written here (AC1)."""
+
+    def test_floor_at_run_1328_scale(self):
+        """n_node=3,393,075 (run 1328) lands on the FLOOR, never 1 — D5
+        forbids chunk length 1 (it recreates the 2618 client-side LRU
+        thrash by construction)."""
+        result = ps.derive_chunk_length_t(3_393_075)
+        assert result == 2, (
+            f"expected the D5 floor of 2 for run-1328 scale, got {result} — "
+            "D5 forbids chunk length 1"
+        )
+
+    def test_cap_for_small_meshes_byte_identical_to_today(self):
+        """n_node=50,000 is well under the 838,860 crossover -> the CAP, 10,
+        byte-identical to every store exported before this task."""
+        assert ps.derive_chunk_length_t(50_000) == 10
+
+    def test_interior_value(self):
+        assert ps.derive_chunk_length_t(1_000_000) == 8
+
+    def test_floor_crossover_pinned_exactly(self):
+        """The exact boundary, both sides, per the verified clamp ladder."""
+        assert ps.derive_chunk_length_t(2_796_202) == 3
+        assert ps.derive_chunk_length_t(2_796_203) == 2
+
+    def test_floor_never_goes_below_two_arbitrarily_large_mesh(self):
+        assert ps.derive_chunk_length_t(50_000_000) == 2
+
+    def test_pure_function_of_n_node_alone(self):
+        """Same n_node, called independently (no n_time argument exists) ->
+        same result every time — the function has no other input."""
+        assert ps.derive_chunk_length_t(1_300_000) == ps.derive_chunk_length_t(1_300_000)
+        assert ps.derive_chunk_length_t(1_300_000) == 6
+
+
 # ---------------------------------------------------------------------------
 # Geometry / physics
 # ---------------------------------------------------------------------------
@@ -158,6 +195,79 @@ class TestComputeVelocity:
         v = ps.compute_velocity(momentum, depth, h0=1e-6)
         assert not np.isnan(v[0])
         assert v[0] == 0.0
+
+
+# ---------------------------------------------------------------------------
+# TASK-2752 (W8.2, epic 2706) — the temporal-max envelope. AC1/AC2.
+# ---------------------------------------------------------------------------
+
+class TestComputeEnvelopes:
+    """AC2 "THE TRAP IS TESTED": a fixture where x_velocity and y_velocity
+    peak at DIFFERENT timesteps must prove ``velocity_max !=
+    magnitude(x_velocity_max, y_velocity_max)`` and that the shipped array is
+    the former (max-of-derived-speed), not the latter (derived-of-component-
+    max).
+
+    Node 0 is the trap: x_velocity peaks at t=0 (vx=3, vy=0 -> speed 3),
+    y_velocity peaks at t=1 (vx=0, vy=4 -> speed 4) — the classic 3-4-5
+    triangle, chosen so a naive `sqrt(max(vx)**2 + max(vy)**2)` answers
+    exactly 5 (combining two different instants' peaks) where the correct
+    per-timestep-derived-then-maxed answer is 4 (t=1's real speed).
+    Node 1 is a no-trap control (velocity never rotates directions), where
+    naive and correct agree — proving this isn't a fixture that happens to
+    disagree with everything.
+
+    RED PROOF (recorded, not re-run here): this test was run once against a
+    deliberately naive `compute_envelopes` that computed
+    `sqrt(max(|x_velocity|)**2 + max(|y_velocity|)**2)` in place of the
+    correct max-of-derived-speed; it failed exactly as this test asserts it
+    must. See docs/epic-state/wave-reports/TASK-2706-W8.2-evidence/
+    2752-ac2-trap-red-proof.txt for the captured pytest output.
+    """
+
+    DEPTH = np.array([[1.0, 1.0], [1.0, 1.0], [1.0, 1.0]], dtype=np.float32)
+    X_VEL = np.array([[3.0, 2.0], [0.0, 2.0], [0.0, 2.0]], dtype=np.float32)
+    Y_VEL = np.array([[0.0, 0.0], [4.0, 0.0], [0.0, 0.0]], dtype=np.float32)
+
+    def test_velocity_max_is_max_of_derived_speed_not_derived_of_component_max(self):
+        result = ps.compute_envelopes(self.DEPTH, self.X_VEL, self.Y_VEL)
+        naive_component_max = np.sqrt(
+            np.max(np.abs(self.X_VEL), axis=0) ** 2 + np.max(np.abs(self.Y_VEL), axis=0) ** 2
+        )
+        # The fixture itself must actually distinguish the two orders of
+        # operation at node 0, or the assertion below proves nothing.
+        assert naive_component_max[0] != 4.0, "trap fixture is degenerate — naive and correct coincide"
+        assert result["velocity"][0] != naive_component_max[0]
+        np.testing.assert_allclose(result["velocity"], [4.0, 2.0])
+        np.testing.assert_allclose(naive_component_max, [5.0, 2.0])
+
+    def test_depth_max_is_max_over_time(self):
+        result = ps.compute_envelopes(self.DEPTH, self.X_VEL, self.Y_VEL)
+        np.testing.assert_allclose(result["depth"], [1.0, 1.0])
+
+    def test_div_max_is_max_of_depth_times_derived_speed_same_instant(self):
+        """dIV = depth * speed, derived PER TIMESTEP then maxed — mirrors the
+        velocity trap: div at node 0 is [3, 4, 0] (depth 1 * speed at each t),
+        max 4, NOT depth_max * velocity_max (which would give 1*4=4 here by
+        coincidence, but is the wrong formula in general — dIV_max is its own
+        max-of-derived quantity, not a product of two other envelopes)."""
+        result = ps.compute_envelopes(self.DEPTH, self.X_VEL, self.Y_VEL)
+        np.testing.assert_allclose(result["div"], [4.0, 2.0])
+
+    def test_all_three_envelopes_present_non_negative_float32(self):
+        result = ps.compute_envelopes(self.DEPTH, self.X_VEL, self.Y_VEL)
+        assert set(result.keys()) == set(ps.ENVELOPE_QUANTITIES)
+        for arr in result.values():
+            assert arr.dtype == np.float32
+            assert np.all(arr >= 0)
+
+    def test_empty_arrays_return_zeros_not_crash(self):
+        empty_depth = np.zeros((0, 3), dtype=np.float32)
+        empty_v = np.zeros((0, 3), dtype=np.float32)
+        result = ps.compute_envelopes(empty_depth, empty_v, empty_v)
+        for name in ps.ENVELOPE_QUANTITIES:
+            assert result[name].shape == (3,)
+            assert np.all(result[name] == 0)
 
 
 # ---------------------------------------------------------------------------
@@ -323,6 +433,188 @@ class TestExportAgainstFixtureSww:
         assert root.attrs["minimum_allowed_height"] == 1.23e-12
         assert root.attrs["flow_algorithm"] == "DE1"
 
+    def test_envelope_arrays_present_and_declared(self, tmp_path):
+        """AC1/AC4 — the producer writes depth_max/velocity_max/div_max and
+        declares them in group attrs, following has_dt's first-class-
+        absence shape (a fresh export always declares all three today)."""
+        import zarr
+
+        result = self._export(tmp_path)
+        root = zarr.open_group(result["local_path"], mode="r")
+        assert list(root.attrs["envelope_quantities"]) == list(ps.ENVELOPE_QUANTITIES)
+        n_node = result["n_node"]
+        for name in ps.ENVELOPE_QUANTITIES:
+            arr = root[f"{name}_max"]
+            assert arr.shape == (n_node,), f"{name}_max: shape={arr.shape}, expected ({n_node},)"
+            assert str(arr.dtype) == "uint16", f"{name}_max: dtype={arr.dtype}"
+            for qattr in ("scale", "offset", "quantized_dtype", "byteorder", "valid_min", "valid_max"):
+                assert qattr in arr.attrs, f"{name}_max missing quantization attr '{qattr}'"
+
+    def test_depth_max_dequantizes_to_the_true_temporal_maximum(self, tmp_path):
+        """A real correctness check, not just a shape check: depth_max's own
+        (dequantized) maximum across every node must equal the store's
+        depth valid_max — both are, by definition, max over ALL (t, node)
+        of depth. Proves the envelope pipeline computed a genuine max-over-
+        time, not zeros or a copy of frame 0."""
+        import zarr
+
+        result = self._export(tmp_path)
+        root = zarr.open_group(result["local_path"], mode="r")
+        depth_max_attrs = root["depth_max"].attrs
+        depth_attrs = root["depth"].attrs
+        stored = root["depth_max"][:]
+        dequantized = depth_max_attrs["offset"] + stored.astype(np.float32) * depth_max_attrs["scale"]
+        assert abs(float(dequantized.max()) - depth_attrs["valid_max"]) < 1e-2
+
+
+@requires_zarr
+@pytest.mark.requires_anuga
+class TestAdaptiveChunkLengthWrittenStore:
+    """TASK-2719 AC2/AC3 (epic 2706 W8) — a WRITTEN store at prod scale, not
+    just the pure derivation (TestDeriveChunkLengthT above).
+
+    Real ANUGA runs at run-1328 scale (n_node=3,393,075) cannot be produced
+    in a unit test, so ``_read_sww_arrays`` is monkeypatched to return a
+    fabricated array set at exactly the D5 floor crossover (n_node=2,796,203)
+    — small enough to allocate and gzip in-process, large enough to prove the
+    exporter takes the adaptive chunk length rather than the old fixed 10.
+    The exporter still needs ``anuga.config`` importable (for its g/rho_w/
+    velocity_protection defaults) even though no simulation runs.
+    """
+
+    @staticmethod
+    def _fabricate_sww_arrays(n_node, n_time=2):
+        x = np.linspace(0.0, 100.0, n_node, dtype=np.float32)
+        y = np.zeros(n_node, dtype=np.float32)
+        # One triangle over the first three nodes — enough for
+        # compute_inradius; the exporter never requires full mesh coverage.
+        volumes = np.array([[0, 1, 2]], dtype=np.int32)
+        elevation = np.zeros(n_node, dtype=np.float32)
+        friction = np.full(n_node, 0.04, dtype=np.float32)
+        stage = np.tile(elevation, (n_time, 1)).astype(np.float32)
+        xmomentum = np.zeros((n_time, n_node), dtype=np.float32)
+        ymomentum = np.zeros((n_time, n_node), dtype=np.float32)
+        return dict(
+            x=x, y=y, volumes=volumes, elevation=elevation, friction=friction,
+            time=np.arange(n_time, dtype=np.float64), stage=stage,
+            xmomentum=xmomentum, ymomentum=ymomentum,
+            xllcorner=0.0, yllcorner=0.0, false_easting=0.0, false_northing=0.0,
+            zone=55, anuga_version="0.0.0+test", revision_number="", revision_date="",
+        )
+
+    def _export_at_scale(self, tmp_path, n_node, n_time=2, run_id=1):
+        fake_sww = self._fabricate_sww_arrays(n_node, n_time=n_time)
+        with mock.patch.object(ps, "_read_sww_arrays", return_value=fake_sww):
+            return ps.export_playback_store(
+                input_data={
+                    "run_label": f"run_synthetic_{run_id}",
+                    "scenario_config": {
+                        "project": 9, "id": 9, "run_id": run_id, "epsg": "EPSG:28355",
+                    },
+                },
+                sww_path="unused-_read_sww_arrays-is-mocked",
+                output_dir=str(tmp_path),
+                upload=False,
+            )
+
+    def test_written_store_at_the_floor_crossover(self, tmp_path):
+        """AC2 + AC3 combined (one export, both checks) — n_node is exactly
+        the D5 floor crossover (2,796,203), so chunk_length_t must be 2 on
+        ALL THREE quantized arrays AND declared in the group attrs alongside
+        n_node/n_time."""
+        import zarr
+
+        n_node = 2_796_203
+        n_time = 2
+        result = self._export_at_scale(tmp_path, n_node, n_time=n_time, run_id=1)
+        assert result["status"] == "ok", result
+
+        root = zarr.open_group(result["local_path"], mode="r")
+        # AC3 — the store declares its own dimensions.
+        assert root.attrs["format_version"] == 2
+        assert root.attrs["n_node"] == n_node
+        assert root.attrs["n_time"] == n_time
+        assert root.attrs["chunk_length_t"] == 2
+
+        # AC2 — all three quantized arrays AGREE with the declared length.
+        for name in ("depth", "x_velocity", "y_velocity"):
+            arr = root[name]
+            assert arr.chunks == (2, n_node), (
+                f"{name}: chunks={arr.chunks}, expected (2, {n_node}) — "
+                "quantized arrays must not drift from each other or from "
+                "the declared chunk_length_t (playbackChunkShape.js refuses "
+                "a store whose arrays disagree)"
+            )
+
+    def test_written_store_under_the_crossover_still_caps_at_ten(self, tmp_path):
+        """A mesh just BELOW the CAP crossover (838,860) still gets the
+        byte-identical-to-today chunk length of 10 — the adaptive rule does
+        not touch small/typical-scale stores."""
+        import zarr
+
+        n_node = 500_000
+        result = self._export_at_scale(tmp_path, n_node, run_id=2)
+        root = zarr.open_group(result["local_path"], mode="r")
+        assert root.attrs["chunk_length_t"] == 10
+        assert root["depth"].chunks == (10, n_node)
+
+
+class TestUploadWritesCacheControl:
+    """TASK-2709 (W2.1, epic 2706) — every uploaded playback object must carry
+    a Cache-Control header, written at EXPORT (S3 has no way to add one later
+    without rewriting the object).
+
+    Why it matters: the manifest's chunk URLs are the ONLY way the browser
+    fetches the store, and without a cache directive the browser revalidates
+    (or simply re-downloads) all 62.7 MiB of geometry on every single page
+    load. This pairs with TASK-2710: a stable-within-a-time-bucket URL is what
+    gives the browser cache a stable key to hit, and the rotating bucket is
+    what bounds how long a stale object can be served despite max-age=1y.
+    """
+
+    def _upload_with_fake_client(self, tmp_path):
+        """Injects fake boto3 modules via sys.modules rather than patching
+        ``boto3.client``: boto3 is NOT installed under /usr/bin/python, which
+        is the interpreter the documented `python -m pytest tests -k playback`
+        command uses. Patching a module that cannot be imported would make this
+        test silently env-dependent."""
+        import sys
+
+        store = tmp_path / "store"
+        (store / "depth" / "c" / "0").mkdir(parents=True)
+        (store / "zarr.json").write_text("{}")
+        (store / "depth" / "c" / "0" / "0").write_bytes(b"\x00\x01")
+
+        fake_s3 = mock.MagicMock()
+        fake_boto3 = mock.MagicMock()
+        fake_boto3.client.return_value = fake_s3
+        fake_modules = {
+            "boto3": fake_boto3,
+            "boto3.s3": mock.MagicMock(),
+            "boto3.s3.transfer": mock.MagicMock(),
+        }
+        with mock.patch.dict(sys.modules, fake_modules):
+            ps._upload_store_to_s3(store, "test-bucket", "playback/1_1_1/")
+        return fake_s3
+
+    def test_every_object_is_uploaded_with_cache_control(self, tmp_path):
+        fake_s3 = self._upload_with_fake_client(tmp_path)
+
+        assert fake_s3.upload_file.call_count == 2, "both store files must upload"
+        for call in fake_s3.upload_file.call_args_list:
+            extra_args = call.kwargs.get("ExtraArgs")
+            assert extra_args is not None, (
+                f"upload_file({call.args[2]!r}) passed no ExtraArgs, so no "
+                f"cache directive is written on the object"
+            )
+            assert extra_args.get("CacheControl") == ps.PLAYBACK_CACHE_CONTROL
+
+    def test_cache_control_value_is_immutable_and_long_lived(self):
+        """Pins the exact directive the AC names. `immutable` is what stops the
+        browser issuing a revalidation request per chunk; without it a
+        conditional GET per chunk still costs a round-trip each."""
+        assert ps.PLAYBACK_CACHE_CONTROL == "public, max-age=31536000, immutable"
+
 
 @requires_zarr
 class TestValidatorCatchesRealDefects:
@@ -383,6 +675,143 @@ class TestValidatorCatchesRealDefects:
             output_dir=str(tmp_path), upload=False,
         )
         assert validate_store(result["local_path"]) == []
+
+    @pytest.mark.requires_anuga
+    def test_v1_store_without_new_attrs_still_validates_clean(self, tmp_path, fixture_sww):
+        """TASK-2719 AC4 backward compatibility — a v1 store (predating the
+        n_node/n_time/chunk_length_t attrs and the adaptive chunk-length
+        rule) must keep validating with ZERO violations FOREVER, including
+        run 1328's real one — the store epic 2706's AC7 is measured against
+        on prod. Simulated by exporting for real (this fixture's n_node is
+        tiny, so the adaptive rule already gives chunk length 10 — the CAP,
+        byte-identical to what a real pre-TASK-2719 export always wrote)
+        then stripping the v2-only attrs and rolling format_version back to
+        1 — exactly what a genuine pre-2719 store looks like on disk."""
+        import zarr
+        from run_anuga.validate_playback_store import validate_store
+
+        input_data = {
+            "run_label": "run_1_1_2",
+            "scenario_config": {"project": 1, "id": 1, "run_id": 2, "epsg": "EPSG:28355"},
+        }
+        result = ps.export_playback_store(
+            input_data=input_data, sww_path=str(fixture_sww),
+            output_dir=str(tmp_path), upload=False,
+        )
+        root = zarr.open_group(result["local_path"], mode="a")
+        assert root.attrs["chunk_length_t"] == 10, (
+            "fixture mesh must stay small enough that CAP=10 applies, or "
+            "this test stops simulating a real v1 store"
+        )
+        attrs = dict(root.attrs)
+        attrs["format_version"] = 1
+        del attrs["n_node"]
+        del attrs["n_time"]
+        del attrs["chunk_length_t"]
+        root.attrs.put(attrs)
+
+        assert validate_store(result["local_path"]) == []
+
+    @pytest.mark.requires_anuga
+    def test_v2_store_missing_new_attrs_is_caught(self, tmp_path, fixture_sww):
+        """The gate is a real detector, not just permissive: a store that
+        CLAIMS format_version=2 but is missing the new attrs must fail, not
+        silently pass like a v1 store would."""
+        import zarr
+        from run_anuga.validate_playback_store import validate_store
+
+        input_data = {
+            "run_label": "run_1_1_3",
+            "scenario_config": {"project": 1, "id": 1, "run_id": 3, "epsg": "EPSG:28355"},
+        }
+        result = ps.export_playback_store(
+            input_data=input_data, sww_path=str(fixture_sww),
+            output_dir=str(tmp_path), upload=False,
+        )
+        root = zarr.open_group(result["local_path"], mode="a")
+        attrs = dict(root.attrs)
+        assert attrs["format_version"] == 2
+        del attrs["chunk_length_t"]
+        root.attrs.put(attrs)
+
+        violations = validate_store(result["local_path"])
+        assert any("chunk_length_t" in v for v in violations), violations
+
+    @pytest.mark.requires_anuga
+    def test_v2_store_with_no_declared_envelopes_still_validates_clean(self, tmp_path, fixture_sww):
+        """AC3/AC4 — a v2 store that declares NO envelopes (every store
+        exported before TASK-2752, including run 1328's) must keep
+        validating with ZERO violations. Simulated the same way the sibling
+        v1 test above does: export for real, then strip the one new attr."""
+        import zarr
+        from run_anuga.validate_playback_store import validate_store
+
+        input_data = {
+            "run_label": "run_1_1_4",
+            "scenario_config": {"project": 1, "id": 1, "run_id": 4, "epsg": "EPSG:28355"},
+        }
+        result = ps.export_playback_store(
+            input_data=input_data, sww_path=str(fixture_sww),
+            output_dir=str(tmp_path), upload=False,
+        )
+        root = zarr.open_group(result["local_path"], mode="a")
+        attrs = dict(root.attrs)
+        del attrs["envelope_quantities"]
+        root.attrs.put(attrs)
+        for name in ps.ENVELOPE_QUANTITIES:
+            del root[f"{name}_max"]
+
+        assert validate_store(result["local_path"]) == []
+
+    @pytest.mark.requires_anuga
+    def test_catches_a_declared_envelope_the_store_does_not_contain(self, tmp_path, fixture_sww):
+        """AC3 — 'REJECTS a store that declares an envelope it does not
+        contain'. A store that CLAIMS an envelope but has no backing array
+        (or backing array for a name outside ENVELOPE_QUANTITIES) must fail,
+        never silently pass."""
+        import zarr
+        from run_anuga.validate_playback_store import validate_store
+
+        input_data = {
+            "run_label": "run_1_1_5",
+            "scenario_config": {"project": 1, "id": 1, "run_id": 5, "epsg": "EPSG:28355"},
+        }
+        result = ps.export_playback_store(
+            input_data=input_data, sww_path=str(fixture_sww),
+            output_dir=str(tmp_path), upload=False,
+        )
+        root = zarr.open_group(result["local_path"], mode="a")
+        attrs = dict(root.attrs)
+        attrs["envelope_quantities"] = list(attrs["envelope_quantities"]) + ["froude"]
+        root.attrs.put(attrs)
+
+        violations = validate_store(result["local_path"])
+        assert any("froude" in v for v in violations), violations
+
+    @pytest.mark.requires_anuga
+    def test_catches_an_envelope_array_missing_a_quantization_attr(self, tmp_path, fixture_sww):
+        """AC3 — a declared-and-present envelope array must still carry the
+        full quantization attr set (schema §3); a real one with one stripped
+        must be caught, exactly like the primitive quantity arrays are."""
+        import zarr
+        from run_anuga.validate_playback_store import validate_store
+
+        input_data = {
+            "run_label": "run_1_1_6",
+            "scenario_config": {"project": 1, "id": 1, "run_id": 6, "epsg": "EPSG:28355"},
+        }
+        result = ps.export_playback_store(
+            input_data=input_data, sww_path=str(fixture_sww),
+            output_dir=str(tmp_path), upload=False,
+        )
+        root = zarr.open_group(result["local_path"], mode="a")
+        arr = root["depth_max"]
+        attrs = dict(arr.attrs)
+        del attrs["scale"]
+        arr.attrs.put(attrs)
+
+        violations = validate_store(result["local_path"])
+        assert any("depth_max" in v and "scale" in v for v in violations), violations
 
 
 class TestMakePlaybackStorePrefix:
@@ -463,6 +892,50 @@ live_s3_opt_in = pytest.mark.skipif(
 )
 
 
+@live_s3_opt_in
+class TestLiveS3CacheControl:
+    """TASK-2709 (W2.1, epic 2706) — the Cache-Control directive must survive
+    the REAL boto3 upload, checked with a real ``head_object``.
+
+    Deliberately NOT gated on zarr/ANUGA (unlike TestLiveS3Upload below): the
+    thing under test is ``_upload_store_to_s3``'s ExtraArgs plumbing, which
+    uploads whatever files it is given and has no zarr dependency at all. A
+    directory of bytes is a faithful stand-in for a store here, and dropping
+    the gate is what lets this proof actually run on a box where zarr is
+    absent — which is every interpreter on the 2026-08-10 workstation.
+    """
+
+    def test_cache_control_lands_on_real_s3_objects(self, tmp_path):
+        import time
+
+        import boto3
+
+        bucket = "anuga-test-storage"  # NEVER anuga-result-storage from a test
+        prefix = f"playback/pytest-cachecontrol-{int(time.time())}/"
+
+        store = tmp_path / "store"
+        (store / "depth" / "c" / "0").mkdir(parents=True)
+        (store / "zarr.json").write_text('{"zarr_format": 3}')
+        # >8 MiB so upload_file takes the MULTIPART branch (the exporter's
+        # TransferConfig multipart_threshold): ExtraArgs is easiest to lose
+        # there, because multipart carries it on create_multipart_upload
+        # rather than on the PUT.
+        (store / "depth" / "c" / "0" / "0").write_bytes(b"\x00" * (9 * 1024 * 1024))
+
+        ps._upload_store_to_s3(store, bucket, prefix)
+
+        s3 = boto3.client("s3")
+        keys = [
+            o["Key"]
+            for o in s3.list_objects_v2(Bucket=bucket, Prefix=prefix).get("Contents", [])
+        ]
+        assert len(keys) == 2, keys
+        for key in keys:
+            head = s3.head_object(Bucket=bucket, Key=key)
+            assert head.get("CacheControl") == ps.PLAYBACK_CACHE_CONTROL, key
+        # Never deletes — wave brief hard rule.
+
+
 @requires_zarr
 @live_s3_opt_in
 @pytest.mark.requires_anuga
@@ -497,5 +970,14 @@ class TestLiveS3Upload:
         resp = s3.list_objects_v2(Bucket=bucket, Prefix=prefix)
         keys = [o["Key"] for o in resp.get("Contents", [])]
         assert any(k.endswith("zarr.json") for k in keys)
+
+        # TASK-2709 (W2.1, epic 2706) — the cache directive must survive the
+        # REAL boto3 upload path, not just a mocked call assertion: ExtraArgs
+        # is exactly the kind of argument that a TransferConfig/multipart path
+        # can drop, and a mocked verify step is an unverified step.
+        for key in keys:
+            head = s3.head_object(Bucket=bucket, Key=key)
+            assert head.get("CacheControl") == ps.PLAYBACK_CACHE_CONTROL, key
+
         # Deliberately does NOT delete the uploaded objects — never delete
         # any S3 object from a test (wave brief hard rule).
