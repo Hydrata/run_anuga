@@ -141,7 +141,10 @@ WORKDIR /app
 # Install GDAL Python bindings matching system GDAL. meson/ninja/meson-python
 # join the build toolchain here because anuga_core builds via the mesonpy
 # backend with --no-build-isolation (mirrors the gpu-dev base).
-RUN pip install --no-cache-dir "numpy>=2.0" setuptools wheel cython pybind11 \
+# TASK-2863: cython pinned <3.3 — 3.3.0 rejects the fork's pyx dict-view
+# assignments (sparse_matrix_ext.pyx:73-74); unpin when the fork-side fix
+# lands and the engine pin moves past it.
+RUN pip install --no-cache-dir "numpy>=2.0" setuptools wheel "cython<3.3" pybind11 \
         meson ninja meson-python && \
     pip install --no-cache-dir --no-binary GDAL --no-build-isolation \
     "GDAL==$(gdal-config --version).*"
