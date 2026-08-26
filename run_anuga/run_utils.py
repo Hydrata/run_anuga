@@ -1323,6 +1323,13 @@ def apply_inflows_to_domain(
             inflow_dataframe['timestamp'] = inflow_dataframe['timestamp'].dt.tz_localize('UTC')
         if new_dataframe['timestamp'].dt.tz is None:
             new_dataframe['timestamp'] = new_dataframe['timestamp'].dt.tz_localize('UTC')
+        # TASK-2816 — narrow to the merge keys before merging. The raw
+        # 'value' column otherwise leaks into inflow_dataframe on every
+        # merge and collides across series: merge 2 suffixes it to
+        # value_x/value_y, merge 3 re-adds a bare 'value', and merge 4
+        # raises pandas.errors.MergeError — killing every 4+-timeseries
+        # model (3 inflows + 1 rainfall is the canonical shape).
+        new_dataframe = new_dataframe[['timestamp', name]]
         inflow_dataframe = pd.merge(inflow_dataframe, new_dataframe, how='left', on='timestamp')
         inflow_dataframe.ffill(inplace=True)
 
