@@ -124,7 +124,17 @@ jobs:
       # origin/main tip as of 2026-07-16 (`git rev-parse origin/main`).
       - name: Install the Hydrata anuga_core fork (prod engine, not PyPI upstream)
         run: |
-          pip install --force-reinstall --no-deps "anuga @ git+https://github.com/Hydrata/anuga_core.git@ad1bfe7155f9b16986e0f672cf54275e9c35c5fb"
+          # TASK-2863: Cython 3.3.0 (released 2026-08-22) rejects the fork's
+          # dict-view -> cdef list assignments (sparse_matrix_ext.pyx:73-74), and
+          # the fork's [build-system] declares an UNBOUNDED "Cython" — so the
+          # build-isolated install below started redding this required gate with
+          # no code change on our side (last green 2026-08-16, Cython 3.2.x).
+          # Build with the proven <3.3 toolchain and --no-build-isolation so the
+          # pin actually governs the compile (mirrors batch/Dockerfile). Remove
+          # the constraint in the PR that bumps the pin past the fork-side fix
+          # (TASK-2863 AC4).
+          pip install "cython<3.3" meson-python meson ninja pybind11 setuptools wheel
+          pip install --force-reinstall --no-deps --no-build-isolation "anuga @ git+https://github.com/Hydrata/anuga_core.git@ad1bfe7155f9b16986e0f672cf54275e9c35c5fb"
           python -c "import anuga; from osgeo import gdal, ogr; print('anuga', anuga.__version__, '| gdal/ogr import OK')"
 
       - name: Merewether ARR benchmark + ANUGA integration tests
