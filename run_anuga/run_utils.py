@@ -1354,6 +1354,22 @@ def apply_inflows_to_domain(
                 f"entire simulation — aborting instead."
             )
 
+        # TASK-2825 (epic 2815 W1.6) — a PARTIAL lead-in gap (series starts
+        # partway through the window) passes the guard above with its lead-in
+        # seconds still NaN: ffill has nothing to fill from before the first
+        # sample, and create_inflow_function would hand that NaN straight to
+        # ANUGA. PROVEN on a real domain: a NaN rate writes NaN into stage on
+        # the operator's triangles at the first step and never recovers
+        # (`rate >= 0.0` is False for NaN, so the negative-rate branch runs
+        # num.maximum(NaN, -heights) -> NaN). Before a series' first sample
+        # the model gets ZERO — the same "nothing yet" that default_rate=0.00
+        # already expresses for out-of-range times. Done HERE, per merge,
+        # because each closure keeps the frame object as bound at its
+        # creation (see create_inflow_function): a single fill on the final
+        # frame would only ever reach the last-merged series. Must stay
+        # AFTER the all-NaN guard, which it would otherwise mask.
+        inflow_dataframe[name] = inflow_dataframe[name].fillna(0.0)
+
     for inflow_polygon in rainfall_inflow_polygons:
         polygon_name = inflow_polygon.get('id')
         data = inflow_polygon.get('properties').get('data')
