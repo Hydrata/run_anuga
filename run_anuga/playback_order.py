@@ -88,10 +88,14 @@ def _part1by1(value: np.ndarray) -> np.ndarray:
     return value
 
 
-def morton_keys(x, y, bits: int = MORTON_BITS) -> np.ndarray:
+def _morton_keys(x, y, bits: int) -> np.ndarray:
     """The Z-order key of every ``(x, y)``, on a ``2**bits`` lattice over the
-    points' own bounding box. Exposed for tests and measurement scripts; the
-    exporter wants :func:`morton_node_order`.
+    points' own bounding box.
+
+    Private: :func:`morton_node_order` is the whole public surface, and an
+    exported key function invites a second caller to sort them itself with a
+    non-stable sort — which would break the reproducibility the stored
+    ``node_permutation`` depends on.
     """
     xi = _quantize_axis(x, bits)
     yi = _quantize_axis(y, bits)
@@ -119,7 +123,7 @@ def morton_node_order(x, y, bits: int = MORTON_BITS) -> np.ndarray:
         raise ValueError(f"morton_node_order: expected 1-D coordinates, got ndim={x.ndim}")
     if x.size == 0:
         return np.zeros(0, dtype=np.int64)
-    return np.argsort(morton_keys(x, y, bits), kind="stable").astype(np.int64)
+    return np.argsort(_morton_keys(x, y, bits), kind="stable").astype(np.int64)
 
 
 def inverse_permutation(perm) -> np.ndarray:

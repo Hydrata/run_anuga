@@ -107,7 +107,14 @@ def _declared_codec_names(store_path) -> dict[str, list[str]]:
     import json
 
     out: dict[str, list[str]] = {}
-    for child in sorted(Path(store_path).iterdir()):
+    root = Path(store_path)
+    if not root.is_dir():
+        # A missing / non-directory store is NOT this function's error to
+        # report. validate_store's contract (see its docstring) is that a
+        # structurally-broken store raises via ZARR's own errors, and running
+        # first must not change which exception the caller sees.
+        return out
+    for child in sorted(root.iterdir()):
         meta = child / "zarr.json"
         if not child.is_dir() or not meta.is_file():
             continue

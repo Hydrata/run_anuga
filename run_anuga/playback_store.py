@@ -583,19 +583,24 @@ def export_playback_store(
 def _apply_spatial_order(*, node_x, node_y, volumes):
     """TASK-3014 (W3.0, epic 2981) — the Morton reorder, as one pure step.
 
-    @returns ``(node_perm, face_perm)``, both ``int64`` and both genuine
-    permutations (``perm[newIndex] == originalIndex``). The caller applies
-    them; keeping the DECISION here and the APPLICATION there is what lets the
-    measurement script and the exporter agree by construction.
+    @returns ``(node_perm, face_perm, remapped_volumes)``. Both permutations
+    are ``int64`` and genuine (``perm[newIndex] == originalIndex``);
+    ``remapped_volumes`` is ``volumes`` with its VALUES already substituted
+    through the inverse node permutation, still in the ORIGINAL face order.
+
+    The remapped volumes come back rather than being recomputed by the caller
+    because this function has to build them anyway (a face's Morton key is its
+    centroid's, which needs the new node coordinates) and at run-1328 scale
+    that array is 6,779,432 x 3 int64 = 163 MB. Computing it twice allocated it
+    twice, on the one code path that already runs at the memory ceiling.
 
     WHY FACES MOVE TOO, and why that is not optional. Measured on the two real
     fixtures under the store's own bytes+gzip(6) chain, reorder only (no delta,
     no byte-shuffle — those belong to W3.1/W3.2/W3.3):
 
-        variant                 face_node_connectivity      client prefix
-        nodes only              35,435,624 -> 32,615,509     1.10x
-        nodes AND faces         35,435,624 -> 23,552,802     1.30x
-                                                (1.50x)
+        variant             face_node_connectivity          client prefix
+        nodes only          35,435,624 -> 32,615,509 (1.09x)     1.10x
+        nodes AND faces     35,435,624 -> 23,552,802 (1.50x)     1.30x
 
     A node reorder alone leaves the three integers in a connectivity ROW
     spatially coherent but leaves the ROWS in mesh-generation order, so
@@ -624,7 +629,7 @@ def _apply_spatial_order(*, node_x, node_y, volumes):
     face_perm = morton_node_order(
         new_x[remapped].mean(axis=1), new_y[remapped].mean(axis=1)
     )
-    return node_perm, face_perm
+    return node_perm, face_perm, remapped
 
 
 def _export_playback_store_impl(
@@ -726,12 +731,11 @@ def _export_playback_store_impl(
     node_permutation = None
     face_permutation = None
     if spatial_order:
-        from run_anuga.playback_order import MORTON_ORDER_NAME, inverse_permutation
+        from run_anuga.playback_order import MORTON_ORDER_NAME
 
-        node_permutation, face_permutation = _apply_spatial_order(
+        node_permutation, face_permutation, remapped_volumes = _apply_spatial_order(
             node_x=node_x, node_y=node_y, volumes=volumes,
         )
-        inverse_node = inverse_permutation(node_permutation)
         node_x = node_x[node_permutation]
         node_y = node_y[node_permutation]
         elevation = elevation[node_permutation]
@@ -739,7 +743,7 @@ def _export_playback_store_impl(
         # VALUES remapped (each row still holds its own three vertices in the
         # same rotational order), then ROWS reordered. Never a sort within a
         # row — winding is load-bearing for the renderer.
-        volumes = inverse_node[volumes].astype(np.int32)[face_permutation]
+        volumes = remapped_volumes.astype(np.int32)[face_permutation]
         inradius = inradius[face_permutation]
         depth_q = depth_q[:, node_permutation]
         x_velocity_q = x_velocity_q[:, node_permutation]
