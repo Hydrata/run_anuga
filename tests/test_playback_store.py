@@ -541,8 +541,10 @@ class TestAdaptiveChunkLengthWrittenStore:
         assert result["status"] == "ok", result
 
         root = zarr.open_group(result["local_path"], mode="r")
-        # AC3 — the store declares its own dimensions.
-        assert root.attrs["format_version"] == 2
+        # AC3 — the store declares its own dimensions. TASK-2989 bumped
+        # FORMAT_VERSION to 3; the v2 attrs are required at >= 2, so this
+        # assertion is about the CURRENT version, not about v2 specifically.
+        assert root.attrs["format_version"] == ps.FORMAT_VERSION == 3
         assert root.attrs["n_node"] == n_node
         assert root.attrs["n_time"] == n_time
         assert root.attrs["chunk_length_t"] == 2
@@ -708,6 +710,13 @@ class TestValidatorCatchesRealDefects:
         result = ps.export_playback_store(
             input_data=input_data, sww_path=str(fixture_sww),
             output_dir=str(tmp_path), upload=False,
+            # TASK-2989 — rolling the ATTRS back to v1 is not enough: a real
+            # v1 store also has bytes+gzip on disk. Exporting with the codec
+            # off is what makes this a genuine v1 simulation rather than a
+            # v3 store wearing a v1 label (which the validator correctly
+            # refuses, and which would have made this test pass for the
+            # wrong reason).
+            temporal_delta=False,
         )
         root = zarr.open_group(result["local_path"], mode="a")
         assert root.attrs["chunk_length_t"] == 10, (
@@ -719,6 +728,10 @@ class TestValidatorCatchesRealDefects:
         del attrs["n_node"]
         del attrs["n_time"]
         del attrs["chunk_length_t"]
+        # TASK-2989 — a genuine v1 store never carried the v3-only codec
+        # attr either, and the validator refuses one that does (a store
+        # cannot claim a codec feature below the version that introduced it).
+        del attrs["temporal_delta_applied"]
         root.attrs.put(attrs)
 
         assert validate_store(result["local_path"]) == []
@@ -741,7 +754,7 @@ class TestValidatorCatchesRealDefects:
         )
         root = zarr.open_group(result["local_path"], mode="a")
         attrs = dict(root.attrs)
-        assert attrs["format_version"] == 2
+        assert attrs["format_version"] == ps.FORMAT_VERSION >= 2
         del attrs["chunk_length_t"]
         root.attrs.put(attrs)
 
@@ -1219,18 +1232,25 @@ class TestMortonOrderedExport:
         assert np.array_equal(np.asarray(root["node_x"][:]), sww["x"])
         assert np.array_equal(np.asarray(root["face_node_connectivity"][:]), sww["volumes"])
 
-    def test_format_version_unchanged_and_attrs_are_a_superset(self, tmp_path):
-        """AC7 — a version bump here would make every shipped client refuse a
-        store it can in fact read."""
+    def test_morton_order_does_not_move_the_format_version(self, tmp_path):
+        """TASK-3014 AC7 — the Morton reorder is invisible to every reader, so
+        it must NOT bump the version: a bump would make every shipped client
+        refuse a store it can in fact read. It shipped at FORMAT_VERSION 2 and
+        this test asserted 2.
+
+        TASK-2989 then bumped to 3 for the temporal_delta codec, which is a
+        genuinely incompatible chain — so the version equality is no longer
+        the way to state 3014's claim. The claim that survives, and the one
+        that actually carries AC7, is the SUPERSET: a Morton store's group
+        attrs differ from an unreordered one's by exactly the two order keys
+        and nothing else, at whatever the current version is."""
         import zarr
 
-        assert ps.FORMAT_VERSION == 2
         morton = self._export(tmp_path, run_id=9)
         plain = self._export(tmp_path, run_id=10, spatial_order=False)
         morton_attrs = dict(zarr.open_group(morton["local_path"], mode="r").attrs)
         plain_attrs = dict(zarr.open_group(plain["local_path"], mode="r").attrs)
-        assert morton_attrs["format_version"] == 2
-        assert plain_attrs["format_version"] == 2
+        assert morton_attrs["format_version"] == plain_attrs["format_version"]
         assert set(morton_attrs) > set(plain_attrs)
         assert set(morton_attrs) - set(plain_attrs) == {"node_order", "face_order"}
 
@@ -1346,3 +1366,396 @@ class TestValidatorSpatialOrder:
 
         result = self._export(tmp_path, 7, spatial_order=False)
         assert validate_store(result["local_path"]) == []
+
+
+# ---------------------------------------------------------------------------
+# TASK-2989 (W3.1, epic 2981) — the temporal_delta zarr v3 codec
+# ---------------------------------------------------------------------------
+
+PLAYBACK_FIXTURE_ROOT = Path("/home/david/hydrata/playback-fixtures")
+requires_local_fixtures = pytest.mark.skipif(
+    not PLAYBACK_FIXTURE_ROOT.is_dir(),
+    reason="prod-mirror playback fixtures are a local rig artefact, not in the repo",
+)
+
+
+@requires_zarr
+class TestTemporalDeltaCodec:
+    """AC1 / AC-P2(a) — the codec is LOSSLESS, and the test can see it not be."""
+
+    @staticmethod
+    def _codec():
+        from run_anuga.playback_codecs import TemporalDeltaCodec
+
+        return TemporalDeltaCodec()
+
+    @staticmethod
+    def _fns():
+        from run_anuga.playback_codecs import decode_temporal_delta, encode_temporal_delta
+
+        return encode_temporal_delta, decode_temporal_delta
+
+    def test_row_zero_is_raw_and_later_rows_are_wrapped_differences(self):
+        encode, _ = self._fns()
+        chunk = np.array([[10, 20], [12, 5], [12, 65535]], dtype=np.uint16)
+        encoded = encode(chunk)
+        assert np.array_equal(encoded[0], chunk[0])
+        assert encoded[1, 0] == 2
+        # 5 - 20 wraps to 65521, it does NOT clip to 0 — clipping would be lossy.
+        assert encoded[1, 1] == 65521
+        assert encoded[2, 1] == 65530
+
+    def test_round_trip_is_bit_identical_on_synthetic_extremes(self):
+        encode, decode = self._fns()
+        rng = np.random.default_rng(2989)
+        chunk = rng.integers(0, 65536, size=(10, 977), dtype=np.uint16)
+        chunk[0, :3] = [0, 65535, 32767]
+        assert np.array_equal(decode(encode(chunk)), chunk)
+
+    def test_single_row_chunk_is_unchanged(self):
+        encode, decode = self._fns()
+        chunk = np.array([[7, 9, 65535]], dtype=np.uint16)
+        assert np.array_equal(encode(chunk), chunk)
+        assert np.array_equal(decode(chunk), chunk)
+
+    def test_to_dict_from_dict_round_trip(self):
+        from run_anuga.playback_codecs import TemporalDeltaCodec
+
+        codec = self._codec()
+        assert codec.to_dict() == {"name": "temporal_delta"}
+        assert TemporalDeltaCodec.from_dict({"name": "temporal_delta"}) == codec
+
+    def test_registered_in_zarrs_own_registry(self):
+        import run_anuga.playback_codecs as pc  # noqa: F401
+        from zarr.registry import get_codec_class
+
+        from run_anuga.playback_codecs import TemporalDeltaCodec
+
+        assert get_codec_class("temporal_delta") is TemporalDeltaCodec
+
+    def test_declared_as_a_zarr_codecs_entry_point(self):
+        """AC-P1(a) — the decisive RED. MEASURED 2026-09-09: the installed
+        `zarr.codecs` entry-point group was EMPTY at HEAD."""
+        import importlib.metadata as md
+
+        names = [e.name for e in md.entry_points().select(group="zarr.codecs")]
+        assert "temporal_delta" in names, names
+
+    def test_refuses_a_dtype_whose_wraparound_is_not_defined(self):
+        from run_anuga.playback_codecs import encode_temporal_delta
+
+        with pytest.raises(ValueError, match="unsigned"):
+            encode_temporal_delta(np.zeros((3, 4), dtype=np.float32))
+
+    @requires_local_fixtures
+    def test_round_trip_on_the_real_run_1328_depth_chunk(self):
+        """AC1 — playback-fixtures/741_410_1328 depth chunk 1 (length 10)."""
+        import zarr
+
+        encode, decode = self._fns()
+        root = zarr.open_group(str(PLAYBACK_FIXTURE_ROOT / "741_410_1328"), mode="r")
+        chunk = np.asarray(root["depth"][10:20, :])
+        assert chunk.dtype == np.uint16 and chunk.shape[0] == 10
+        assert np.array_equal(decode(encode(chunk)), chunk)
+
+    @requires_local_fixtures
+    def test_round_trip_on_the_real_run_1412_depth_chunk_5(self):
+        import zarr
+
+        encode, decode = self._fns()
+        root = zarr.open_group(str(PLAYBACK_FIXTURE_ROOT / "813_417_1412"), mode="r")
+        chunk = np.asarray(root["depth"][50:60, :])
+        assert np.array_equal(decode(encode(chunk)), chunk)
+
+
+@requires_zarr
+@requires_local_fixtures
+class TestTemporalDeltaByteGain:
+    """AC2 — the codec must actually pay on the store class it is switched on
+    for, measured against a SAME-ORDER gzip-only baseline (the resequencing
+    note in TASK-2989's context: comparing a delta on Morton-ordered data
+    against a gzip-only figure from SWW-ordered data would flatter it by
+    10-14% and is not a valid ratio)."""
+
+    @staticmethod
+    def _gzip_bytes(chunk, filters):
+        import shutil
+        import tempfile
+
+        import zarr
+        from zarr.codecs import BytesCodec, GzipCodec
+
+        with tempfile.TemporaryDirectory(dir="/var/tmp") as td:
+            root = zarr.open_group(f"{td}/s", mode="w", zarr_format=3)
+            arr = root.create_array(
+                "a", shape=chunk.shape, chunks=chunk.shape, dtype=chunk.dtype,
+                filters=filters, serializer=BytesCodec(endian="little"),
+                compressors=GzipCodec(level=6), fill_value=0,
+                chunk_key_encoding={"name": "default", "configuration": {"separator": "/"}},
+            )
+            arr[:] = chunk
+            total = sum(p.stat().st_size for p in Path(f"{td}/s/a/c").rglob("*") if p.is_file())
+            shutil.rmtree(f"{td}/s", ignore_errors=True)
+            return total
+
+    def _morton_chunk(self, name):
+        """The chunk as the exporter will actually write it after TASK-3014 —
+        Morton node order. Both the baseline and the delta are measured on it."""
+        import zarr
+
+        from run_anuga.playback_order import morton_node_order
+
+        root = zarr.open_group(str(PLAYBACK_FIXTURE_ROOT / "813_417_1412"), mode="r")
+        perm = morton_node_order(np.asarray(root["node_x"][:]), np.asarray(root["node_y"][:]))
+        return np.asarray(root[name][50:60, :])[:, perm]
+
+    def _ratio(self, name):
+        from run_anuga.playback_codecs import TemporalDeltaCodec
+
+        chunk = self._morton_chunk(name)
+        plain = self._gzip_bytes(chunk, [])
+        delta = self._gzip_bytes(chunk, [TemporalDeltaCodec()])
+        return plain, delta, delta / plain
+
+    def test_depth_chunk_5_is_at_most_45_percent_of_gzip_only(self):
+        plain, delta, ratio = self._ratio("depth")
+        assert ratio <= 0.45, f"depth {plain} -> {delta} ({ratio:.1%})"
+
+    def test_x_velocity_chunk_5_is_at_most_55_percent_of_gzip_only(self):
+        plain, delta, ratio = self._ratio("x_velocity")
+        assert ratio <= 0.55, f"x_velocity {plain} -> {delta} ({ratio:.1%})"
+
+
+@requires_zarr
+@pytest.mark.requires_anuga
+class TestFormatVersion3Export:
+    """AC3 / AC5 / AC-P2(b) — the codec is applied EXACTLY when the chunk-length
+    rule says so, and a store below the gate is byte-identical to what a
+    pre-TASK-2989 export wrote."""
+
+    @pytest.fixture(autouse=True)
+    def _sww(self, fixture_sww):
+        self.sww_path = str(fixture_sww)
+
+    def _export(self, tmp_path, run_id=1, **kwargs):
+        return ps.export_playback_store(
+            input_data={
+                "run_label": f"run_v3_{run_id}",
+                "scenario_config": {
+                    "project": 3, "id": 3, "run_id": run_id, "epsg": "EPSG:28355",
+                },
+            },
+            sww_path=self.sww_path, output_dir=str(tmp_path), upload=False, **kwargs,
+        )
+
+    def test_format_version_is_three(self):
+        assert ps.FORMAT_VERSION == 3
+
+    def test_small_mesh_store_declares_and_carries_the_codec(self):
+        import zarr
+
+        from run_anuga.playback_codecs import TEMPORAL_DELTA_NAME
+
+        # This fixture's mesh is tiny, so derive_chunk_length_t gives the CAP
+        # of 10, i.e. comfortably above the >= 5 gate.
+        pass_dir = Path(str(self.sww_path)).parent
+        assert ps.derive_chunk_length_t(10) == 10, pass_dir
+        result = self._export(pass_dir.parent, run_id=1)
+        root = zarr.open_group(result["local_path"], mode="r")
+        assert root.attrs["format_version"] == 3
+        assert root.attrs["temporal_delta_applied"] is True
+        for name in ("depth", "x_velocity", "y_velocity"):
+            names = [c.to_dict()["name"] for c in root[name].metadata.codecs]
+            assert names == [TEMPORAL_DELTA_NAME, "bytes", "gzip"], (name, names)
+        for name in ("node_x", "elevation", "inradius", "depth_max"):
+            names = [c.to_dict()["name"] for c in root[name].metadata.codecs]
+            assert names == ["bytes", "gzip"], (name, names)
+
+    def test_values_survive_the_codec_on_a_real_export(self, tmp_path):
+        """AC1 at the STORE level: what comes back out must equal what the
+        exporter put in, not merely decompress."""
+        import zarr
+
+        v3 = self._export(tmp_path, run_id=2)
+        plain = self._export(tmp_path, run_id=3, temporal_delta=False)
+        r3 = zarr.open_group(v3["local_path"], mode="r")
+        rp = zarr.open_group(plain["local_path"], mode="r")
+        for name in ("depth", "x_velocity", "y_velocity"):
+            assert np.array_equal(np.asarray(r3[name][:]), np.asarray(rp[name][:])), name
+
+    def test_a_chunk_length_two_store_carries_no_temporal_delta_anywhere(self, tmp_path):
+        """AC3 / D5. MEASURED at chunk length 2 (fixture 741_410_1328_chunk2,
+        chunk 1): depth 172,709 -> 166,530 B (96%) and x_velocity
+        173,538 -> 173,592 B, i.e. LARGER. That is the whole reason the gate
+        exists, and it is why this store must be byte-identical to what a
+        pre-TASK-2989 export wrote."""
+        import zarr
+
+        from run_anuga.playback_codecs import TEMPORAL_DELTA_NAME
+
+        n_node = 2_796_203  # the D5 floor crossover -> chunk_length_t == 2
+        assert ps.derive_chunk_length_t(n_node) == 2
+        fake = TestAdaptiveChunkLengthWrittenStore._fabricate_sww_arrays(n_node, n_time=2)
+        with mock.patch.object(ps, "_read_sww_arrays", return_value=fake):
+            result = ps.export_playback_store(
+                input_data={"run_label": "run_len2", "scenario_config": {
+                    "project": 3, "id": 3, "run_id": 9, "epsg": "EPSG:28355"}},
+                sww_path="mocked", output_dir=str(tmp_path), upload=False,
+            )
+        root = zarr.open_group(result["local_path"], mode="r")
+        assert root.attrs["chunk_length_t"] == 2
+        assert root.attrs["temporal_delta_applied"] is False
+        for name in root.array_keys():
+            names = [c.to_dict()["name"] for c in root[name].metadata.codecs]
+            assert TEMPORAL_DELTA_NAME not in names, (name, names)
+
+
+@requires_zarr
+@pytest.mark.requires_anuga
+class TestValidatorCodecChain:
+    """AC4 / AC6 — the validator is the thing that stops a mis-declared store
+    shipping, and it must REPORT rather than raise."""
+
+    @pytest.fixture(autouse=True)
+    def _sww(self, fixture_sww):
+        self.sww_path = str(fixture_sww)
+
+    def _export(self, tmp_path, run_id, **kwargs):
+        return ps.export_playback_store(
+            input_data={"run_label": f"run_vc_{run_id}", "scenario_config": {
+                "project": 4, "id": 4, "run_id": run_id, "epsg": "EPSG:28355"}},
+            sww_path=self.sww_path, output_dir=str(tmp_path), upload=False, **kwargs,
+        )
+
+    def test_an_unregistered_codec_is_a_violation_not_a_keyerror(self, tmp_path):
+        """AC4 — at HEAD zarr.registry.get_codec_class raises KeyError and the
+        validator dies with a traceback instead of reporting."""
+        import json
+
+        result = self._export(tmp_path, 1)
+        meta = Path(result["local_path"]) / "depth" / "zarr.json"
+        doc = json.loads(meta.read_text())
+        doc["codecs"] = [{"name": "quantum_delta_9000"}] + doc["codecs"][-2:]
+        meta.write_text(json.dumps(doc, indent=2))
+
+        from run_anuga.validate_playback_store import validate_store
+
+        violations = validate_store(result["local_path"])
+        assert any("quantum_delta_9000" in v for v in violations), violations
+
+    def test_temporal_delta_unregistered_is_a_violation(self, tmp_path):
+        """The exact AC4 scenario: the store is fine, the READER is missing the
+        codec — which is what happens on any box where run_anuga is not
+        installed. It must be reported, not raised."""
+        import zarr.registry as zreg
+
+        from run_anuga.validate_playback_store import validate_store
+
+        result = self._export(tmp_path, 2)
+        saved = zreg._codec_registries.pop("temporal_delta", None)
+        try:
+            violations = validate_store(result["local_path"])
+        finally:
+            if saved is not None:
+                zreg._codec_registries["temporal_delta"] = saved
+        assert any("temporal_delta" in v for v in violations), violations
+
+    def test_v3_store_missing_the_codec_where_the_rule_requires_it(self, tmp_path):
+        import zarr
+
+        from run_anuga.validate_playback_store import validate_store
+
+        result = self._export(tmp_path, 3, temporal_delta=False)
+        root = zarr.open_group(result["local_path"], mode="a")
+        attrs = dict(root.attrs)
+        attrs["temporal_delta_applied"] = True   # claims a codec it does not carry
+        root.attrs.put(attrs)
+        violations = validate_store(result["local_path"])
+        assert any("temporal_delta" in v for v in violations), violations
+
+    def test_v2_store_carrying_the_codec_is_a_violation(self, tmp_path):
+        import zarr
+
+        from run_anuga.validate_playback_store import validate_store
+
+        result = self._export(tmp_path, 4)
+        root = zarr.open_group(result["local_path"], mode="a")
+        attrs = dict(root.attrs)
+        attrs["format_version"] = 2
+        del attrs["temporal_delta_applied"]
+        root.attrs.put(attrs)
+        violations = validate_store(result["local_path"])
+        assert any("temporal_delta" in v and "codecs" in v for v in violations), violations
+
+    def test_a_v3_store_this_exporter_wrote_validates_clean(self, tmp_path):
+        from run_anuga.validate_playback_store import validate_store
+
+        result = self._export(tmp_path, 5)
+        assert validate_store(result["local_path"]) == []
+
+
+@requires_zarr
+@pytest.mark.requires_anuga
+class TestCodecResolvesWithoutImportingRunAnuga:
+    """AC5 — the whole point of the entry point.
+
+    A reader that has never heard of run_anuga must still decode a v3 store,
+    because that is what the web box's celery worker, the rig and
+    prod_store_dequant_check.py all are at the moment they call
+    ``zarr.open_group``. The check runs in a SUBPROCESS with
+    ``run_anuga.playback_codecs`` deliberately absent from ``sys.modules`` —
+    in-process it would pass vacuously, since importing this test module has
+    already registered the codec by hand.
+    """
+
+    def test_a_fresh_interpreter_decodes_a_v3_store(self, tmp_path, fixture_sww):
+        import subprocess
+        import sys
+        import textwrap
+
+        result = ps.export_playback_store(
+            input_data={"run_label": "run_ep_1", "scenario_config": {
+                "project": 5, "id": 5, "run_id": 1, "epsg": "EPSG:28355"}},
+            sww_path=str(fixture_sww), output_dir=str(tmp_path), upload=False,
+        )
+        expected = np.asarray(
+            __import__("zarr").open_group(result["local_path"], mode="r")["depth"][:])
+
+        probe = textwrap.dedent(
+            """
+            import sys
+            import numpy as np
+            import zarr
+            store = sys.argv[1]
+            # THE CLAIM UNDER TEST: this reader has not imported run_anuga.
+            before = [m for m in sys.modules if m.startswith("run_anuga")]
+            assert before == [], before
+            root = zarr.open_group(store, mode="r")
+            depth = np.asarray(root["depth"][:])
+            names = [c.to_dict()["name"] for c in root["depth"].metadata.codecs]
+            assert "temporal_delta" in names, names
+            # ... and zarr pulled the codec in BY ITSELF, off the entry point,
+            # which is the mechanism this AC exists to prove.
+            after = [m for m in sys.modules if m.startswith("run_anuga")]
+            assert "run_anuga.playback_codecs" in after, after
+            np.save(sys.argv[2], depth)
+            print("OK", names, after)
+            """
+        )
+        out_npy = str(tmp_path / "probe.npy")
+        proc = subprocess.run(
+            [sys.executable, "-c", probe, result["local_path"], out_npy],
+            capture_output=True, text=True, cwd="/",
+        )
+        assert proc.returncode == 0, proc.stderr[-2000:]
+        assert np.array_equal(np.load(out_npy), expected), (
+            "a fresh interpreter decoded different water than this one")
+
+
+@requires_zarr
+class TestCodecNameIsSharedNotGuessed:
+    def test_validator_and_codec_agree_on_the_name(self):
+        from run_anuga import validate_playback_store as vps
+        from run_anuga.playback_codecs import TEMPORAL_DELTA_NAME
+
+        assert vps._TEMPORAL_DELTA_NAME == TEMPORAL_DELTA_NAME

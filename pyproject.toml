@@ -91,6 +91,21 @@ dev = [
 [project.scripts]
 run-anuga = "run_anuga.cli:main"
 
+# TASK-2989 (W3.1, epic 2981) — the temporal_delta zarr v3 codec, declared so
+# that ANY zarr reader in an environment where run_anuga is installed resolves
+# it WITHOUT importing run_anuga first: zarr.registry._collect_entrypoints()
+# reads this group and lazy-loads the class on the first
+# get_codec_class('temporal_delta'). Without it, plain `zarr.open_group` on a
+# v3 playback store raises KeyError('temporal_delta') on the web box, in the
+# rig, and in prod_store_dequant_check.py.
+#
+# It costs nothing when zarr is absent (nothing reads the group) and it does
+# NOT make zarr a hard dependency — run_anuga/playback_codecs.py imports zarr
+# at module level, but that module is only ever imported through this entry
+# point or from the import-guarded playback_store path.
+[project.entry-points."zarr.codecs"]
+temporal_delta = "run_anuga.playback_codecs:TemporalDeltaCodec"
+
 [tool.setuptools.packages.find]
 include = ["run_anuga*"]
 

@@ -41,7 +41,14 @@ logger = logging.getLogger(__name__)
 #: v1 stores (no new attrs, chunk length always 10) remain valid forever —
 #: validate_playback_store.py gates the three new required attrs on
 #: format_version >= 2.
-FORMAT_VERSION = 2
+#: v3 (TASK-2989, epic 2981 W3.1, decision D5) — the three time-series arrays
+#: MAY carry the ``temporal_delta`` array->array codec ahead of bytes+gzip.
+#: The bump is what tells a client "this store's codec chain is not
+#: necessarily bytes+gzip, read the manifest's codecs block"; v1/v2 stores are
+#: unaffected and stay valid forever. NOTE the bump belongs to TASK-2989 and
+#: NOT to TASK-3014 (the Morton reorder): a reorder is invisible to every
+#: reader, a codec chain is not.
+FORMAT_VERSION = 3
 #: O1 (v1) — ratified at 10, NOT 20: time-blocking buys zero compression
 #: (DEFLATE's 32 KiB window cannot span a 1.17 MB timestep row). Chunk length
 #: is a pure seek-latency/request-count tradeoff with no byte cost either way.
@@ -389,7 +396,10 @@ def _write_zarr_v3_store(store_path, *, group_attrs: dict, arrays: dict):
             shape=data.shape,
             chunks=spec["chunks"],
             dtype=data.dtype,
-            filters=[],
+            # TASK-2989 — array->array filters, written BEFORE the serializer
+            # in the zarr v3 `codecs` list. Defaults to none, so every array
+            # that does not ask for one is byte-identical to before.
+            filters=spec.get("filters", []),
             serializer=BytesCodec(endian="little"),
             compressors=GzipCodec(level=CODEC_LEVEL),
             fill_value=spec["fill_value"],
@@ -515,6 +525,7 @@ def export_playback_store(
     bucket: str | None = None,
     prefix: str | None = None,
     spatial_order: bool = True,
+    temporal_delta: bool = True,
 ) -> dict:
     """Export ``sww_path`` to a local Zarr v3 playback store under
     ``output_dir``, then (if ``upload``) push it to S3.
@@ -530,6 +541,13 @@ def export_playback_store(
     ``False`` writes exactly the store this exporter wrote before TASK-3014
     (SWW order, no permutation arrays, no order attrs), which is what makes
     the reorder's own byte case falsifiable.
+
+    ``temporal_delta`` (TASK-2989, W3.1) allows the ``temporal_delta`` codec on
+    the three time-series arrays. It is a PERMISSION, not a command: the codec
+    is applied only when ``derive_chunk_length_t(n_node) >= 5`` (decision D5 —
+    below that it measured 96% on depth and LARGER on velocity). Passing
+    ``False`` switches it off unconditionally, which is what makes "a store
+    below the gate is byte-identical to a pre-TASK-2989 export" testable.
     """
     if not zarr_available():
         logger.warning(
@@ -551,6 +569,7 @@ def export_playback_store(
             bucket=bucket,
             prefix=prefix,
             spatial_order=spatial_order,
+            temporal_delta=temporal_delta,
         )
     except Exception:
         logger.exception(
@@ -610,7 +629,7 @@ def _apply_spatial_order(*, node_x, node_y, volumes):
 
 def _export_playback_store_impl(
     *, input_data, sww_path, output_dir, domain, upload, bucket, prefix,
-    spatial_order: bool = True,
+    spatial_order: bool = True, temporal_delta: bool = True,
 ) -> dict:
     from run_anuga import defaults
 
@@ -733,6 +752,21 @@ def _export_playback_store_impl(
 
     chunk_length_t = derive_chunk_length_t(n_node)
 
+    # TASK-2989 (W3.1, epic 2981) — decision D5. The delta pays only where
+    # there are enough rows in a chunk for inter-row similarity to survive
+    # gzip's window: measured 35%/48% at length 10 on run 1412, but 96% on
+    # depth and LARGER on x_velocity at length 2. `temporal_delta=False` is
+    # the unconditional off switch; the length rule is the automatic one.
+    time_series_filters: list = []
+    apply_temporal_delta = False
+    if temporal_delta:
+        from run_anuga.playback_codecs import (TEMPORAL_DELTA_MIN_CHUNK_LENGTH,
+                                               TemporalDeltaCodec)
+
+        apply_temporal_delta = chunk_length_t >= TEMPORAL_DELTA_MIN_CHUNK_LENGTH
+        if apply_temporal_delta:
+            time_series_filters = [TemporalDeltaCodec()]
+
     group_attrs = dict(
         format_version=FORMAT_VERSION,
         xllcorner=sww["xllcorner"],
@@ -774,6 +808,13 @@ def _export_playback_store_impl(
         # relay + validator both treat that as "declares none" — no backfill,
         # no 404, no throw; TASK-2752 AC4).
         envelope_quantities=list(ENVELOPE_QUANTITIES),
+        # TASK-2989 (v3, W3.1, epic 2981) — decision D5's verdict for THIS
+        # store, recorded rather than left to be re-derived. It is written
+        # unconditionally at v3 (not presence-gated like node_order) precisely
+        # so the validator can catch a store that CLAIMS a codec it does not
+        # carry, or carries one it does not claim; the chunk-length rule alone
+        # could not tell those apart from a correct store.
+        temporal_delta_applied=bool(apply_temporal_delta),
     )
     if spatial_order:
         # TASK-3014 — first-class ABSENCE, the shape has_dt and
@@ -800,6 +841,7 @@ def _export_playback_store_impl(
             data=depth_q,
             chunks=t_chunks,
             fill_value=DEPTH_FILL_VALUE,
+            filters=time_series_filters,
             attrs=dict(
                 scale=depth_scale, offset=depth_offset, quantized_dtype="uint16",
                 byteorder="little", valid_min=0.0, valid_max=max_depth,
@@ -809,6 +851,7 @@ def _export_playback_store_impl(
             data=x_velocity_q,
             chunks=t_chunks,
             fill_value=VELOCITY_FILL_VALUE,
+            filters=time_series_filters,
             attrs=dict(
                 scale=v_scale, offset=v_offset, quantized_dtype="uint16",
                 byteorder="little", valid_min=-v_absmax, valid_max=v_absmax,
@@ -818,6 +861,7 @@ def _export_playback_store_impl(
             data=y_velocity_q,
             chunks=t_chunks,
             fill_value=VELOCITY_FILL_VALUE,
+            filters=time_series_filters,
             attrs=dict(
                 scale=v_scale, offset=v_offset, quantized_dtype="uint16",
                 byteorder="little", valid_min=-v_absmax, valid_max=v_absmax,

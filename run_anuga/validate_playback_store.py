@@ -81,6 +81,67 @@ _ORDER_DECLARATIONS = (
 #: does not describe the curve the attr claims, and a reader that trusted the
 #: attr would re-export a scrambled mesh.
 _KNOWN_ORDERS = ("morton",)
+#: TASK-2989 (v3, W3.1, epic 2981) — the group attr recording D5's verdict for
+#: this store. Required at format_version >= 3 and forbidden below it, so a
+#: store can never be ambiguous about whether its time series carry the codec.
+_TEMPORAL_DELTA_ATTR = "temporal_delta_applied"
+#: The codec's own name. Duplicated from run_anuga.playback_codecs on purpose:
+#: that module imports zarr at module level, and this one must stay importable
+#: without zarr (see the module docstring). The single test
+#: `test_validator_and_codec_agree_on_the_name` pins the two together.
+_TEMPORAL_DELTA_NAME = "temporal_delta"
+
+
+def _declared_codec_names(store_path) -> dict[str, list[str]]:
+    """``{array_name: [codec names]}`` read straight out of each array's
+    ``zarr.json``, WITHOUT going through zarr.
+
+    This has to bypass zarr because it is the thing that catches a codec zarr
+    cannot resolve: ``zarr.registry.get_codec_class`` raises ``KeyError`` for
+    an unregistered name, and that KeyError surfaces the moment anything
+    touches the array's metadata — so a validator that reached for
+    ``root[name].metadata.codecs`` first would die with a traceback instead of
+    reporting the violation. Which is exactly what a reader in an environment
+    without run_anuga installed experiences.
+    """
+    import json
+
+    out: dict[str, list[str]] = {}
+    for child in sorted(Path(store_path).iterdir()):
+        meta = child / "zarr.json"
+        if not child.is_dir() or not meta.is_file():
+            continue
+        try:
+            doc = json.loads(meta.read_text())
+        except Exception:
+            continue
+        if doc.get("node_type") != "array":
+            continue
+        names = [
+            c.get("name") for c in (doc.get("codecs") or [])
+            if isinstance(c, dict) and isinstance(c.get("name"), str)
+        ]
+        out[child.name] = names
+    return out
+
+
+def _unresolvable_codecs(store_path) -> list[str]:
+    """Violations for every declared codec THIS reader cannot resolve."""
+    from zarr.registry import get_codec_class
+
+    violations: list[str] = []
+    for array_name, names in sorted(_declared_codec_names(store_path).items()):
+        for codec_name in names:
+            try:
+                get_codec_class(codec_name)
+            except KeyError:
+                violations.append(
+                    f"{array_name}: declares codec '{codec_name}', which is NOT REGISTERED "
+                    "in this environment — zarr cannot open the array at all. Install "
+                    "run_anuga (its 'zarr.codecs' entry point provides 'temporal_delta') "
+                    "or the codec's own package. TASK-2989"
+                )
+    return violations
 
 
 def validate_store(store_path) -> list[str]:
@@ -94,6 +155,14 @@ def validate_store(store_path) -> list[str]:
     import zarr
 
     violations: list[str] = []
+    # TASK-2989 — BEFORE zarr parses a single array. An unresolvable codec is
+    # not a "violation plus the rest of the report": it makes every later read
+    # in this function raise KeyError, so it is reported and the walk stops.
+    # That is also the honest verdict — a store whose codec this reader lacks
+    # is one it genuinely cannot validate.
+    unresolvable = _unresolvable_codecs(store_path)
+    if unresolvable:
+        return unresolvable
     root = zarr.open_group(str(store_path), mode="r")
 
     if root.metadata.zarr_format != 3:
@@ -111,6 +180,24 @@ def validate_store(store_path) -> list[str]:
                     f"group attrs missing '{attr}' (schema §5, required for format_version >= 2)"
                 )
 
+    # TASK-2989 (v3) — is this store's time series delta-coded? The attr is
+    # the store's own claim; the chunk-length rule is what it must agree with;
+    # and the per-array codec chains below are what must match BOTH. All three
+    # are checked, because any two of them agreeing while the third differs is
+    # a store that decodes to plausible, wrong water.
+    is_v3 = isinstance(format_version, (int, float)) and format_version >= 3
+    delta_declared = root.attrs.get(_TEMPORAL_DELTA_ATTR)
+    if is_v3 and delta_declared is None:
+        violations.append(
+            f"group attrs missing '{_TEMPORAL_DELTA_ATTR}' "
+            "(TASK-2989, required for format_version >= 3)"
+        )
+    if not is_v3 and delta_declared is not None:
+        violations.append(
+            f"group attrs declare '{_TEMPORAL_DELTA_ATTR}' at format_version="
+            f"{format_version!r} — the temporal_delta codec is a v3 feature (TASK-2989)"
+        )
+
     # TASK-2719 (v2) — the store's OWN declared chunk_length_t is the law
     # for its three quantized arrays' time-chunk length (O1/D5: "clients
     # MUST read them from zarr.json and MUST NOT hardcode them" applies to
@@ -125,6 +212,26 @@ def validate_store(store_path) -> list[str]:
             f"chunk_length_t={declared_chunk_length_t!r}, expected an int in "
             f"[{_CHUNK_LENGTH_T_FLOOR}, {_CHUNK_LENGTH_T_CAP}] (D5)"
         )
+
+    # TASK-2989 — the chunk-length rule (D5) is the LAW; the attr is a claim
+    # about it. A v1/v2 store never declares the attr and never carries the
+    # codec, which is why expected_delta is False there.
+    expected_delta = False
+    if is_v3:
+        from run_anuga.playback_codecs import TEMPORAL_DELTA_MIN_CHUNK_LENGTH
+
+        if isinstance(declared_chunk_length_t, int):
+            expected_delta = declared_chunk_length_t >= TEMPORAL_DELTA_MIN_CHUNK_LENGTH
+        if delta_declared is not None and bool(delta_declared) != expected_delta:
+            violations.append(
+                f"{_TEMPORAL_DELTA_ATTR}={delta_declared!r} but chunk_length_t="
+                f"{declared_chunk_length_t!r} means it should be {expected_delta} "
+                f"(D5: the codec applies iff chunk_length_t >= "
+                f"{TEMPORAL_DELTA_MIN_CHUNK_LENGTH}) — TASK-2989"
+            )
+    expected_time_series_codecs = (
+        ([{"name": _TEMPORAL_DELTA_NAME}] if expected_delta else []) + _EXPECTED_CODECS
+    )
 
     names = set(root.array_keys())
     n_node = None
@@ -184,8 +291,11 @@ def validate_store(store_path) -> list[str]:
                 "(schema §1 — fill_value is load-bearing, must decode to physical zero)"
             )
         codecs_dumped = [c.to_dict() for c in arr.metadata.codecs]
-        if codecs_dumped != _EXPECTED_CODECS:
-            violations.append(f"{name}: codecs={codecs_dumped}, expected {_EXPECTED_CODECS} (schema §1)")
+        if codecs_dumped != expected_time_series_codecs:
+            violations.append(
+                f"{name}: codecs={codecs_dumped}, expected {expected_time_series_codecs} "
+                "(schema §1; TASK-2989 D5 for the temporal_delta half)"
+            )
         cke = arr.metadata.chunk_key_encoding.to_dict()
         if cke != _EXPECTED_CHUNK_KEY_ENCODING:
             violations.append(f"{name}: chunk_key_encoding={cke}, expected {_EXPECTED_CHUNK_KEY_ENCODING}")

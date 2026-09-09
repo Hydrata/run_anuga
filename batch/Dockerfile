@@ -159,9 +159,19 @@ RUN pip install --no-cache-dir "numpy>=2.0" setuptools wheel "cython<3.3" pybind
 # gpu-dev base installs the trio explicitly; rasterio/shapely arrive via
 # run_anuga[sim] below, fiona must be explicit (TASK-2671 unification: the
 # cpu image must run riverwall scenarios identically to the gpu image).
+# zarr/numcodecs are PINNED (TASK-2989, W3.1, epic 2981). They used to float on
+# "zarr>=3.0", which was fine while every array carried the stock bytes+gzip
+# chain and stopped being fine the moment the store started carrying a
+# temporal_delta ArrayArrayCodec: that codec is written against zarr 3.3's
+# ArrayArrayCodec ABC (from_dict/to_dict/resolve_metadata/_encode_single/
+# _decode_single) and registered through the `zarr.codecs` ENTRY POINT group,
+# both of which are zarr-version-coupled. A floating zarr that moved either
+# would produce an image whose exporter writes a store the fleet cannot read,
+# and the failure would surface as a customer's completed run that will not
+# play — not as a red build.
 RUN pip install --no-cache-dir \
     scipy matplotlib "meshpy==2025.1.1" "pymetis==2025.2.2" netcdf4 dill utm pyproj affine \
-    mpi4py requests boto3 awscli fiona "zarr>=3.0"
+    mpi4py requests boto3 awscli fiona "zarr>=3.3.0,<4" "numcodecs>=0.16.5,<1.0"
 
 # ---- the engine, from the SHARED checkout (never a second clone/pin) ------
 # ANUGA_VERSION (TASK-2700): the src stage deletes .git, so `git describe` fails
@@ -208,6 +218,23 @@ RUN pip install --no-cache-dir "/app/run_anuga_src[sim,platform,playback]"
 # happened. See the gpu stage for the full rationale.
 RUN python -c "import run_anuga.playback_store as p; assert p.zarr_available(), \
 'TASK-2749: playback extra missing from this image — export_playback_store() would silently skip'"
+# ---- v3 codec-entry-point guard (TASK-2989, W3.1, epic 2981) --------------
+# KEEP THIS AFTER THE LAST pip install OF THE STAGE, same placement rule as
+# the two guards around it. The exporter now writes a `temporal_delta`
+# ArrayArrayCodec into every store whose chunk length is >= 5, and EVERY
+# Python reader in the fleet resolves that codec off run_anuga's
+# `zarr.codecs` entry point. If the entry point is not in the installed
+# distribution metadata, this image happily WRITES stores that the web box,
+# the rig and prod_store_dequant_check.py cannot open — and, exactly like
+# TASK-2749, the simulation still succeeds, so the only trace is a customer
+# whose run will not play back. Measured on the laptop 2026-09-09: a shadowed
+# dist-info with no `zarr.codecs` group turns a plain `zarr.open_group` into
+# `UnknownCodecError: Unknown codec: 'temporal_delta'`.
+RUN python -c "import importlib.metadata as md; \
+names=[e.name for e in md.entry_points().select(group='zarr.codecs')]; \
+assert 'temporal_delta' in names, \
+'TASK-2989: run_anuga did not register its zarr.codecs entry point (%r) — this image would write v3 stores no reader in the fleet can open' % (names,)"
+
 
 # ---- substitution guard (TASK-2700) ---------------------------------------
 # KEEP THIS AFTER THE LAST pip install OF THE STAGE. It asserts (via PEP 610
@@ -318,6 +345,12 @@ COPY --from=src /src/run_anuga/gn_anuga /app/gn_anuga
 # targets are user-selectable on hydrata.com (anuga_compute_targets carries
 # batch-gpu-a10g + batch-gpu-l40s), so this was reachable in production.
 COPY --from=src /src/run_anuga /app/run_anuga_src
+# TASK-2989 — the SAME zarr/numcodecs pins the cpu target carries. This stage
+# used to get them only transitively through run_anuga[playback]'s
+# "zarr>=3.0", so the two images could silently resolve different zarr majors
+# from the same source tree. The temporal_delta codec is written against
+# zarr 3.3's ArrayArrayCodec ABC; a drift here writes unreadable stores.
+RUN pip install --no-cache-dir "zarr>=3.3.0,<4" "numcodecs>=0.16.5,<1.0"
 RUN pip install --no-cache-dir "/app/run_anuga_src[sim,platform,playback]"
 
 # ---- playback-capability guard (TASK-2749) --------------------------------
@@ -330,6 +363,23 @@ RUN pip install --no-cache-dir "/app/run_anuga_src[sim,platform,playback]"
 # a fleet of successful runs with no playback data.
 RUN python -c "import run_anuga.playback_store as p; assert p.zarr_available(), \
 'TASK-2749: playback extra missing from this image — export_playback_store() would silently skip'"
+# ---- v3 codec-entry-point guard (TASK-2989, W3.1, epic 2981) --------------
+# KEEP THIS AFTER THE LAST pip install OF THE STAGE, same placement rule as
+# the two guards around it. The exporter now writes a `temporal_delta`
+# ArrayArrayCodec into every store whose chunk length is >= 5, and EVERY
+# Python reader in the fleet resolves that codec off run_anuga's
+# `zarr.codecs` entry point. If the entry point is not in the installed
+# distribution metadata, this image happily WRITES stores that the web box,
+# the rig and prod_store_dequant_check.py cannot open — and, exactly like
+# TASK-2749, the simulation still succeeds, so the only trace is a customer
+# whose run will not play back. Measured on the laptop 2026-09-09: a shadowed
+# dist-info with no `zarr.codecs` group turns a plain `zarr.open_group` into
+# `UnknownCodecError: Unknown codec: 'temporal_delta'`.
+RUN python -c "import importlib.metadata as md; \
+names=[e.name for e in md.entry_points().select(group='zarr.codecs')]; \
+assert 'temporal_delta' in names, \
+'TASK-2989: run_anuga did not register its zarr.codecs entry point (%r) — this image would write v3 stores no reader in the fleet can open' % (names,)"
+
 
 # ---- substitution guard (TASK-2700) — same contract as the cpu target ------
 # This is the COSTLY case: a PyPI wheel landing here replaces the nvc +
