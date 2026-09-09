@@ -88,6 +88,10 @@ ENVELOPE_QUANTITIES = ("depth", "velocity", "div")
 #: magnitude, never signed, so it does NOT get the symmetric [-v,+v] treatment
 #: x_velocity/y_velocity use).
 ENVELOPE_FILL_VALUE = 0
+#: TASK-3014 (W3.0, epic 2981) — the permutation arrays' fill value. -1 is not
+#: a legal index into anything, so a chunk that was never written can never be
+#: mistaken for "node 0" the way a 0 fill could.
+PERMUTATION_FILL_VALUE = -1
 #: TASK-2709 (W2.1, epic 2706) — the cache directive written on EVERY playback
 #: object at export. S3 cannot add one later without rewriting the object, so
 #: it has to be set here or not at all (existing stores can never satisfy it;
@@ -510,6 +514,7 @@ def export_playback_store(
     upload: bool = True,
     bucket: str | None = None,
     prefix: str | None = None,
+    spatial_order: bool = True,
 ) -> dict:
     """Export ``sww_path`` to a local Zarr v3 playback store under
     ``output_dir``, then (if ``upload``) push it to S3.
@@ -518,6 +523,13 @@ def export_playback_store(
     logged warning and ``{"status": ...}``, so the run itself never fails
     (landmine #1, TASK-2622 context). Returns a dict with at least a
     ``status`` key: ``"ok"``, ``"skipped_no_zarr"``, or ``"error"``.
+
+    ``spatial_order`` (TASK-3014, W3.0, epic 2981) writes the mesh in Morton /
+    Z-order — see :func:`_apply_spatial_order`. It defaults ON because it is
+    client-transparent and buys 1.30x on the blocking geometry prefix; passing
+    ``False`` writes exactly the store this exporter wrote before TASK-3014
+    (SWW order, no permutation arrays, no order attrs), which is what makes
+    the reorder's own byte case falsifiable.
     """
     if not zarr_available():
         logger.warning(
@@ -538,6 +550,7 @@ def export_playback_store(
             upload=upload,
             bucket=bucket,
             prefix=prefix,
+            spatial_order=spatial_order,
         )
     except Exception:
         logger.exception(
@@ -548,8 +561,56 @@ def export_playback_store(
     return result
 
 
+def _apply_spatial_order(*, node_x, node_y, volumes):
+    """TASK-3014 (W3.0, epic 2981) — the Morton reorder, as one pure step.
+
+    @returns ``(node_perm, face_perm)``, both ``int64`` and both genuine
+    permutations (``perm[newIndex] == originalIndex``). The caller applies
+    them; keeping the DECISION here and the APPLICATION there is what lets the
+    measurement script and the exporter agree by construction.
+
+    WHY FACES MOVE TOO, and why that is not optional. Measured on the two real
+    fixtures under the store's own bytes+gzip(6) chain, reorder only (no delta,
+    no byte-shuffle — those belong to W3.1/W3.2/W3.3):
+
+        variant                 face_node_connectivity      client prefix
+        nodes only              35,435,624 -> 32,615,509     1.10x
+        nodes AND faces         35,435,624 -> 23,552,802     1.30x
+                                                (1.50x)
+
+    A node reorder alone leaves the three integers in a connectivity ROW
+    spatially coherent but leaves the ROWS in mesh-generation order, so
+    consecutive rows still jump across the mesh and DEFLATE's 32 KiB window
+    finds nothing. Sorting the rows by their centroid's Z-key is what makes the
+    high bytes of consecutive rows repeat. Nodes-only buys 1.09x on
+    connectivity, i.e. below TASK-3014 AC2's 1.3x escalation threshold; nodes
+    plus faces buys 1.50x. Same shape on the small store (1.54x).
+
+    TRIANGLE WINDING IS PRESERVED: this reorders ROWS and substitutes VALUES,
+    and never sorts the three vertices inside a row. The critique measured the
+    orientation-preserving variant explicitly (9,221,596 B vs 9,094,123 B for
+    the vertex-sorted one) and the renderer depends on the orientation, so the
+    127 KB is deliberately left on the table.
+    """
+    from run_anuga.playback_order import inverse_permutation, morton_node_order
+
+    node_perm = morton_node_order(node_x, node_y)
+    inv = inverse_permutation(node_perm)
+    # Face keys are computed in the NEW node order so the two curves agree;
+    # the centroid is the same point either way, this just avoids a second
+    # gather over the original coordinates.
+    new_x = node_x[node_perm]
+    new_y = node_y[node_perm]
+    remapped = inv[volumes]
+    face_perm = morton_node_order(
+        new_x[remapped].mean(axis=1), new_y[remapped].mean(axis=1)
+    )
+    return node_perm, face_perm
+
+
 def _export_playback_store_impl(
-    *, input_data, sww_path, output_dir, domain, upload, bucket, prefix
+    *, input_data, sww_path, output_dir, domain, upload, bucket, prefix,
+    spatial_order: bool = True,
 ) -> dict:
     from run_anuga import defaults
 
@@ -627,6 +688,46 @@ def _export_playback_store_impl(
             byteorder="little", valid_min=0.0, valid_max=env_max,
         )
 
+    # TASK-3014 (W3.0, epic 2981) — THE SPATIAL REORDER, applied to every
+    # per-node axis and to the connectivity's VALUES, immediately before the
+    # arrays dict is built and after every quantization range has been taken.
+    #
+    # ORDER-INVARIANCE IS WHY THIS SITS HERE. quantize_range/symmetric_
+    # velocity_range are reductions over the WHOLE array (min/max/absmax), so
+    # they give the identical scale/offset whichever order the nodes are in —
+    # which means permuting the already-QUANTIZED uint16 arrays is both
+    # bit-identical to permuting the physical float32 ones and half the memory
+    # traffic. compute_envelopes and compute_inradius likewise ran above, in
+    # SWW order, and their results are simply gathered here.
+    node_x = sww["x"]
+    node_y = sww["y"]
+    elevation = sww["elevation"]
+    friction = sww["friction"]
+    volumes = sww["volumes"]
+    node_permutation = None
+    face_permutation = None
+    if spatial_order:
+        from run_anuga.playback_order import MORTON_ORDER_NAME, inverse_permutation
+
+        node_permutation, face_permutation = _apply_spatial_order(
+            node_x=node_x, node_y=node_y, volumes=volumes,
+        )
+        inverse_node = inverse_permutation(node_permutation)
+        node_x = node_x[node_permutation]
+        node_y = node_y[node_permutation]
+        elevation = elevation[node_permutation]
+        friction = friction[node_permutation]
+        # VALUES remapped (each row still holds its own three vertices in the
+        # same rotational order), then ROWS reordered. Never a sort within a
+        # row — winding is load-bearing for the renderer.
+        volumes = inverse_node[volumes].astype(np.int32)[face_permutation]
+        inradius = inradius[face_permutation]
+        depth_q = depth_q[:, node_permutation]
+        x_velocity_q = x_velocity_q[:, node_permutation]
+        y_velocity_q = y_velocity_q[:, node_permutation]
+        for name in ENVELOPE_QUANTITIES:
+            envelope_quantized[name] = envelope_quantized[name][node_permutation]
+
     epsg = scenario_config.get("epsg")
     model_start = scenario_config.get("model_start", "1970-01-01T00:00:00+00:00")
 
@@ -674,16 +775,24 @@ def _export_playback_store_impl(
         # no 404, no throw; TASK-2752 AC4).
         envelope_quantities=list(ENVELOPE_QUANTITIES),
     )
+    if spatial_order:
+        # TASK-3014 — first-class ABSENCE, the shape has_dt and
+        # envelope_quantities already use: a store that never declares these
+        # is in the original SWW order and stays valid forever. Declaring the
+        # order is what makes node_permutation's presence REQUIRED, so the
+        # validator can tell a real permutation from a corrupted one.
+        group_attrs["node_order"] = MORTON_ORDER_NAME
+        group_attrs["face_order"] = MORTON_ORDER_NAME
 
     t_chunks = (chunk_length_t, n_node)
     arrays = {
-        "node_x": dict(data=sww["x"], chunks=(n_node,), fill_value=0.0),
-        "node_y": dict(data=sww["y"], chunks=(n_node,), fill_value=0.0),
+        "node_x": dict(data=node_x, chunks=(n_node,), fill_value=0.0),
+        "node_y": dict(data=node_y, chunks=(n_node,), fill_value=0.0),
         "face_node_connectivity": dict(
-            data=sww["volumes"], chunks=sww["volumes"].shape, fill_value=-1
+            data=volumes, chunks=volumes.shape, fill_value=-1
         ),
-        "elevation": dict(data=sww["elevation"], chunks=(n_node,), fill_value=0.0),
-        "friction": dict(data=sww["friction"], chunks=(n_node,), fill_value=0.0),
+        "elevation": dict(data=elevation, chunks=(n_node,), fill_value=0.0),
+        "friction": dict(data=friction, chunks=(n_node,), fill_value=0.0),
         "inradius": dict(data=inradius, chunks=(inradius.shape[0],), fill_value=0.0),
         "time": dict(data=sww["time"], chunks=(n_time,), fill_value=0.0),
         "dt_ms": dict(data=dt_ms, chunks=(n_time,), fill_value=float("nan")),
@@ -726,6 +835,25 @@ def _export_playback_store_impl(
             chunks=(n_node,),
             fill_value=ENVELOPE_FILL_VALUE,
             attrs=envelope_attrs[name],
+        )
+    if spatial_order:
+        # TASK-3014 — the only way back to SWW order. THE CLIENT NEVER FETCHES
+        # THESE: playbackEpics.js's mesh object list is node_x, node_y,
+        # elevation, friction, inradius, face_node_connectivity, time, dt_ms,
+        # so they cost S3 storage and nothing at all on the blocking prefix
+        # this task exists to shrink. Measured cost, gzip-6, run 1328:
+        # node_permutation 6,738,192 B and face_permutation 14,127,682 B —
+        # about 50% of raw, i.e. NOT "compresses well", so the trade is a
+        # 14.7 MB smaller download against a 20.9 MB bigger object store.
+        arrays["node_permutation"] = dict(
+            data=node_permutation.astype(np.int32),
+            chunks=(n_node,),
+            fill_value=PERMUTATION_FILL_VALUE,
+        )
+        arrays["face_permutation"] = dict(
+            data=face_permutation.astype(np.int32),
+            chunks=(face_permutation.shape[0],),
+            fill_value=PERMUTATION_FILL_VALUE,
         )
 
     store_path = Path(output_dir) / f"{run_label}_playback.zarr"

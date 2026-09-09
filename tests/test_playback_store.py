@@ -408,7 +408,14 @@ class TestExportAgainstFixtureSww:
 
     def test_false_easting_northing_never_added_to_coords(self, tmp_path):
         """B2: false_easting/false_northing are informational-only attrs —
-        node_x/node_y must be stored as-is from the SWW, untouched."""
+        node_x/node_y must be stored as-is from the SWW, untouched.
+
+        TASK-3014 (W3.0, epic 2981) changed the ORDER of these values and
+        nothing else, so the B2 assertion is now made after undoing the stored
+        permutation. That is the same claim it always made — no arithmetic is
+        applied to a coordinate — and it is STRICTER than a set comparison,
+        which would pass a store whose coordinates had been shifted and
+        re-sorted."""
         import netCDF4
         import zarr
 
@@ -416,7 +423,11 @@ class TestExportAgainstFixtureSww:
         root = zarr.open_group(result["local_path"], mode="r")
         with netCDF4.Dataset(self.sww_path) as ds:
             sww_x = np.array(ds.variables["x"][:], dtype=np.float32)
-        np.testing.assert_array_equal(root["node_x"][:], sww_x)
+        stored = np.asarray(root["node_x"][:])
+        perm = np.asarray(root["node_permutation"][:])
+        in_sww_order = np.empty_like(stored)
+        in_sww_order[perm] = stored
+        np.testing.assert_array_equal(in_sww_order, sww_x)
 
     def test_upload_false_leaves_no_s3_call(self, tmp_path):
         with mock.patch.object(ps, "_upload_store_to_s3") as mock_upload:
@@ -981,3 +992,357 @@ class TestLiveS3Upload:
 
         # Deliberately does NOT delete the uploaded objects — never delete
         # any S3 object from a test (wave brief hard rule).
+
+
+# ---------------------------------------------------------------------------
+# TASK-3014 (W3.0, epic 2981) — Morton / Z-order node export
+# ---------------------------------------------------------------------------
+
+class TestMortonNodeOrder:
+    """AC1 — the permutation is a permutation, and the test can see a broken
+    one. Pure helper, unit-testable without an SWW (that is the whole point of
+    run_anuga/playback_order.py existing as its own module)."""
+
+    @staticmethod
+    def _helpers():
+        from run_anuga.playback_order import inverse_permutation, morton_node_order
+
+        return morton_node_order, inverse_permutation
+
+    def test_is_a_permutation_of_arange(self):
+        morton_node_order, _ = self._helpers()
+        rng = np.random.default_rng(20260909)
+        x = rng.uniform(-1000.0, 1000.0, 977)
+        y = rng.uniform(5.0e6, 5.1e6, 977)
+        perm = morton_node_order(x, y)
+        assert perm.dtype.kind == "i"
+        assert np.array_equal(np.sort(perm), np.arange(977))
+
+    def test_deterministic_same_input_same_output(self):
+        morton_node_order, _ = self._helpers()
+        rng = np.random.default_rng(7)
+        x = rng.uniform(0.0, 1.0, 512)
+        y = rng.uniform(0.0, 1.0, 512)
+        assert np.array_equal(morton_node_order(x, y), morton_node_order(x, y))
+
+    def test_orders_a_grid_by_z_curve_not_by_row(self):
+        """The whole point: nodes adjacent in the OUTPUT must be spatially
+        adjacent. On a 4x4 lattice written out row-major, Z-order puts the
+        first quadrant's four nodes first — a row-major (identity) order does
+        not."""
+        morton_node_order, _ = self._helpers()
+        xs, ys = np.meshgrid(np.arange(4.0), np.arange(4.0))
+        x = xs.ravel()
+        y = ys.ravel()
+        perm = morton_node_order(x, y)
+        assert not np.array_equal(perm, np.arange(16)), "identity is not a Z-order"
+        first_quadrant = {(0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)}
+        assert {(x[i], y[i]) for i in perm[:4]} == first_quadrant
+
+    def test_degenerate_coordinates_still_a_permutation(self):
+        """Every node on one point (a legal, if useless, mesh): the quantizer
+        divides by a zero span. Must not NaN out into a broken permutation."""
+        morton_node_order, _ = self._helpers()
+        x = np.full(64, 321000.0)
+        y = np.full(64, 5812000.0)
+        perm = morton_node_order(x, y)
+        assert np.array_equal(np.sort(perm), np.arange(64))
+
+    def test_empty_input(self):
+        morton_node_order, _ = self._helpers()
+        perm = morton_node_order(np.zeros(0), np.zeros(0))
+        assert perm.shape == (0,)
+
+    def test_inverse_permutation_round_trips(self):
+        morton_node_order, inverse_permutation = self._helpers()
+        rng = np.random.default_rng(11)
+        x = rng.uniform(0.0, 10.0, 300)
+        y = rng.uniform(0.0, 10.0, 300)
+        perm = morton_node_order(x, y)
+        inv = inverse_permutation(perm)
+        # perm[new] = original ; inv[original] = new
+        assert np.array_equal(inv[perm], np.arange(300))
+        assert np.array_equal(perm[inv], np.arange(300))
+        # And the defining property: applying perm reorders, applying inv undoes.
+        reordered = x[perm]
+        assert np.array_equal(reordered[inv], x)
+
+
+@requires_zarr
+@pytest.mark.requires_anuga
+class TestMortonOrderedExport:
+    """TASK-3014 AC3/AC4/AC7/AC-P1(c)/AC-P2 — the exporter writes the store in
+    Morton order, declares it, and stores the way back.
+
+    SHIPPED VARIANT: nodes AND faces. Measured on the two real fixtures under
+    the store's own bytes+gzip(6) chain (no delta, no shuffle — those are
+    W3.1/W3.2/W3.3):
+        face_node_connectivity  35,435,624 -> 23,552,802 B  (1.50x) on run 1328
+                                 1,540,555 ->  1,001,844 B  (1.54x) on run 1412
+        client blocking prefix  63,212,197 -> 48,501,176 B  (1.30x) on run 1328
+    A nodes-only reorder buys only 1.09x on connectivity, i.e. BELOW AC2's
+    1.3x escalation threshold — the face reorder is what makes the high bytes
+    of a connectivity row repetitive, and it is not optional.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _sww(self, fixture_sww):
+        self.sww_path = str(fixture_sww)
+
+    def _export(self, tmp_path, run_id=1, **kwargs):
+        return ps.export_playback_store(
+            input_data={
+                "run_label": f"run_morton_{run_id}",
+                "scenario_config": {
+                    "project": 1, "id": 1, "run_id": run_id, "epsg": "EPSG:28355",
+                },
+            },
+            sww_path=self.sww_path,
+            output_dir=str(tmp_path),
+            upload=False,
+            **kwargs,
+        )
+
+    @staticmethod
+    def _sww_arrays(sww_path):
+        return ps._read_sww_arrays(sww_path)
+
+    def test_declares_morton_order_and_stores_both_permutations(self, tmp_path):
+        import zarr
+
+        result = self._export(tmp_path, run_id=1)
+        root = zarr.open_group(result["local_path"], mode="r")
+        assert root.attrs["node_order"] == "morton"
+        assert root.attrs["face_order"] == "morton"
+        n_node = root["node_x"].shape[0]
+        n_face = root["face_node_connectivity"].shape[0]
+        node_perm = np.asarray(root["node_permutation"][:])
+        face_perm = np.asarray(root["face_permutation"][:])
+        assert str(root["node_permutation"].dtype) == "int32"
+        assert str(root["face_permutation"].dtype) == "int32"
+        assert node_perm.shape == (n_node,)
+        assert face_perm.shape == (n_face,)
+        assert np.array_equal(np.sort(node_perm), np.arange(n_node))
+        assert np.array_equal(np.sort(face_perm), np.arange(n_face))
+
+    def test_is_not_the_identity_permutation(self, tmp_path):
+        """The discriminator against a store that merely DECLARES morton
+        order: a real mesh's SWW order is not already Z-order."""
+        import zarr
+
+        result = self._export(tmp_path, run_id=2)
+        root = zarr.open_group(result["local_path"], mode="r")
+        node_perm = np.asarray(root["node_permutation"][:])
+        assert not np.array_equal(node_perm, np.arange(node_perm.shape[0]))
+
+    def test_every_per_node_array_round_trips_to_sww_order_byte_exact(self, tmp_path):
+        """AC4 — applying the stored permutation reproduces the SWW-order
+        array EXACTLY (numpy array_equal, not 'close')."""
+        import zarr
+
+        result = self._export(tmp_path, run_id=3)
+        sww = self._sww_arrays(self.sww_path)
+        root = zarr.open_group(result["local_path"], mode="r")
+        perm = np.asarray(root["node_permutation"][:])
+        for store_name, sww_name in (
+            ("node_x", "x"), ("node_y", "y"),
+            ("elevation", "elevation"), ("friction", "friction"),
+        ):
+            stored = np.asarray(root[store_name][:])
+            restored = np.empty_like(stored)
+            restored[perm] = stored
+            assert np.array_equal(restored, sww[sww_name]), store_name
+
+    def test_connectivity_round_trips_including_winding(self, tmp_path):
+        """AC4 — the (nFace, 3) arrays must match ELEMENT-WISE, not as sets:
+        winding is load-bearing for the renderer and a per-triangle vertex
+        sort would still compare equal as a set of edges."""
+        import zarr
+
+        result = self._export(tmp_path, run_id=4)
+        sww = self._sww_arrays(self.sww_path)
+        root = zarr.open_group(result["local_path"], mode="r")
+        node_perm = np.asarray(root["node_permutation"][:])
+        face_perm = np.asarray(root["face_permutation"][:])
+        stored = np.asarray(root["face_node_connectivity"][:])
+        # stored values are NEW node indices; perm maps new -> original.
+        original_values = node_perm[stored]
+        restored = np.empty_like(original_values)
+        restored[face_perm] = original_values
+        assert np.array_equal(restored, sww["volumes"])
+
+    def test_inradius_travels_with_its_face(self, tmp_path):
+        """AC3 — a face reorder that leaves inradius behind silently gives
+        every triangle its neighbour's Courant radius."""
+        import zarr
+
+        result = self._export(tmp_path, run_id=5)
+        sww = self._sww_arrays(self.sww_path)
+        expected = ps.compute_inradius(sww["x"], sww["y"], sww["volumes"])
+        root = zarr.open_group(result["local_path"], mode="r")
+        face_perm = np.asarray(root["face_permutation"][:])
+        stored = np.asarray(root["inradius"][:])
+        assert np.array_equal(stored, expected[face_perm])
+        # And a spot value read back for a known face, per AC3.
+        known = int(face_perm[7])
+        assert stored[7] == expected[known]
+
+    def test_time_series_node_axis_is_permuted_consistently(self, tmp_path):
+        """AC4 for the [n_time, n_node] arrays — the SAME permutation, so a
+        frame row still lines up with node_x/node_y."""
+        import zarr
+
+        result = self._export(tmp_path, run_id=6)
+        root_m = zarr.open_group(result["local_path"], mode="r")
+        plain = self._export(tmp_path, run_id=7, spatial_order=False)
+        root_p = zarr.open_group(plain["local_path"], mode="r")
+        perm = np.asarray(root_m["node_permutation"][:])
+        for name in ("depth", "x_velocity", "y_velocity", "depth_max"):
+            morton = np.asarray(root_m[name][:])
+            unordered = np.asarray(root_p[name][:])
+            expected = unordered[..., perm]
+            assert np.array_equal(morton, expected), name
+
+    def test_spatial_order_false_is_the_pre_morton_store(self, tmp_path):
+        """AC-P2 — the opt-out writes exactly what HEAD wrote: SWW order, no
+        permutation arrays, no order attrs."""
+        import zarr
+
+        result = self._export(tmp_path, run_id=8, spatial_order=False)
+        sww = self._sww_arrays(self.sww_path)
+        root = zarr.open_group(result["local_path"], mode="r")
+        assert "node_order" not in root.attrs
+        assert "face_order" not in root.attrs
+        names = set(root.array_keys())
+        assert "node_permutation" not in names
+        assert "face_permutation" not in names
+        assert np.array_equal(np.asarray(root["node_x"][:]), sww["x"])
+        assert np.array_equal(np.asarray(root["face_node_connectivity"][:]), sww["volumes"])
+
+    def test_format_version_unchanged_and_attrs_are_a_superset(self, tmp_path):
+        """AC7 — a version bump here would make every shipped client refuse a
+        store it can in fact read."""
+        import zarr
+
+        assert ps.FORMAT_VERSION == 2
+        morton = self._export(tmp_path, run_id=9)
+        plain = self._export(tmp_path, run_id=10, spatial_order=False)
+        morton_attrs = dict(zarr.open_group(morton["local_path"], mode="r").attrs)
+        plain_attrs = dict(zarr.open_group(plain["local_path"], mode="r").attrs)
+        assert morton_attrs["format_version"] == 2
+        assert plain_attrs["format_version"] == 2
+        assert set(morton_attrs) > set(plain_attrs)
+        assert set(morton_attrs) - set(plain_attrs) == {"node_order", "face_order"}
+
+    def test_exported_morton_store_validates_clean(self, tmp_path):
+        """AC-P1(c) — the ONE leg in this task's chain that can tell the
+        change from HEAD: a store exported BY THIS CHANGE, validated."""
+        from run_anuga.validate_playback_store import validate_store
+
+        result = self._export(tmp_path, run_id=11)
+        assert validate_store(result["local_path"]) == []
+
+
+@requires_zarr
+@pytest.mark.requires_anuga
+class TestValidatorSpatialOrder:
+    """TASK-3014 AC5 — the validator can tell a real permutation from a
+    corrupted one, and a store that declares NEITHER (every store written
+    before this task) still validates with ZERO violations."""
+
+    @pytest.fixture(autouse=True)
+    def _sww(self, fixture_sww):
+        self.sww_path = str(fixture_sww)
+
+    def _export(self, tmp_path, run_id, **kwargs):
+        return ps.export_playback_store(
+            input_data={
+                "run_label": f"run_val_{run_id}",
+                "scenario_config": {
+                    "project": 2, "id": 2, "run_id": run_id, "epsg": "EPSG:28355",
+                },
+            },
+            sww_path=self.sww_path, output_dir=str(tmp_path), upload=False, **kwargs,
+        )
+
+    def test_declared_node_order_without_the_array_is_a_violation(self, tmp_path):
+        import zarr
+        from run_anuga.validate_playback_store import validate_store
+
+        result = self._export(tmp_path, 1)
+        root = zarr.open_group(result["local_path"], mode="a")
+        del root["node_permutation"]
+        violations = validate_store(result["local_path"])
+        assert any("node_permutation" in v and "node_order" in v for v in violations), violations
+
+    def test_node_permutation_without_the_attr_is_a_violation(self, tmp_path):
+        import zarr
+        from run_anuga.validate_playback_store import validate_store
+
+        result = self._export(tmp_path, 2)
+        root = zarr.open_group(result["local_path"], mode="a")
+        attrs = dict(root.attrs)
+        del attrs["node_order"]
+        root.attrs.put(attrs)
+        violations = validate_store(result["local_path"])
+        assert any("node_permutation" in v for v in violations), violations
+
+    def test_duplicated_index_in_node_permutation_is_a_violation(self, tmp_path):
+        """THE failure mode: a duplicate keeps the dtype, the shape and a
+        wholly plausible value range, but drops one node and doubles another,
+        so a re-export through it silently corrupts the mesh."""
+        import zarr
+        from run_anuga.validate_playback_store import validate_store
+
+        result = self._export(tmp_path, 3)
+        root = zarr.open_group(result["local_path"], mode="a")
+        arr = root["node_permutation"]
+        values = np.asarray(arr[:])
+        values[1] = values[0]
+        arr[:] = values
+        violations = validate_store(result["local_path"])
+        assert any("node_permutation" in v and "permutation" in v for v in violations), violations
+
+    def test_declared_face_order_without_the_array_is_a_violation(self, tmp_path):
+        import zarr
+        from run_anuga.validate_playback_store import validate_store
+
+        result = self._export(tmp_path, 4)
+        root = zarr.open_group(result["local_path"], mode="a")
+        del root["face_permutation"]
+        violations = validate_store(result["local_path"])
+        assert any("face_permutation" in v and "face_order" in v for v in violations), violations
+
+    def test_duplicated_index_in_face_permutation_is_a_violation(self, tmp_path):
+        import zarr
+        from run_anuga.validate_playback_store import validate_store
+
+        result = self._export(tmp_path, 5)
+        root = zarr.open_group(result["local_path"], mode="a")
+        arr = root["face_permutation"]
+        values = np.asarray(arr[:])
+        values[2] = values[3]
+        arr[:] = values
+        violations = validate_store(result["local_path"])
+        assert any("face_permutation" in v and "permutation" in v for v in violations), violations
+
+    def test_unknown_order_name_is_a_violation(self, tmp_path):
+        import zarr
+        from run_anuga.validate_playback_store import validate_store
+
+        result = self._export(tmp_path, 6)
+        root = zarr.open_group(result["local_path"], mode="a")
+        attrs = dict(root.attrs)
+        attrs["node_order"] = "hilbert"
+        root.attrs.put(attrs)
+        violations = validate_store(result["local_path"])
+        assert any("node_order" in v and "hilbert" in v for v in violations), violations
+
+    def test_store_declaring_neither_validates_clean(self, tmp_path):
+        """The first-class-absence control — the shape has_dt and
+        envelope_quantities already use. This is what keeps every store
+        written before TASK-3014 valid forever."""
+        from run_anuga.validate_playback_store import validate_store
+
+        result = self._export(tmp_path, 7, spatial_order=False)
+        assert validate_store(result["local_path"]) == []

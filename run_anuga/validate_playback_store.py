@@ -65,6 +65,22 @@ _EXPECTED_CODECS = [
     {"name": "gzip", "configuration": {"level": 6}},
 ]
 _EXPECTED_CHUNK_KEY_ENCODING = {"name": "default", "configuration": {"separator": "/"}}
+#: TASK-3014 (W3.0, epic 2981) — the spatial-order declarations, as
+#: ``(group attr, permutation array, "which count it must permute")`` triples.
+#: PRESENCE-GATED, exactly like ``has_dt`` and ``envelope_quantities``: a store
+#: that declares NEITHER is in the original SWW order and must validate with
+#: ZERO violations forever. Declaring the attr is what makes the array
+#: required, and vice versa — a half-declared store is refused in both
+#: directions, because either half alone silently misdescribes the mesh.
+_ORDER_DECLARATIONS = (
+    ("node_order", "node_permutation", "nNode"),
+    ("face_order", "face_permutation", "nFace"),
+)
+#: The only ordering this validator knows how to reason about. An unknown name
+#: is refused rather than ignored: "hilbert" would mean the stored permutation
+#: does not describe the curve the attr claims, and a reader that trusted the
+#: attr would re-export a scrambled mesh.
+_KNOWN_ORDERS = ("morton",)
 
 
 def validate_store(store_path) -> list[str]:
@@ -240,6 +256,58 @@ def validate_store(store_path) -> list[str]:
                         violations.append(
                             f"{arr_name}: missing quantization attr '{qattr}' (TASK-2752, schema §3)"
                         )
+
+    # TASK-3014 (W3.0, epic 2981) — spatial (Morton) export order.
+    counts = {"nNode": n_node, "nFace": n_face}
+    for attr_name, array_name, count_key in _ORDER_DECLARATIONS:
+        declared_order = root.attrs.get(attr_name)
+        present = array_name in names
+        if declared_order is None:
+            if present:
+                violations.append(
+                    f"array '{array_name}' is present but group attrs declare no "
+                    f"'{attr_name}' — a permutation nothing declares cannot be applied, "
+                    "and absence of the attr means the ORIGINAL SWW order (TASK-3014)"
+                )
+            continue
+        if declared_order not in _KNOWN_ORDERS:
+            violations.append(
+                f"{attr_name}={declared_order!r}, expected one of {_KNOWN_ORDERS} "
+                "(TASK-3014 — an ordering this reader cannot reproduce)"
+            )
+        if not present:
+            violations.append(
+                f"group attrs declare {attr_name}={declared_order!r} but array "
+                f"'{array_name}' is missing (TASK-3014 — a store must not advertise "
+                "a reordering it cannot undo)"
+            )
+            continue
+        arr = root[array_name]
+        if str(arr.dtype) != "int32":
+            violations.append(
+                f"{array_name}: dtype={arr.dtype}, expected int32 (TASK-3014)"
+            )
+        expected_count = counts.get(count_key)
+        if expected_count is None:
+            continue
+        if arr.ndim != 1 or arr.shape[0] != expected_count:
+            violations.append(
+                f"{array_name}: shape={arr.shape}, expected ({expected_count},) "
+                f"— one entry per {count_key} (TASK-3014)"
+            )
+            continue
+        # THE check that matters. A DUPLICATED index keeps the dtype, the
+        # shape and an entirely plausible value range, but drops one node and
+        # doubles another — a re-export through it silently corrupts the mesh
+        # and nothing else in the store would notice.
+        from run_anuga.playback_order import is_permutation
+
+        if not is_permutation(arr[:], expected_count):
+            violations.append(
+                f"{array_name}: not a permutation of 0..{expected_count - 1} "
+                "(duplicated or out-of-range index) — re-exporting through it would "
+                "silently corrupt the mesh (TASK-3014)"
+            )
 
     if _INRADIUS_ARRAY not in names:
         violations.append(f"missing required array '{_INRADIUS_ARRAY}' (schema §2)")
