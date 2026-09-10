@@ -120,22 +120,58 @@ jobs:
       # branch protection an unpinned cross-repo ref means any anuga_core merge instantly
       # reds every run_anuga PR, with the fix landing in another repo and no blame signal
       # (TASK-1477's exact failure mode). Ratchet owner + cadence:
-      # docs/fleet-enforcement/pin-ratchet.md in Hydrata/deploy. Pinned SHA = anuga_core's
-      # origin/main tip as of 2026-07-16 (`git rev-parse origin/main`).
+      # docs/fleet-enforcement/pin-ratchet.md in Hydrata/deploy. Pinned SHA = the
+      # DEPLOYED anuga_core commit (Hydrata/deploy ansible/release.yml default
+      # .anuga_core_commit_sha), currently 93368189 — TASK-2758's merge of
+      # upstream ANUGA tag 4.0.0 into the fork's main, shipped to all four prod
+      # sites 2026-09-10 (was ad1bfe71, TASK-2147's rain-on-grid-trust merge).
       - name: Install the Hydrata anuga_core fork (prod engine, not PyPI upstream)
         run: |
-          # TASK-2863: Cython 3.3.0 (released 2026-08-22) rejects the fork's
-          # dict-view -> cdef list assignments (sparse_matrix_ext.pyx:73-74), and
-          # the fork's [build-system] declares an UNBOUNDED "Cython" — so the
-          # build-isolated install below started redding this required gate with
-          # no code change on our side (last green 2026-08-16, Cython 3.2.x).
-          # Build with the proven <3.3 toolchain and --no-build-isolation so the
-          # pin actually governs the compile (mirrors batch/Dockerfile). Remove
-          # the constraint in the PR that bumps the pin past the fork-side fix
-          # (TASK-2863 AC4).
-          pip install "cython<3.3" meson-python meson ninja pybind11 setuptools wheel
-          pip install --force-reinstall --no-deps --no-build-isolation "anuga @ git+https://github.com/Hydrata/anuga_core.git@ad1bfe7155f9b16986e0f672cf54275e9c35c5fb"
-          python -c "import anuga; from osgeo import gdal, ogr; print('anuga', anuga.__version__, '| gdal/ogr import OK')"
+          # TASK-2863 (AC4, closing it out): Cython 3.3.0 (released 2026-08-22)
+          # rejected the fork's dict-view -> cdef list assignments
+          # (sparse_matrix_ext.pyx:73-74), and the fork's [build-system] declared
+          # an UNBOUNDED "Cython" — so a build-isolated install started redding
+          # this required gate with no code change on our side (last green
+          # 2026-08-16, Cython 3.2.x). Worked around here with a `cython<3.3` cap
+          # and --no-build-isolation (mirrors batch/Dockerfile) until the pin
+          # below moved past the fork-side fix.
+          #
+          # The pin bump below (TASK-2758's sync of upstream tag 4.0.0 into the
+          # fork's main, commit 93368189) carries the fix — verified:
+          #   git -C anuga_core grep -nE \
+          #     'cdef (list|dict) [a-zA-Z_]+ *= *[a-zA-Z_.]+\.(items|keys|values)\(\)' \
+          #     origin/main -- '*.pyx'
+          #   -> no matches
+          # so the cap is dropped in this same change. Note WHERE that bound has
+          # to live: the install below is --no-build-isolation, so pip never
+          # reads the fork's [build-system] requires — the Cython that compiles
+          # the .pyx is the one the explicit line below puts in the env, and
+          # nothing else. Leaving it unbounded HERE is the deliberate choice:
+          # this job runs on every PR, so it is the fleet's early warning that
+          # the next Cython release still builds the fork. batch/Dockerfile is
+          # bounded instead (`cython<4`) because an image build is a ship path,
+          # not a canary — it must not discover a Cython break at bake time.
+          pip install cython meson-python meson ninja pybind11 setuptools wheel
+
+          pip install --force-reinstall --no-deps --no-build-isolation "anuga @ git+https://github.com/Hydrata/anuga_core.git@93368189eb35eef847094dde027d6d6dcb2b0059"
+          # Anti-paper-gate: assert the CAPABILITY, not just importability.
+          #
+          # spatial_available is the ENGINE's own gate: anuga's
+          # spatialInputUtil puts its whole geodata surface behind
+          # `try: import fiona, rasterio, shapely`, and with the flag False
+          # getRasterExtent raises and every set_quantity('elevation', <raster>)
+          # dies MID-RUN. That is how this job first went red on the pin bump
+          # above — 14 failures + 29 errors whose one shared cause (no fiona)
+          # had to be read out of a traceback.
+          #
+          # fiona is NOT installed here on purpose. It is DECLARED, in
+          # run_anuga[sim] (pyproject.toml), which `[full,dev]` above already
+          # installed — one declaration covering CI, both Dockerfile targets and
+          # the ansible web-box install, instead of a fourth hand-rolled copy of
+          # the same fact. This line is the proof that the declaration actually
+          # delivered: if it is ever dropped, or fiona/rasterio/shapely has a
+          # GDAL ABI mismatch, this fails HERE with the real cause.
+          python -c "import anuga; from anuga.utilities import spatialInputUtil as su; assert su.spatial_available, su.spatial_import_error; from osgeo import gdal, ogr; print('anuga', anuga.__version__, '| geodata interface live | gdal/ogr import OK')"
 
       - name: Merewether ARR benchmark + ANUGA integration tests
         run: pytest tests/ -v -m requires_anuga --timeout=1800
