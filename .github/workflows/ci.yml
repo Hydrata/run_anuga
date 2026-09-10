@@ -142,12 +142,51 @@ jobs:
           #     'cdef (list|dict) [a-zA-Z_]+ *= *[a-zA-Z_.]+\.(items|keys|values)\(\)' \
           #     origin/main -- '*.pyx'
           #   -> no matches
-          # so the cap is dropped in this same change: build-isolation now runs
-          # with WHATEVER Cython pip resolves, which is the point — this job is
-          # what actually proves unpinned Cython builds the fork clean again.
+          # so the cap is dropped in this same change. Note WHERE that bound has
+          # to live: the install below is --no-build-isolation, so pip never
+          # reads the fork's [build-system] requires — the Cython that compiles
+          # the .pyx is the one the explicit line below puts in the env, and
+          # nothing else. Leaving it unbounded HERE is the deliberate choice:
+          # this job runs on every PR, so it is the fleet's early warning that
+          # the next Cython release still builds the fork. batch/Dockerfile is
+          # bounded instead (`cython<4`) because an image build is a ship path,
+          # not a canary — it must not discover a Cython break at bake time.
           pip install cython meson-python meson ninja pybind11 setuptools wheel
+
+          # fiona: NOT a declared dependency of anything in this graph, and the
+          # engine hard-needs it. anuga/utilities/spatialInputUtil.py gates its
+          # whole geodata surface behind `try: import fiona, rasterio, shapely`
+          # (spatial_available); with the flag False, getRasterExtent raises and
+          # every set_quantity('elevation', <raster>) dies mid-run. rasterio and
+          # shapely arrive via run_anuga[sim] above — fiona does NOT: geopandas
+          # 1.x moved to pyogrio, and anuga 4.0.0 declares fiona only under
+          # `extra == "data"`, so the resolved set has no fiona at all.
+          #
+          # Prod installs it explicitly on all three surfaces, which is why prod
+          # is unaffected: ansible install-anuga.yml (fiona>=1.9,<1.11
+          # --no-binary, TASK-1279), batch/Dockerfile's cpu stage, and the
+          # gpu-dev base (Dockerfile.gpu-dev — fiona rasterio shapely). CI was
+          # the ONLY surface without it, and only stopped getting away with that
+          # when the pin above crossed the upstream commits that removed
+          # spatialInputUtil's gdal/ogr fallback tier (d34a5ae4/74e65a3a/
+          # ca807d48, all 2026-04..07 — in the fork since 7f1a4847, i.e. in
+          # PRODUCTION since August). The pin bump did not cause this; it is the
+          # first time CI jumped over it, because the old pin ad1bfe71 predates
+          # the whole series.
+          #
+          # Version range from ansible (the proven one); wheel, not --no-binary,
+          # to match the gpu-dev base that the only supported Batch target
+          # actually runs. Bounded on purpose — an unbounded dep floating onto a
+          # breaking release is the exact TASK-2863 shape this PR closes out.
+          pip install "fiona>=1.9,<1.11"
+
           pip install --force-reinstall --no-deps --no-build-isolation "anuga @ git+https://github.com/Hydrata/anuga_core.git@93368189eb35eef847094dde027d6d6dcb2b0059"
-          python -c "import anuga; from osgeo import gdal, ogr; print('anuga', anuga.__version__, '| gdal/ogr import OK')"
+          # Anti-paper-gate: assert the CAPABILITY, not just importability.
+          # spatial_available is the fork's own gate — if fiona/rasterio/shapely
+          # is missing OR has a GDAL ABI mismatch, this fails HERE with the real
+          # cause, instead of 14 failures + 29 errors 90s later in pytest whose
+          # shared root cause has to be read out of a traceback.
+          python -c "import anuga; from anuga.utilities import spatialInputUtil as su; assert su.spatial_available, su.spatial_import_error; from osgeo import gdal, ogr; print('anuga', anuga.__version__, '| geodata interface live | gdal/ogr import OK')"
 
       - name: Merewether ARR benchmark + ANUGA integration tests
         run: pytest tests/ -v -m requires_anuga --timeout=1800

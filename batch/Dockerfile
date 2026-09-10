@@ -145,10 +145,24 @@ WORKDIR /app
 # dict-view assignments, sparse_matrix_ext.pyx:73-74) until the engine pin
 # moved past the fork-side fix. ANUGA_CORE_SHA above is now 93368189
 # (TASK-2758's sync of upstream tag 4.0.0 into the fork's main, baked in
-# PR #19), which carries the fix — verified with
-# `git -C anuga_core grep -nE 'cdef (list|dict) [a-zA-Z_]+ *= *[a-zA-Z_.]+\.(items|keys|values)\(\)' origin/main -- '*.pyx'`
-# returning no matches — so the cap is dropped here (TASK-2863 AC4).
-RUN pip install --no-cache-dir "numpy>=2.0" setuptools wheel cython pybind11 \
+# PR #19), which carries the fix — upstream ea00a180, "Fix the build under
+# Cython 3.3.0 (dict views are not lists)" — so the <3.3 cap goes (AC4).
+#
+# It is REPLACED, not deleted, and this is the line that matters: the engine
+# build below is --no-build-isolation, so pip never reads anuga_core's
+# [build-system] requires. Bounding Cython in the fork's pyproject.toml
+# (TASK-2863 AC3) governs build-ISOLATED installs only and has no effect
+# here — THIS pip install is what picks the compiler for the .pyx in the cpu
+# stage. An image build is a ship path: it must not be the thing that
+# discovers the next Cython break. run_anuga's ci.yml deliberately leaves
+# cython unbounded to be that canary instead.
+#
+# SCOPE: cpu stage only. The gpu stage is FROM ${GPU_BASE} and gets its
+# toolchain from the base image, where cython is still unbounded —
+# deploy/scripts/gpu-dev/Dockerfile.gpu-dev:74. That base is built rarely and
+# by hand, so its Cython is frozen at whatever was current at base-build time
+# rather than re-resolved per bake; bound it there too when it is next rebuilt.
+RUN pip install --no-cache-dir "numpy>=2.0" setuptools wheel "cython<4" pybind11 \
         meson ninja meson-python && \
     pip install --no-cache-dir --no-binary GDAL --no-build-isolation \
     "GDAL==$(gdal-config --version).*"
