@@ -177,6 +177,14 @@ RUN pip install --no-cache-dir "numpy>=2.0" setuptools wheel "cython<4" pybind11
 # gpu-dev base installs the trio explicitly; rasterio/shapely arrive via
 # run_anuga[sim] below, fiona must be explicit (TASK-2671 unification: the
 # cpu image must run riverwall scenarios identically to the gpu image).
+#
+# TASK-2758: fiona is now also DECLARED in run_anuga[sim] (pyproject.toml),
+# which the `run_anuga_src[sim,...]` install below would satisfy on its own —
+# this line is belt-and-braces, kept because it puts fiona in place BEFORE the
+# engine build rather than after it. Do NOT read it as "the Dockerfile covers
+# fiona": it covers only this stage. The declaration is what covers the gpu
+# stage, the ansible web-box venv and CI, and it is guarded by
+# tests/test_run_utils.py::test_fiona_present_when_sim_extra_is_installed.
 RUN pip install --no-cache-dir \
     scipy matplotlib "meshpy==2025.1.1" "pymetis==2025.2.2" netcdf4 dill utm pyproj affine \
     mpi4py requests boto3 awscli fiona "zarr>=3.0"
