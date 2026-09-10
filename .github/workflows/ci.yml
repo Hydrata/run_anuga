@@ -120,21 +120,33 @@ jobs:
       # branch protection an unpinned cross-repo ref means any anuga_core merge instantly
       # reds every run_anuga PR, with the fix landing in another repo and no blame signal
       # (TASK-1477's exact failure mode). Ratchet owner + cadence:
-      # docs/fleet-enforcement/pin-ratchet.md in Hydrata/deploy. Pinned SHA = anuga_core's
-      # origin/main tip as of 2026-07-16 (`git rev-parse origin/main`).
+      # docs/fleet-enforcement/pin-ratchet.md in Hydrata/deploy. Pinned SHA = the
+      # DEPLOYED anuga_core commit (Hydrata/deploy ansible/release.yml default
+      # .anuga_core_commit_sha), currently 93368189 — TASK-2758's merge of
+      # upstream ANUGA tag 4.0.0 into the fork's main, shipped to all four prod
+      # sites 2026-09-10 (was ad1bfe71, TASK-2147's rain-on-grid-trust merge).
       - name: Install the Hydrata anuga_core fork (prod engine, not PyPI upstream)
         run: |
-          # TASK-2863: Cython 3.3.0 (released 2026-08-22) rejects the fork's
-          # dict-view -> cdef list assignments (sparse_matrix_ext.pyx:73-74), and
-          # the fork's [build-system] declares an UNBOUNDED "Cython" — so the
-          # build-isolated install below started redding this required gate with
-          # no code change on our side (last green 2026-08-16, Cython 3.2.x).
-          # Build with the proven <3.3 toolchain and --no-build-isolation so the
-          # pin actually governs the compile (mirrors batch/Dockerfile). Remove
-          # the constraint in the PR that bumps the pin past the fork-side fix
-          # (TASK-2863 AC4).
-          pip install "cython<3.3" meson-python meson ninja pybind11 setuptools wheel
-          pip install --force-reinstall --no-deps --no-build-isolation "anuga @ git+https://github.com/Hydrata/anuga_core.git@ad1bfe7155f9b16986e0f672cf54275e9c35c5fb"
+          # TASK-2863 (AC4, closing it out): Cython 3.3.0 (released 2026-08-22)
+          # rejected the fork's dict-view -> cdef list assignments
+          # (sparse_matrix_ext.pyx:73-74), and the fork's [build-system] declared
+          # an UNBOUNDED "Cython" — so a build-isolated install started redding
+          # this required gate with no code change on our side (last green
+          # 2026-08-16, Cython 3.2.x). Worked around here with a `cython<3.3` cap
+          # and --no-build-isolation (mirrors batch/Dockerfile) until the pin
+          # below moved past the fork-side fix.
+          #
+          # The pin bump below (TASK-2758's sync of upstream tag 4.0.0 into the
+          # fork's main, commit 93368189) carries the fix — verified:
+          #   git -C anuga_core grep -nE \
+          #     'cdef (list|dict) [a-zA-Z_]+ *= *[a-zA-Z_.]+\.(items|keys|values)\(\)' \
+          #     origin/main -- '*.pyx'
+          #   -> no matches
+          # so the cap is dropped in this same change: build-isolation now runs
+          # with WHATEVER Cython pip resolves, which is the point — this job is
+          # what actually proves unpinned Cython builds the fork clean again.
+          pip install meson-python meson ninja pybind11 setuptools wheel
+          pip install --force-reinstall --no-deps --no-build-isolation "anuga @ git+https://github.com/Hydrata/anuga_core.git@93368189eb35eef847094dde027d6d6dcb2b0059"
           python -c "import anuga; from osgeo import gdal, ogr; print('anuga', anuga.__version__, '| gdal/ogr import OK')"
 
       - name: Merewether ARR benchmark + ANUGA integration tests
