@@ -148,7 +148,7 @@ WORKDIR /app
 # PR #19), which carries the fix — verified with
 # `git -C anuga_core grep -nE 'cdef (list|dict) [a-zA-Z_]+ *= *[a-zA-Z_.]+\.(items|keys|values)\(\)' origin/main -- '*.pyx'`
 # returning no matches — so the cap is dropped here (TASK-2863 AC4).
-RUN pip install --no-cache-dir "numpy>=2.0" setuptools wheel pybind11 \
+RUN pip install --no-cache-dir "numpy>=2.0" setuptools wheel cython pybind11 \
         meson ninja meson-python && \
     pip install --no-cache-dir --no-binary GDAL --no-build-isolation \
     "GDAL==$(gdal-config --version).*"

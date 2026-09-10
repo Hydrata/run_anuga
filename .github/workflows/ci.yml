@@ -145,7 +145,7 @@ jobs:
           # so the cap is dropped in this same change: build-isolation now runs
           # with WHATEVER Cython pip resolves, which is the point — this job is
           # what actually proves unpinned Cython builds the fork clean again.
-          pip install meson-python meson ninja pybind11 setuptools wheel
+          pip install cython meson-python meson ninja pybind11 setuptools wheel
           pip install --force-reinstall --no-deps --no-build-isolation "anuga @ git+https://github.com/Hydrata/anuga_core.git@93368189eb35eef847094dde027d6d6dcb2b0059"
           python -c "import anuga; from osgeo import gdal, ogr; print('anuga', anuga.__version__, '| gdal/ogr import OK')"
 
