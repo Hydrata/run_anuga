@@ -58,7 +58,7 @@
 # (TASK-2673 engine unification: cpu joins gpu on fork main; towradgi
 # parity gate on the cpu build is the acceptance evidence). Prev: 8abd3aef
 # (fork main @ upstream anuga-community/main 2d3696ea, epic 2147 W1.1).
-ARG ANUGA_CORE_SHA=7f1a4847df34cd2527101d4e10dbbf0b81668e23
+ARG ANUGA_CORE_SHA=93368189eb35eef847094dde027d6d6dcb2b0059
 
 # ---- BARE-TAG RULE: a `v`-prefixed anuga_core tag is a SILENT no-op --------
 # (TASK-2700. Recorded here and in deploy's install-anuga.yml pin comment —
@@ -265,9 +265,27 @@ ENV PYTHONUNBUFFERED=1
 # (editable /app/anuga_core-gpu, label org.hydrata.anuga_gpu_sha) is
 # REPLACED by an nvc + OpenMP-target-offload build of the SAME
 # /src/anuga_core checkout the cpu target installs. The base supplies only
-# the toolchain. Which GPU arch(es): cc70/75/86/89 (V100/T4/Ampere/Ada) —
-# same list the multiarch base used.
-ARG GPU_ARCH=cc70,cc75,cc86,cc89
+# the toolchain.
+#
+# GPU_ARCH — WIDENED 2026-09-10 (TASK-2758 AC1/AC5), and the widening is NOT
+# cosmetic. Until upstream 5b7dc93f this flag was INERT: nvc takes device
+# architectures from `-gpu=` on the LINK line and `gpu_link_args` was empty,
+# so the built .so carried whatever CUDA 12.9 in the nvhpc base chose —
+# MEASURED on the live image as 8 architectures (sm_70 75 80 86 89 90 100 120)
+# and ZERO PTX. 5b7dc93f arrives with the anuga_core 4.0.0 sync and makes the
+# flag real and EXCLUSIVE, so the old 4-entry list would have SILENTLY dropped
+# sm_80/90/100/120 from the rebuilt image — a strictly worse artefact than the
+# one it replaces, with no PTX to JIT from. This list is an exact superset of
+# the measured baseline. nvc 25.5 / CUDA 12.9 accepts 35 50 60 61 70 75 80 86
+# 89 90 100 120 (`nvc -gpu=help`); the four oldest are omitted deliberately —
+# they were never in the baseline and only add build time.
+#
+# PTX (TASK-2758 AC6) — RECORDED DECISION, not silence: nvc offers NO keyword
+# that embeds PTX. `-gpu=` exposes only SASS arch selection plus `ptxinfo`
+# (print-only). So SASS-only is forced by the toolchain, and forward
+# compatibility is bought with architecture BREADTH instead of JIT. That is
+# why the superset above is load-bearing rather than tidy.
+ARG GPU_ARCH=cc70,cc75,cc80,cc86,cc89,cc90,cc100,cc120
 ARG GPU_AWARE_MPI=false
 # ANUGA_VERSION: same override, same `0.0.0+g<sha>` dialect as the cpu target
 # (TASK-2700 — see the note there). MEASURED, not assumed: the gpu target's
