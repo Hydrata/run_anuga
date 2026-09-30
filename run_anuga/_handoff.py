@@ -512,8 +512,8 @@ def upload_cold_archive(
 
 
 #: TASK-3396 (epic 3221 W2b) — job env var naming this run's Result envelope
-#: (``s3://<result bucket>/batch-results/<process uuid>/result.json``), set by
-#: ``gn_anuga.services._dispatch_batch``. Same wire name as
+#: (``s3://<result bucket>/batch-results/<process uuid>/<dispatch id>/result.json``,
+#: one key per dispatch), set by ``gn_anuga.services._dispatch_batch``. Same wire name as
 #: ``gn_anuga.batch_common.telemetry_protocol.RESULT_ENVELOPE_ENV``; spelled
 #: here like the other wire constants so construction never needs a second
 #: batch_common import.
@@ -644,15 +644,21 @@ def _make_telemetry_client(scenario_config):
             f"prepends to PYTHONPATH. For a deliberately unreported ad-hoc run "
             f"set {ALLOW_UNREPORTED_ENV}=1."
         ) from exc
+    # TASK-3396 (epic 3221 W2b): the Result envelope the box named at submit
+    # (gn_anuga.services._dispatch_batch). The client PUTs the result event
+    # there before POSTing it; unset (an old box, the celery-native localhost
+    # path) = no envelope, today's behaviour. The keyword is passed ONLY when
+    # the env var is set (F5): a client whose staged leaf predates the
+    # envelope writer has no such parameter and must still construct.
+    envelope_kwargs = {}
+    envelope_uri = os.environ.get(RESULT_ENVELOPE_ENV) or None
+    if envelope_uri:
+        envelope_kwargs["result_envelope_uri"] = envelope_uri
     return TelemetryClient(
         scenario_config.get("control_server"),
         process_id,
         os.environ.get("HYDRATA_INTERNAL_COMPUTE_TOKEN"),
-        # TASK-3396 (epic 3221 W2b): the Result envelope the box named at
-        # submit (gn_anuga.services._dispatch_batch). The client PUTs the
-        # result event there before POSTing it; unset (an old box, the
-        # celery-native localhost path) = no envelope, today's behaviour.
-        result_envelope_uri=os.environ.get(RESULT_ENVELOPE_ENV) or None,
+        **envelope_kwargs,
     )
 
 

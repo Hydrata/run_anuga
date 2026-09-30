@@ -156,3 +156,28 @@ def test_result_envelope_uri_passed_through_to_the_client(
 def test_result_envelope_env_name_matches_the_box_contract():
     """_handoff's constant is the box's wire name, pinned by value."""
     assert getattr(_handoff, 'RESULT_ENVELOPE_ENV', None) == RESULT_ENVELOPE_ENV
+
+
+class OldSignatureClient(FakeTelemetryClient):
+    """A pre-3396 TelemetryClient: the OLD constructor, no **kwargs, so an
+    unexpected ``result_envelope_uri=`` keyword is a TypeError (an image whose
+    staged hydrata leaf predates the envelope writer)."""
+
+    def __init__(self, control_server, process_id, token, *, timeout_s=10):
+        super().__init__(control_server, process_id, token)
+        self.timeout_s = timeout_s
+
+
+@pytest.mark.parametrize('value', [None, ''])
+def test_result_envelope_unset_constructs_an_old_signature_client(
+        monkeypatch, envelope_env, value):
+    """F5 (compat): with RESULT_ENVELOPE_S3_URI unset or empty, the envelope
+    keyword is not passed at all, so an old-signature client still builds."""
+    if value is None:
+        monkeypatch.delenv(RESULT_ENVELOPE_ENV)
+    else:
+        monkeypatch.setenv(RESULT_ENVELOPE_ENV, value)
+    envelope_env.TelemetryClient = OldSignatureClient
+    client = _handoff._make_telemetry_client({'control_server': 'https://cs'})
+    assert isinstance(client, OldSignatureClient)
+    assert not hasattr(client, 'result_envelope_uri')
