@@ -33,6 +33,11 @@ set -euo pipefail
 #                                       explicit export needed (mirrors the ANUGA
 #                                       entrypoint, where run_anuga._handoff reads it
 #                                       from os.environ).
+#   TERRAIN_COMPUTE_VERB              - optional (TASK-3232): the terrain_compute verb to
+#                                       run, `merge-and-report` (default, the terrain-merge
+#                                       jobdef) or `terrain-prep` (the terrain-prep jobdef
+#                                       and the box's submit both set it). Anything else
+#                                       exits 2 before any download.
 #   The manifest location, ONE of:
 #     MANIFEST_S3_URI                 - full s3://bucket/key URI, OR
 #     MANIFEST_S3_BUCKET + MANIFEST_S3_KEY
@@ -51,6 +56,16 @@ set -euo pipefail
 : "${RESULT_S3_BUCKET:?RESULT_S3_BUCKET env var is required}"
 
 WORK_DIR="/tmp/terrain_compute"
+
+# TASK-3232: which terrain_compute verb this job runs (allow-list).
+VERB="${TERRAIN_COMPUTE_VERB:-merge-and-report}"
+case "${VERB}" in
+  merge-and-report|terrain-prep) ;;
+  *)
+    echo "[terrain-entrypoint] ERROR: unknown TERRAIN_COMPUTE_VERB '${VERB}' (expected merge-and-report or terrain-prep)" >&2
+    exit 2
+    ;;
+esac
 CONTROL_BASE="${CONTROL_SERVER%/}"
 
 # Resolve the manifest S3 URI from either MANIFEST_S3_URI or the
@@ -124,7 +139,7 @@ trap 'exit_code=$?; if [ $exit_code -ne 0 ] && [ -n "${HYDRATA_PROCESS_ID:-}" ];
     "${CONTROL_BASE}/api/v2/tasks/processes/${HYDRATA_PROCESS_ID}/events/" || true
 fi' EXIT
 
-echo "[terrain-entrypoint] === Terrain Compute (merge-and-report) ==="
+echo "[terrain-entrypoint] === Terrain Compute (${VERB}) ==="
 echo "[terrain-entrypoint] Manifest: ${MANIFEST_URI}"
 echo "[terrain-entrypoint] Control:  ${CONTROL_BASE}"
 # TASK-2677: one greppable line naming the active telemetry dialect — the
@@ -152,7 +167,7 @@ echo "[terrain-entrypoint] Download complete."
 # upload, `result` event, with an `error` event on any failure).
 export HYDRATA_INTERNAL_COMPUTE_TOKEN
 export RESULT_S3_BUCKET
-echo "[terrain-entrypoint] Starting terrain merge..."
+echo "[terrain-entrypoint] Starting ${VERB}..."
 cd "${WORK_DIR}"
-python -m gn_anuga.terrain_compute merge-and-report "${MANIFEST_PATH}"
-echo "[terrain-entrypoint] === Terrain merge complete ==="
+python -m gn_anuga.terrain_compute "${VERB}" "${MANIFEST_PATH}"
+echo "[terrain-entrypoint] === ${VERB} complete ==="
