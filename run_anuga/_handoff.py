@@ -511,6 +511,15 @@ def upload_cold_archive(
 # imports them.
 
 
+#: TASK-3396 (epic 3221 W2b) — job env var naming this run's Result envelope
+#: (``s3://<result bucket>/batch-results/<process uuid>/result.json``), set by
+#: ``gn_anuga.services._dispatch_batch``. Same wire name as
+#: ``gn_anuga.batch_common.telemetry_protocol.RESULT_ENVELOPE_ENV``; spelled
+#: here like the other wire constants so construction never needs a second
+#: batch_common import.
+RESULT_ENVELOPE_ENV = "RESULT_ENVELOPE_S3_URI"
+
+
 def _make_telemetry_client(scenario_config):
     """THE one explicit construction site for the events client (TASK-2672).
 
@@ -639,6 +648,11 @@ def _make_telemetry_client(scenario_config):
         scenario_config.get("control_server"),
         process_id,
         os.environ.get("HYDRATA_INTERNAL_COMPUTE_TOKEN"),
+        # TASK-3396 (epic 3221 W2b): the Result envelope the box named at
+        # submit (gn_anuga.services._dispatch_batch). The client PUTs the
+        # result event there before POSTing it; unset (an old box, the
+        # celery-native localhost path) = no envelope, today's behaviour.
+        result_envelope_uri=os.environ.get(RESULT_ENVELOPE_ENV) or None,
     )
 
 
@@ -973,14 +987,17 @@ def run_and_report(
     dict
         ``{"result_key": <s3 key>, "process_result_status": "events"}`` on
         success. ``process_result_status`` is ``None`` on a non-rank-0 process
-        and on an :data:`ALLOW_UNREPORTED_ENV` run (nothing was reported).
+        and on an :data:`ALLOW_UNREPORTED_ENV` run (nothing was reported), and
+        ``"envelope"`` when the result POST was not delivered but the Result
+        envelope was written (TASK-3396: the box collects it).
 
     Raises
     ------
     RuntimeError
         Before the sim, when there is no telemetry channel and no opt-out
         (:func:`_make_telemetry_client`); after the handoff, when the terminal
-        ``result`` event could not be delivered.
+        ``result`` event could not be delivered AND no Result envelope was
+        written (TASK-3396).
     Any exception from ``run_sim`` (after the terminal ``error`` event).
     """
     package_dir = Path(package_dir).resolve()
@@ -1280,7 +1297,25 @@ def run_and_report(
             return {"result_key": result_key,
                     "process_result_status": "events"}
 
-        # Terminal event undeliverable after the client's bounded retries. RAISE
+        # TASK-3396 (epic 3221 W2b): the POST did not land, but the Result
+        # envelope did. The box's Batch collector reads the envelope once
+        # Batch reports this job SUCCEEDED, so exit 0: no error event (it
+        # would fail a run whose result is safe in S3) and no raise (a FAILED
+        # job is exactly what the collector must not see). This is the only
+        # way a lane simulation, which has no inbound path, can succeed.
+        if getattr(telemetry_client, "result_envelope_written", None) is True:
+            logger.warning(
+                "run_and_report: the result event for run %s was not "
+                "delivered, but its result envelope is written at %s — the "
+                "control server's Batch collector completes the run from it. "
+                "Result zip: s3://%s/%s",
+                run_id, telemetry_client.result_envelope_uri, bucket, result_key,
+            )
+            return {"result_key": result_key,
+                    "process_result_status": "envelope"}
+
+        # Terminal event undeliverable after the client's bounded retries, and
+        # no Result envelope landed (none configured, or its PUT failed). RAISE
         # rather than exit 0: a non-zero container makes the Batch job status
         # FAILED, which is a signal the reaper and an operator can both see,
         # whereas a SUCCEEDED job with no terminal event looks like a wedge for
