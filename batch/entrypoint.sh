@@ -35,6 +35,13 @@ set -euo pipefail
 #
 # Optional:
 #   CPUS                              - Number of MPI processes (default: nproc)
+#   ANUGA_VERB                        - TASK-3231: the run_anuga.cli verb to run,
+#                                       `run-and-report` (default: a simulation) or
+#                                       `build-and-report` (the anuga-build jobdef: mesh
+#                                       a staged package, single process, no mpirun;
+#                                       it also needs BUILT_PACKAGE_S3_KEY, read by the
+#                                       python). Anything else exits 2 before any
+#                                       download.
 #
 # D-decisions (TASK-1048):
 #   D4.c  No SIGTERM trap, no checkpoint resume. Operator accepts spot loss.
@@ -51,6 +58,16 @@ set -euo pipefail
 
 WORK_DIR="/tmp/simulation"
 CPUS="${CPUS:-$(nproc)}"
+
+# TASK-3231: which run_anuga.cli verb this job runs (allow-list).
+VERB="${ANUGA_VERB:-run-and-report}"
+case "${VERB}" in
+  run-and-report|build-and-report) ;;
+  *)
+    echo "[entrypoint] ERROR: unknown ANUGA_VERB '${VERB}' (expected run-and-report or build-and-report)" >&2
+    exit 2
+    ;;
+esac
 CONTROL_BASE="${CONTROL_SERVER%/}"
 
 # Telemetry schema version for the entrypoint-level error event. Resolved from
@@ -148,7 +165,10 @@ export RESULT_S3_BUCKET
 # does not apply here. These two env vars are the documented escape hatch.
 export OMPI_ALLOW_RUN_AS_ROOT=1
 export OMPI_ALLOW_RUN_AS_ROOT_CONFIRM=1
-if [ "${CPUS}" -gt 1 ]; then
+if [ "${VERB}" = "build-and-report" ]; then
+    # TASK-3231: meshing is single-process (Triangle), so no mpirun.
+    python -m run_anuga.cli build-and-report "${WORK_DIR}"
+elif [ "${CPUS}" -gt 1 ]; then
     mpirun -np "${CPUS}" --use-hwthread-cpus python -m run_anuga.cli run-and-report "${WORK_DIR}"
 else
     python -m run_anuga.cli run-and-report "${WORK_DIR}"

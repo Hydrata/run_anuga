@@ -111,6 +111,27 @@ def cmd_run_and_report(args):
         print(f"process_result_status: {result['process_result_status']}")
 
 
+def cmd_build_and_report(args):
+    """Mesh a staged package, upload the built package, report it (TASK-3231).
+
+    The AWS Batch ``anuga-build`` job runs this (``ANUGA_VERB=build-and-report``
+    in batch/entrypoint.sh): the web box stages the package without the mesh,
+    this meshes it with the same ``create_anuga_mesh`` and posts ONE terminal
+    ``result`` event (Result envelope first, TASK-3396). Fail-closed on a
+    missing ``HYDRATA_PROCESS_ID`` like ``run-and-report``.
+    """
+    from run_anuga._handoff import build_and_report
+
+    result = build_and_report(
+        args.package_dir,
+        package_bucket=args.package_bucket,
+        package_key=args.package_key,
+    )
+    print(f"built_package_key: {result['built_package_key']}")
+    print(f"mesh_triangle_count: {result['mesh_triangle_count']}")
+    print(f"process_result_status: {result['process_result_status']}")
+
+
 def cmd_post_process(args):
     """Generate GeoTIFFs from SWW output, and the playback store."""
     from run_anuga.run_utils import post_process_sww
@@ -251,6 +272,26 @@ def main():
         help="S3 bucket for the result zip (defaults to RESULT_S3_BUCKET env var)",
     )
 
+    # --- build-and-report ---
+    bar_parser = subparsers.add_parser(
+        "build-and-report",
+        help=(
+            "Mesh a staged package, upload the built package, and post a "
+            "terminal `result` event (TASK-3231; needs HYDRATA_PROCESS_ID)"
+        ),
+    )
+    bar_parser.add_argument(
+        "package_dir", help="Path to the staged (un-meshed) package directory"
+    )
+    bar_parser.add_argument(
+        "--package-bucket",
+        help="S3 bucket for the built package (defaults to PACKAGE_S3_BUCKET env var)",
+    )
+    bar_parser.add_argument(
+        "--package-key",
+        help="S3 key for the built package (defaults to BUILT_PACKAGE_S3_KEY env var)",
+    )
+
     # --- validate ---
     val_parser = subparsers.add_parser(
         "validate", help="Validate a scenario package"
@@ -327,6 +368,7 @@ def main():
     commands = {
         "run": cmd_run,
         "run-and-report": cmd_run_and_report,
+        "build-and-report": cmd_build_and_report,
         "validate": cmd_validate,
         "info": cmd_info,
         "post-process": cmd_post_process,
