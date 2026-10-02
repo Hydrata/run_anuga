@@ -241,7 +241,7 @@ def _stage_fakebin(root: Path, *, aws_fails: bool) -> Path:
 
 
 def _run_entrypoint(tmp_path, *, script=None, process_id, schema_version=1,
-                    aws_fails=True):
+                    aws_fails=True, extra_env=None):
     """Run a shipped entrypoint against a one-shot raw-socket HTTP stub.
 
     Returns ``(completed_process, captured)`` where ``captured`` is ``{}`` when
@@ -306,6 +306,8 @@ def _run_entrypoint(tmp_path, *, script=None, process_id, schema_version=1,
     env["RUN_ID"] = RUN_ID
     env["CPUS"] = "1"  # single-process branch: no mpirun on this box
     env["PYTHONPATH"] = str(_stage_fake_gn_anuga(tmp_path, schema_version))
+    env.pop("ANUGA_VERB", None)
+    env.update(extra_env or {})  # TASK-3231: verb selection
     if process_id is None:
         env.pop("HYDRATA_PROCESS_ID", None)
     else:

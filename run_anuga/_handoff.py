@@ -511,6 +511,15 @@ def upload_cold_archive(
 # imports them.
 
 
+#: TASK-3396 (epic 3221 W2b) — job env var naming this run's Result envelope
+#: (``s3://<result bucket>/batch-results/<process uuid>/<dispatch id>/result.json``,
+#: one key per dispatch), set by ``gn_anuga.services._dispatch_batch``. Same wire name as
+#: ``gn_anuga.batch_common.telemetry_protocol.RESULT_ENVELOPE_ENV``; spelled
+#: here like the other wire constants so construction never needs a second
+#: batch_common import.
+RESULT_ENVELOPE_ENV = "RESULT_ENVELOPE_S3_URI"
+
+
 def _make_telemetry_client(scenario_config):
     """THE one explicit construction site for the events client (TASK-2672).
 
@@ -635,10 +644,21 @@ def _make_telemetry_client(scenario_config):
             f"prepends to PYTHONPATH. For a deliberately unreported ad-hoc run "
             f"set {ALLOW_UNREPORTED_ENV}=1."
         ) from exc
+    # TASK-3396 (epic 3221 W2b): the Result envelope the box named at submit
+    # (gn_anuga.services._dispatch_batch). The client PUTs the result event
+    # there before POSTing it; unset (an old box, the celery-native localhost
+    # path) = no envelope, today's behaviour. The keyword is passed ONLY when
+    # the env var is set (F5): a client whose staged leaf predates the
+    # envelope writer has no such parameter and must still construct.
+    envelope_kwargs = {}
+    envelope_uri = os.environ.get(RESULT_ENVELOPE_ENV) or None
+    if envelope_uri:
+        envelope_kwargs["result_envelope_uri"] = envelope_uri
     return TelemetryClient(
         scenario_config.get("control_server"),
         process_id,
         os.environ.get("HYDRATA_INTERNAL_COMPUTE_TOKEN"),
+        **envelope_kwargs,
     )
 
 
@@ -973,14 +993,17 @@ def run_and_report(
     dict
         ``{"result_key": <s3 key>, "process_result_status": "events"}`` on
         success. ``process_result_status`` is ``None`` on a non-rank-0 process
-        and on an :data:`ALLOW_UNREPORTED_ENV` run (nothing was reported).
+        and on an :data:`ALLOW_UNREPORTED_ENV` run (nothing was reported), and
+        ``"envelope"`` when the result POST was not delivered but the Result
+        envelope was written (TASK-3396: the box collects it).
 
     Raises
     ------
     RuntimeError
         Before the sim, when there is no telemetry channel and no opt-out
         (:func:`_make_telemetry_client`); after the handoff, when the terminal
-        ``result`` event could not be delivered.
+        ``result`` event could not be delivered AND no Result envelope was
+        written (TASK-3396).
     Any exception from ``run_sim`` (after the terminal ``error`` event).
     """
     package_dir = Path(package_dir).resolve()
@@ -1280,7 +1303,25 @@ def run_and_report(
             return {"result_key": result_key,
                     "process_result_status": "events"}
 
-        # Terminal event undeliverable after the client's bounded retries. RAISE
+        # TASK-3396 (epic 3221 W2b): the POST did not land, but the Result
+        # envelope did. The box's Batch collector reads the envelope once
+        # Batch reports this job SUCCEEDED, so exit 0: no error event (it
+        # would fail a run whose result is safe in S3) and no raise (a FAILED
+        # job is exactly what the collector must not see). This is the only
+        # way a lane simulation, which has no inbound path, can succeed.
+        if getattr(telemetry_client, "result_envelope_written", None) is True:
+            logger.warning(
+                "run_and_report: the result event for run %s was not "
+                "delivered, but its result envelope is written at %s — the "
+                "control server's Batch collector completes the run from it. "
+                "Result zip: s3://%s/%s",
+                run_id, telemetry_client.result_envelope_uri, bucket, result_key,
+            )
+            return {"result_key": result_key,
+                    "process_result_status": "envelope"}
+
+        # Terminal event undeliverable after the client's bounded retries, and
+        # no Result envelope landed (none configured, or its PUT failed). RAISE
         # rather than exit 0: a non-zero container makes the Batch job status
         # FAILED, which is a signal the reaper and an operator can both see,
         # whereas a SUCCEEDED job with no terminal event looks like a wedge for
@@ -1310,3 +1351,153 @@ def run_and_report(
                 telemetry_client.stop_watchdog()
             except Exception:
                 pass
+
+
+# ---------------------------------------------------------------------------
+# TASK-3231 (epic 3221 W2b) — build-and-report: a mesh build on AWS Batch
+# ---------------------------------------------------------------------------
+
+#: Job env var naming WHERE the built package goes (the box names it at submit,
+#: ``gn_anuga.services_anuga_build.dispatch_anuga_build_batch``). Its bucket is
+#: ``PACKAGE_S3_BUCKET`` — the run bucket the staged package came from, the same
+#: bucket ``Run.s3_package`` lives in, so the box records the key as-is.
+BUILT_PACKAGE_KEY_ENV = "BUILT_PACKAGE_S3_KEY"
+
+#: Wire field of the built package's key in the ``result`` event. The box
+#: (``gn_anuga.services_anuga_build``) spells the same value.
+BUILT_PACKAGE_KEY_FIELD = "built_package_key"
+
+
+def _json_safe(value):
+    """Round-trip ``value`` through JSON, coercing numpy scalars to Python."""
+    def _default(obj):
+        item = getattr(obj, "item", None)
+        return item() if callable(item) else str(obj)
+    return json.loads(json.dumps(value, default=_default))
+
+
+def _build_error_message(exc: BaseException) -> str:
+    """The error event text: the exception, never a traceback (user-visible on
+    the Run; the traceback goes to the container log)."""
+    return f"{type(exc).__name__}: {exc}"
+
+
+def build_and_report(
+    package_dir: str | Path,
+    *,
+    package_bucket: str | None = None,
+    package_key: str | None = None,
+) -> dict:
+    """Mesh a staged scenario package, upload the built package, report it.
+
+    The box stages ``scenario.json`` + ``inputs/`` (everything
+    ``Scenario.make_package`` writes before ``create_anuga_mesh``) and submits
+    an ``anuga-build`` job whose entrypoint runs this. Steps, all in-process:
+
+    1. :func:`run_anuga.run_utils.setup_input_data` +
+       :func:`run_anuga.run_utils.create_anuga_mesh` — the SAME calls the box
+       and ``run_sim`` make, so the ``.msh`` lands at
+       ``input_data['mesh_filepath']`` inside the package, where ``run_sim``
+       finds it and skips meshing (the GPU job never re-meshes).
+    2. :func:`run_anuga.run_utils.compute_mesh_qa` (advisory, never fatal).
+    3. Zip the WHOLE package directory (the box's ``shutil.make_archive`` shape:
+       archive root = the directory's contents) and upload it to
+       ``s3://<package_bucket>/<package_key>``.
+    4. One terminal ``result`` event carrying ``built_package_key``, the
+       triangle/node counts, the mesh area and the QA dict. With a Result
+       envelope configured the client PUTs it first (TASK-3396), so on the
+       non-prod lane (no inbound path) the box's Batch collector completes the
+       build from the envelope.
+
+    FAIL-CLOSED like :func:`run_and_report`: no telemetry channel (no
+    ``HYDRATA_PROCESS_ID``, or the ``RUN_ANUGA_ALLOW_UNREPORTED_RUN`` opt-out —
+    an unreported build is worthless) or no package key refuses before meshing.
+    Any failure after the client exists posts ONE terminal ``error`` event
+    (``<ExceptionType>: <message>``, no traceback) and re-raises.
+
+    Returns ``{"built_package_key", "mesh_triangle_count",
+    "process_result_status"}`` — ``"events"`` when the POST landed,
+    ``"envelope"`` when only the envelope did. Raises when neither did.
+    """
+    import shutil
+
+    package_dir = Path(package_dir).resolve()
+    scenario_config = _read_scenario_config(package_dir)
+    bucket = package_bucket or _required_env("PACKAGE_S3_BUCKET")
+    key = package_key or _required_env(BUILT_PACKAGE_KEY_ENV)
+    telemetry_client = _make_telemetry_client(scenario_config)
+    if telemetry_client is None:
+        raise RuntimeError(
+            "build_and_report: no telemetry channel — a mesh build whose result "
+            f"cannot be reported is never useful, so {ALLOW_UNREPORTED_ENV} does "
+            "not apply to this verb."
+        )
+    telemetry_client.started()
+    telemetry_client.start_watchdog()
+    try:
+        try:
+            from run_anuga.run_utils import (
+                compute_mesh_qa,
+                create_anuga_mesh,
+                setup_input_data,
+            )
+
+            input_data = setup_input_data(str(package_dir))
+            with phase_tracker.phase(phase_tracker.PHASE_MESH_GEN):
+                mesh_filepath, anuga_mesh = create_anuga_mesh(input_data)
+            triangle_count = int(len(anuga_mesh.tri_mesh.triangles))
+            node_count = int(len(anuga_mesh.tri_mesh.vertices))
+            mesh_area = float(anuga_mesh.tri_mesh.calc_mesh_area())
+            try:
+                mesh_qa = _json_safe(compute_mesh_qa(anuga_mesh))
+            except Exception:
+                logger.warning("build_and_report: compute_mesh_qa failed; continuing",
+                               exc_info=True)
+                mesh_qa = None
+            del anuga_mesh  # the package upload below does not need it
+            logger.info("build_and_report: meshed %s triangles -> %s",
+                        triangle_count, mesh_filepath)
+            zip_dir = Path(tempfile.mkdtemp(prefix="anuga_build_"))
+            try:
+                zip_path = Path(shutil.make_archive(
+                    str(zip_dir / "package"), "zip", str(package_dir)))
+                upload_result_to_s3(zip_path, bucket, key)
+            finally:
+                shutil.rmtree(zip_dir, ignore_errors=True)
+        except Exception as exc:
+            logger.exception("build_and_report: the mesh build failed")
+            _report_terminal_error(telemetry_client, _build_error_message(exc))
+            raise
+
+        fields = {
+            BUILT_PACKAGE_KEY_FIELD: key,
+            "mesh_triangle_count": triangle_count,
+            "mesh_node_count": node_count,
+            "mesh_area_m2": mesh_area,
+        }
+        if mesh_qa is not None:
+            fields["mesh_qa"] = mesh_qa
+        out = {BUILT_PACKAGE_KEY_FIELD: key, "mesh_triangle_count": triangle_count}
+        if telemetry_client.result(**fields):
+            return {**out, "process_result_status": "events"}
+        if getattr(telemetry_client, "result_envelope_written", None) is True:
+            logger.warning(
+                "build_and_report: the result event was not delivered, but its "
+                "result envelope is written at %s — the control server's Batch "
+                "collector completes the build from it. Package: s3://%s/%s",
+                telemetry_client.result_envelope_uri, bucket, key,
+            )
+            return {**out, "process_result_status": "envelope"}
+        message = (
+            "build_and_report: the terminal result event was not accepted and no "
+            f"result envelope was written. The built package IS uploaded at "
+            f"s3://{bucket}/{key}."
+        )
+        logger.error(message)
+        _report_terminal_error(telemetry_client, message)
+        raise RuntimeError(message)
+    finally:
+        try:
+            telemetry_client.stop_watchdog()
+        except Exception:
+            pass
