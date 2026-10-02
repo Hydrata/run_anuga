@@ -133,16 +133,18 @@ class TestMakeInteriorRegions:
     def test_polygon_returns_2d_ring(self):
         input_data = {'mesh_region': {'features': [{
             'geometry': _polygon(),
-            'properties': {'resolution': 5.0},
+            'properties': {'resolution': 5.0, 'resolution_units': 'm'},
         }]}}
-        assert make_interior_regions(input_data) == [(OUTER_RING, 5.0)]
+        # TASK-3186: 5 m edge LENGTH -> ANUGA max area 12.5 m2.
+        assert make_interior_regions(input_data) == [(OUTER_RING, 12.5)]
 
     def test_multipolygon_returns_2d_ring(self):
         input_data = {'mesh_region': {'features': [{
             'geometry': _multipolygon(),
-            'properties': {'resolution': 5.0},
+            'properties': {'resolution': 5.0, 'resolution_units': 'm'},
         }]}}
-        assert make_interior_regions(input_data) == [(OUTER_RING, 5.0)]
+        # TASK-3186: 5 m edge LENGTH -> ANUGA max area 12.5 m2.
+        assert make_interior_regions(input_data) == [(OUTER_RING, 12.5)]
 
 
 class TestMakeInteriorHolesAndTags:

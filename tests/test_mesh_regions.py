@@ -34,7 +34,7 @@ class TestMakeInteriorRegionsGeo:
                 "features": [
                     {
                         "geometry": {"coordinates": [_polygon_coords(321000, 5812000, 50)]},
-                        "properties": {"resolution": 2.5}
+                        "properties": {"resolution": 2.5, "resolution_units": "m"}
                     }
                 ]
             }
@@ -42,7 +42,8 @@ class TestMakeInteriorRegionsGeo:
         regions = make_interior_regions(input_data)
         assert len(regions) == 1
         poly, res = regions[0]
-        assert res == 2.5
+        # TASK-3186: resolution is an edge LENGTH; ANUGA gets the AREA res**2/2.
+        assert res == 2.5 ** 2 / 2
         assert len(poly) == 5  # closed polygon
 
     def test_multiple_regions_different_resolutions(self):
@@ -51,11 +52,11 @@ class TestMakeInteriorRegionsGeo:
                 "features": [
                     {
                         "geometry": {"coordinates": [_polygon_coords(321000, 5812000, 50)]},
-                        "properties": {"resolution": 5.0}
+                        "properties": {"resolution": 5.0, "resolution_units": "m"}
                     },
                     {
                         "geometry": {"coordinates": [_polygon_coords(321100, 5812100, 30)]},
-                        "properties": {"resolution": 1.0}
+                        "properties": {"resolution": 1.0, "resolution_units": "m"}
                     },
                 ]
             }
@@ -63,8 +64,9 @@ class TestMakeInteriorRegionsGeo:
         regions = make_interior_regions(input_data)
         assert len(regions) == 2
         resolutions = [r[1] for r in regions]
-        assert 5.0 in resolutions
-        assert 1.0 in resolutions
+        # TASK-3186: lengths 5 m / 1 m -> areas 12.5 / 0.5 m2.
+        assert 12.5 in resolutions
+        assert 0.5 in resolutions
 
 
 @pytest.mark.requires_geo

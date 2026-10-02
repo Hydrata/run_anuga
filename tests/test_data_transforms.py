@@ -91,7 +91,7 @@ class TestMakeInteriorRegions:
                 "features": [
                     {
                         "geometry": {"coordinates": [[[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]]]},
-                        "properties": {"resolution": 5.0}
+                        "properties": {"resolution": 5.0, "resolution_units": "m"}
                     }
                 ]
             }
@@ -99,7 +99,8 @@ class TestMakeInteriorRegions:
         regions = make_interior_regions(input_data)
         assert len(regions) == 1
         polygon, resolution = regions[0]
-        assert resolution == 5.0
+        # TASK-3186: a 5 m edge LENGTH is meshed as the AREA 5**2/2.
+        assert resolution == 12.5
         assert len(polygon) == 5
 
     def test_multiple_regions(self):
@@ -108,17 +109,18 @@ class TestMakeInteriorRegions:
                 "features": [
                     {
                         "geometry": {"coordinates": [[[0, 0], [1, 0], [1, 1], [0, 0]]]},
-                        "properties": {"resolution": 5.0}
+                        "properties": {"resolution": 5.0, "resolution_units": "m"}
                     },
                     {
                         "geometry": {"coordinates": [[[2, 2], [3, 2], [3, 3], [2, 2]]]},
-                        "properties": {"resolution": 10.0}
+                        "properties": {"resolution": 10.0, "resolution_units": "m"}
                     },
                 ]
             }
         }
         regions = make_interior_regions(input_data)
         assert len(regions) == 2
+        assert [r[1] for r in regions] == [12.5, 50.0]  # TASK-3186: res**2/2
 
     def test_no_mesh_region(self):
         assert make_interior_regions({}) == []
