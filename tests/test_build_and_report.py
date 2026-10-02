@@ -62,7 +62,8 @@ def package(tmp_path: Path) -> Path:
     """The minimal fixture package as the box stages it: no mesh yet."""
     pkg = tmp_path / 'pkg'
     shutil.copytree(FIXTURE, pkg)
-    (pkg / 'outputs_1_1_1' / 'run_1_1_1.msh').unlink()
+    # The .msh is gitignored and exists only after a local build; CI has none.
+    (pkg / 'outputs_1_1_1' / 'run_1_1_1.msh').unlink(missing_ok=True)
     return pkg
 
 
