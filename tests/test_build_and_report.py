@@ -93,6 +93,7 @@ class _UploadSpy:
             self.calls.append((bucket, key, sorted(zf.namelist())))
 
 
+@pytest.mark.requires_anuga
 def test_build_and_report_meshes_packages_the_msh_and_reports_the_result(package, build_env):
     spy = _UploadSpy()
     with mock.patch.object(_handoff, 'upload_result_to_s3', spy):
@@ -120,6 +121,7 @@ def test_build_and_report_meshes_packages_the_msh_and_reports_the_result(package
     assert client.names()[-1] == 'stop_watchdog'
 
 
+@pytest.mark.requires_anuga
 def test_build_and_report_post_undelivered_but_envelope_written_exits_success(package, build_env, caplog):
     """The lane shape: no inbound path, so the POST never lands; the envelope
     did, so the job must exit 0 (the collector completes it) and send no error."""
@@ -132,6 +134,7 @@ def test_build_and_report_post_undelivered_but_envelope_written_exits_success(pa
     assert URI in caplog.text
 
 
+@pytest.mark.requires_anuga
 def test_build_and_report_post_and_envelope_both_failed_raises(package, build_env):
     BuildFakeClient.post_outcome = False
     BuildFakeClient.envelope_outcome = False
@@ -142,6 +145,7 @@ def test_build_and_report_post_and_envelope_both_failed_raises(package, build_en
     assert len(client.of('error')) == 1
 
 
+@pytest.mark.requires_geo
 def test_build_and_report_mesh_failure_reports_an_error_without_traceback(package, build_env):
     upload = mock.MagicMock()
     with mock.patch('run_anuga.run_utils.create_anuga_mesh',
