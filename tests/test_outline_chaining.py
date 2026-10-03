@@ -14,13 +14,10 @@ be built. Made-up shapes only (no customer geometry).
 import itertools
 
 import pytest
+from shapely.geometry import Polygon
 
-pytest.importorskip("shapely", reason="shapely not installed")
-
-from shapely.geometry import Polygon  # noqa: E402
-
-from run_anuga import run_utils  # noqa: E402
-from run_anuga.run_utils import (  # noqa: E402
+from run_anuga import run_utils
+from run_anuga.run_utils import (
     OUTLINE_DUPLICATE_ERROR,
     OUTLINE_GAP_ERROR,
     OUTLINE_INVALID_ERROR,
