@@ -328,11 +328,27 @@ def test_cpu_mode_does_not_fabricate_a_gpu_model(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# 3c. End-to-end proof against a REAL (non-GPU) Domain: mode=2 on THIS fork
-#     (no cupy, no GPU) is exactly the silent-fallback scenario the epic
-#     calls out — set_multiprocessor_mode(2) here falls back to 1 internally
-#     (see shallow_water_domain.Domain.set_gpu_interface). Before TASK-2197
-#     the run would have completed silently in CPU mode; it must now FAIL.
+# 3c. End-to-end proof against a REAL (non-GPU) Domain: mode=2 with no cupy and
+#     no GPU is exactly the silent-fallback scenario the epic calls out. Before
+#     TASK-2197 the run would have completed silently in CPU mode; it must FAIL.
+#
+#     WHICH PROBE CATCHES IT IS ENGINE-DEPENDENT, so this test does not assert
+#     on one (TASK-2758). Pre-4.0.0 engines dropped the mode —
+#     set_multiprocessor_mode(2) fell back to 1 internally (see
+#     shallow_water_domain.Domain.set_gpu_interface) — so the MODE-RETENTION
+#     branch fired and its message says "(silent CPU fallback)". From the
+#     upstream 4.0.0 sync (anuga_core 93368189), set_compute_mode('unified')
+#     KEEPS multiprocessor_mode=2 and instead stamps gpu_offload_active=False,
+#     so the GPU_OFFLOAD_ACTIVE branch fires with a different message — which is
+#     the exact semantics the W4 adversarial-review P0 block above anticipated,
+#     and the reason that per-domain probe exists at all. Mode retention alone
+#     now reads "engaged".
+#
+#     The guard's SAFETY PROPERTY is branch-independent: it refused the run.
+#     That is what is asserted here. Which probe detected it is pinned
+#     individually by the mock tests above (`match="gpu_offload_active"`,
+#     `match="gpu_offload_enabled"`, `match="did not engage"`), so nothing is
+#     lost by not re-pinning one of them through a real subprocess.
 # ---------------------------------------------------------------------------
 
 @pytest.mark.requires_anuga
@@ -352,7 +368,11 @@ def test_real_domain_mode_2_without_gpu_fails_the_run(small_test_copy):
         capture_output=True, text=True, env=env, timeout=120,
     )
     assert result.returncode != 0
-    assert "did not engage (silent CPU fallback)" in result.stderr
+    # The invariant, not the probe: the guard fired and the run was refused.
+    # Both halves matter — a non-zero exit alone would also be satisfied by an
+    # unrelated crash, which is how a silent CPU run could sneak back in.
+    assert "GPU offload requested (mode=2) but did not engage" in result.stderr
+    assert "refusing to run silently in CPU mode" in result.stderr
 
 
 # ---------------------------------------------------------------------------
