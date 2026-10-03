@@ -158,3 +158,30 @@ class TestConditionBreaklines:
     def test_line_length_helper(self):
         assert math.isclose(_line_length([[0, 0], [3, 4]]), 5.0)
         assert _line_length([[0, 0]]) == 0.0
+
+
+class TestOutsideOutlineWarnings:
+    """TASK-3457 (D4/A5): a breakline the clip shortens or removes is named at
+    WARNING (it is never a run blocker)."""
+
+    def _warnings(self, caplog):
+        return [r.getMessage() for r in caplog.records if r.levelname == 'WARNING']
+
+    def test_crossing_line_warns_clipped(self, caplog):
+        with caplog.at_level('WARNING', logger='run_anuga.breakline_conditioner'):
+            out = condition_breaklines(_fc([[[50.0, 50.0], [150.0, 50.0]]]), BOUNDARY)
+        assert out, 'the inside part is kept'
+        assert any('bl_0' in m and 'clipped to the model outline' in m
+                   for m in self._warnings(caplog)), self._warnings(caplog)
+
+    def test_wholly_outside_line_warns_dropped(self, caplog):
+        with caplog.at_level('WARNING', logger='run_anuga.breakline_conditioner'):
+            out = condition_breaklines(_fc([[[150.0, 50.0], [180.0, 50.0]]]), BOUNDARY)
+        assert out == []
+        assert any('bl_0' in m and 'dropped: wholly outside' in m
+                   for m in self._warnings(caplog)), self._warnings(caplog)
+
+    def test_inside_line_does_not_warn(self, caplog):
+        with caplog.at_level('WARNING', logger='run_anuga.breakline_conditioner'):
+            condition_breaklines(_fc([[[10.0, 50.0], [90.0, 50.0]]]), BOUNDARY)
+        assert not self._warnings(caplog)

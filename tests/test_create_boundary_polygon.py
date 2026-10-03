@@ -8,9 +8,9 @@ lists. See TASK-976.
 
 import pytest
 
-# osgeo.ogr is a [sim] extra not present in light CI; skip the whole module
-# rather than error at collection.
-pytest.importorskip("osgeo.ogr")
+# TASK-3457: the outline is built with shapely only (the ogr/srs code was
+# vestigial); skip the whole module where shapely is absent.
+pytest.importorskip("shapely")
 
 from run_anuga.run_utils import create_boundary_polygon_from_boundaries
 
@@ -19,6 +19,11 @@ CRS_EPSG_32616 = {
     'type': 'name',
     'properties': {'name': 'urn:ogc:def:crs:EPSG::32616'},
 }
+
+
+# The happy-path square (drawn anticlockwise) as the chained, clockwise ring.
+SQUARE_RING = [[0.0, 0.0], [0.0, 100.0], [100.0, 100.0], [100.0, 0.0]]
+SQUARE_TAGS = {'west': [0], 'north': [1], 'east': [2], 'south': [3]}
 
 
 def _external_feature(fid='b.1', coords=None, boundary='north'):
@@ -54,15 +59,23 @@ def test_happy_path_two_external_boundaries_returns_polygon():
         ],
     }
     boundary_polygon, boundary_tags = create_boundary_polygon_from_boundaries(geojson)
-    assert len(boundary_polygon) == 8
-    assert set(boundary_tags.keys()) == {'south', 'east', 'north', 'west'}
+    # TASK-3457: chained (shared corners merged) and clockwise.
+    assert boundary_polygon == SQUARE_RING
+    assert boundary_tags == SQUARE_TAGS
 
 
-def test_missing_crs_returns_empty():
-    geojson = {'features': [_external_feature()]}
-    boundary_polygon, boundary_tags = create_boundary_polygon_from_boundaries(geojson)
-    assert boundary_polygon == []
-    assert boundary_tags == {}
+def test_missing_crs_equals_with_crs():
+    """TASK-3457 (D8): crs is optional; without it the outline is unchanged."""
+    features = [
+        _external_feature(fid='b.1', coords=[[0.0, 0.0], [100.0, 0.0]], boundary='south'),
+        _external_feature(fid='b.2', coords=[[100.0, 0.0], [100.0, 100.0]], boundary='east'),
+        _external_feature(fid='b.3', coords=[[100.0, 100.0], [0.0, 100.0]], boundary='north'),
+        _external_feature(fid='b.4', coords=[[0.0, 100.0], [0.0, 0.0]], boundary='west'),
+    ]
+    with_crs = create_boundary_polygon_from_boundaries({'crs': CRS_EPSG_32616, 'features': features})
+    without_crs = create_boundary_polygon_from_boundaries({'features': features})
+    assert without_crs == with_crs
+    assert without_crs == (SQUARE_RING, SQUARE_TAGS)
 
 
 def test_empty_features_list_raises_clear_value_error():
@@ -122,14 +135,14 @@ def test_multilinestring_boundary_features_handled():
         ],
     }
     boundary_polygon, boundary_tags = create_boundary_polygon_from_boundaries(geojson)
-    assert len(boundary_polygon) == 8
-    assert set(boundary_tags.keys()) == {'south', 'east', 'north', 'west'}
+    assert boundary_polygon == SQUARE_RING
+    assert boundary_tags == SQUARE_TAGS
 
 
 def test_multilinestring_with_multiple_rings_per_feature():
     """A MultiLineString feature with more than one ring is rare in the
-    Hydrata FE but valid GeoJSON. Each ring's points contribute to the
-    bounding-box calc and the boundary_polygon ring."""
+    Hydrata FE but valid GeoJSON. Each ring is a separate part of the
+    chained outline (TASK-3457)."""
     geojson = {
         'crs': CRS_EPSG_32616,
         'features': [
@@ -143,6 +156,7 @@ def test_multilinestring_with_multiple_rings_per_feature():
         ],
     }
     boundary_polygon, boundary_tags = create_boundary_polygon_from_boundaries(geojson)
-    # 4 points from the two-ring MultiLineString + 2 + 2 = 8 total
-    assert len(boundary_polygon) == 8
-    assert set(boundary_tags.keys()) == {'south', 'east', 'diag'}
+    # The triangle (0,0) -> (100,100) -> (100,0) -> (50,0), clockwise; the two
+    # south parts keep their shared (50, 0) vertex.
+    assert boundary_polygon == [[0.0, 0.0], [100.0, 100.0], [100.0, 0.0], [50.0, 0.0]]
+    assert boundary_tags == {'diag': [0], 'east': [1], 'south': [2, 3]}
