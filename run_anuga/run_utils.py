@@ -8,7 +8,6 @@ import os
 import re
 import shutil
 import subprocess
-from copy import deepcopy
 from dataclasses import dataclass
 from numbers import Real
 from pathlib import Path
@@ -341,11 +340,28 @@ def get_sql_triangles_from_anuga_mesh(anuga_mesh):
 def make_interior_regions(input_data):
     interior_regions = list()
     if input_data.get('mesh_region'):
+        outline = input_data.get('boundary_polygon')
         for mesh_region in input_data['mesh_region']['features']:
             mesh_polygon = _extract_polygon_outer_ring(mesh_region.get('geometry'))
             mesh_resolution = mesh_region.get('properties').get('resolution')
+            _warn_if_mesh_region_outside_outline(mesh_region.get('id'), mesh_polygon, outline)
             interior_regions.append((mesh_polygon, mesh_resolution,))
     return interior_regions
+
+
+def _warn_if_mesh_region_outside_outline(region_id, mesh_polygon, outline):
+    """TASK-3457 (A5): ANUGA (fail_if_polygons_outside=False) drops a region
+    with any vertex outside the bounding polygon at log.info only. Say so."""
+    if not outline or len(outline) < 3 or not mesh_polygon:
+        return
+    shapely_geometry = import_optional("shapely.geometry")
+    domain = shapely_geometry.Polygon(outline)
+    if not all(domain.covers(shapely_geometry.Point(p[0], p[1])) for p in mesh_polygon):
+        logger.warning(
+            "Mesh region %s is not wholly inside the model outline: ANUGA ignores it, "
+            "so its resolution will not be applied.",
+            region_id,
+        )
 
 
 def make_breaklines(input_data):
@@ -941,9 +957,9 @@ def _flatten_line_coordinates(geometry):
     GeoJSON geometry. PostGIS / GeoServer normalises every boundary feature
     to MultiLineString regardless of input — even when the source file is
     LineString — so this helper has to handle both. For MultiLineString with
-    a single ring we flatten one level; for true multi-rings we concatenate
-    (the boundary polygon is sorted clockwise by feature centroid afterwards,
-    so the join order within a feature does not matter for sorting).
+    a single ring we flatten one level; for true multi-rings we concatenate.
+    (The domain outline does NOT use this helper: it chains each part
+    separately, see create_boundary_polygon_from_boundaries.)
 
     Returns [] for missing or empty coordinates; the debug log surfaces
     data-quality issues without aborting the simulation.
@@ -1011,141 +1027,263 @@ def _extract_polygon_outer_ring(geometry):
     return coords[0]
 
 
+# TASK-3457 (epic 3456): stable error prefixes. hydrata matches on these
+# (pre-build 422 guard + Run.user_message), so keep them byte-identical.
+NO_EXTERNAL_BOUNDARY_ERROR = (
+    "create_boundary_polygon_from_boundaries: no valid External-location boundary coordinates found"
+)
+OUTLINE_GAP_ERROR = 'Boundary lines do not join up:'
+OUTLINE_INVALID_ERROR = 'Boundary outline is not a valid area:'
+OUTLINE_DUPLICATE_ERROR = 'Boundary lines conflict:'
+FEATURE_OUTSIDE_ERROR = 'Feature is outside the model area:'
+
+# Line ends closer than this are the same corner (merged); any farther apart
+# is a gap, and only ONE gap (the closing edge) is allowed.
+OUTLINE_SNAP_METRES = 1.0
+
+
+def _outline_parts(boundaries_geojson):
+    """Every LineString part of every External feature, as
+    ``{'fid', 'tag', 'pts'}`` with consecutive repeated vertices dropped and
+    parts of fewer than 2 distinct vertices ignored."""
+    parts = []
+    for n, feature in enumerate(boundaries_geojson.get('features') or []):
+        properties = feature.get('properties') or {}
+        if properties.get('location') != 'External':
+            continue
+        geometry = feature.get('geometry') or {}
+        coords = geometry.get('coordinates') or []
+        if geometry.get('type') == 'MultiLineString':
+            lines = coords
+        elif geometry.get('type') == 'LineString':
+            lines = [coords]
+        else:
+            lines = []
+        fid = feature.get('id')
+        fid = f"boundary feature #{n}" if fid is None else str(fid)
+        for line in lines:
+            pts = []
+            for point in line or []:
+                q = (float(point[0]), float(point[1]))
+                if not pts or q != pts[-1]:
+                    pts.append(q)
+            if len(pts) >= 2:
+                parts.append({'fid': fid, 'tag': properties.get('boundary'), 'pts': pts})
+    return parts
+
+
+def _feature_list(ids):
+    ids = sorted(set(ids))
+    noun = 'boundary feature' if len(ids) == 1 else 'boundary features'
+    return f"{noun} {', '.join(ids)}"
+
+
+def _canonical_outline_parts(parts):
+    """Drop exact duplicates (same vertices either direction; differing types
+    raise), store each part in its lexicographically smaller direction and
+    sort, so nothing downstream sees feature order or drawn direction."""
+    seen = {}
+    for part in parts:
+        key = min(tuple(part['pts']), tuple(reversed(part['pts'])))
+        if key in seen:
+            if seen[key]['tag'] != part['tag']:
+                a, b = sorted([seen[key]['fid'], part['fid']])
+                ta, tb = sorted([str(seen[key]['tag']), str(part['tag'])])
+                raise ValueError(
+                    f"{OUTLINE_DUPLICATE_ERROR} boundary features {a} and {b} are the same line "
+                    f"with different boundary types ({ta} and {tb})."
+                )
+            # keep the smallest id so later messages do not depend on feature order
+            seen[key]['fid'] = min(seen[key]['fid'], part['fid'])
+            continue
+        seen[key] = {'fid': part['fid'], 'tag': part['tag'], 'pts': list(key)}
+    return sorted(seen.values(), key=lambda p: (p['pts'], str(p['tag'])))
+
+
+def _chain_outline_parts(parts):
+    """Greedy end-to-end chain as ``[(part index, reversed?)]``, starting at the
+    endpoint whose nearest endpoint on another part is farthest (a free end of
+    an open outline); every tie goes to canonical order."""
+    ends = [(i, e, parts[i]['pts'][-e]) for i in range(len(parts)) for e in (0, 1)]
+
+    def nearest_other(i, point):
+        return min((math.dist(point, q) for j, _, q in ends if j != i), default=math.inf)
+
+    si, se, _ = max(ends, key=lambda t: (nearest_other(t[0], t[2]), -t[0], -t[1]))
+    chain, used = [(si, se == 1)], {si}
+    tail = parts[si]['pts'][se - 1]
+    while len(used) < len(parts):
+        _, j, e = min((math.dist(tail, q), j, e) for j, e, q in ends if j not in used)
+        chain.append((j, e == 1))
+        used.add(j)
+        tail = parts[j]['pts'][e - 1]
+    return chain
+
+
+def _oriented_pts(parts, link):
+    index, is_reversed = link
+    return parts[index]['pts'][::-1] if is_reversed else parts[index]['pts']
+
+
+def _chain_joins(parts, chain):
+    """joins[k] = gap from chain[k]'s tail to chain[k+1]'s head; the last
+    entry is the closing edge."""
+    m = len(chain)
+    return [math.dist(_oriented_pts(parts, chain[k])[-1], _oriented_pts(parts, chain[(k + 1) % m])[0])
+            for k in range(m)]
+
+
+def _emit_ring(parts, chain):
+    """Ring vertices + per-vertex tag (vertex i owns segment i -> i+1). A merged
+    join's shared vertex owns the INCOMING line's first segment; the closing
+    edge belongs to the last line (the line it leaves)."""
+    ring, vertex_tags = [], []
+    for k, link in enumerate(chain):
+        pts, tag = _oriented_pts(parts, link), parts[link[0]]['tag']
+        if k and math.dist(ring[-1], pts[0]) <= OUTLINE_SNAP_METRES:
+            vertex_tags[-1] = tag
+            pts = pts[1:]
+        ring.extend(pts)
+        vertex_tags.extend([tag] * len(pts))
+    if len(ring) > 1 and math.dist(ring[-1], ring[0]) <= OUTLINE_SNAP_METRES:
+        ring.pop()
+        vertex_tags.pop()
+    return ring, vertex_tags
+
+
+def _ring_signed_area(ring):
+    n = len(ring)
+    return 0.5 * sum(ring[i][0] * ring[(i + 1) % n][1] - ring[(i + 1) % n][0] * ring[i][1]
+                     for i in range(n))
+
+
 def create_boundary_polygon_from_boundaries(boundaries_geojson):
-    ogr = import_optional("osgeo.ogr")
-    geometry_collection = ogr.Geometry(ogr.wkbGeometryCollection)
-    if boundaries_geojson.get('crs'):
-        epsg_code = boundaries_geojson.get('crs').get('properties').get('name').split(':')[-1]
-    else:
-        return list(), dict()
-    # Create a dict of the available boundary tags
-    boundary_tag_labels = dict()
-    all_x_coordinates = list()
-    all_y_coordinates = list()
-    for index, feature in enumerate(boundaries_geojson.get('features')):
-        if feature.get('properties').get('location') != "External":
-            continue
-        boundary_tag_labels[feature.get('properties').get('boundary')] = []
-        geometry = ogr.CreateGeometryFromJson(json.dumps(feature.get('geometry')))
-        geometry_collection.AddGeometry(geometry)
-        # Collect a list of the coordinates associated with each boundary tag:
-        feature_coordinates = _flatten_line_coordinates(feature.get('geometry'))
-        for coordinate in feature_coordinates:
-            all_x_coordinates.append(coordinate[0])
-            all_y_coordinates.append(coordinate[1])
-    srs = ogr.osr.SpatialReference()
-    epsg_integer = int(epsg_code.split(':')[1] if ':' in epsg_code else epsg_code)
-    srs.ImportFromEPSG(epsg_integer)
+    """Build the domain outline from the External boundary lines.
 
-    # Find the center of our project
-    if not all_x_coordinates or not all_y_coordinates:
-        raise ValueError(
-            "create_boundary_polygon_from_boundaries: no valid External-location boundary coordinates found"
+    TASK-3457 (epic 3456): the outline is what the user drew. The lines are
+    CHAINED end to end by a deterministic rule, so neither feature order (PostGIS
+    heap order — no ORDER BY upstream) nor drawn direction changes the result.
+    This replaces the polar-angle sort (55db820), which built a different
+    polygon for outlines not star-shaped from the bbox centre (run 1574).
+
+    Returns ``(ring, tags)``: ``ring`` is an OPEN clockwise simple list of
+    ``[x, y]``; ``tags`` is ``{boundary: [segment-start indices]}`` covering every
+    segment once. ``crs`` is not read (optional).
+
+    Raises ValueError: the legacy no-External text (unchanged), or a sentence
+    starting with OUTLINE_DUPLICATE_ERROR / OUTLINE_GAP_ERROR /
+    OUTLINE_INVALID_ERROR naming the feature ids.
+    """
+    shapely_geometry = import_optional("shapely.geometry")
+    parts = _outline_parts(boundaries_geojson)
+    if not parts:
+        raise ValueError(NO_EXTERNAL_BOUNDARY_ERROR)
+    parts = _canonical_outline_parts(parts)
+    chain = _chain_outline_parts(parts)
+
+    # The single largest join becomes the closing edge (ties keep the current one).
+    joins = _chain_joins(parts, chain)
+    k = max(range(len(joins)), key=lambda i: (joins[i], i == len(joins) - 1))
+    if k != len(joins) - 1:
+        chain = chain[k + 1:] + chain[:k + 1]
+        joins = _chain_joins(parts, chain)
+
+    bad = sorted(
+        ((joins[i], *sorted([parts[chain[i][0]]['fid'], parts[chain[i + 1][0]]['fid']]))
+         for i in range(len(chain) - 1) if joins[i] > OUTLINE_SNAP_METRES),
+        key=lambda t: (-t[0], t[1], t[2]),
+    )
+    if bad:
+        gaps = ', and '.join(
+            f"a {gap:.1f} m gap between "
+            + (f"two parts of boundary feature {a}" if a == b else f"boundary features {a} and {b}")
+            for gap, a, b in bad
         )
-    max_x = max(all_x_coordinates)
-    max_y = max(all_y_coordinates)
-    min_x = min(all_x_coordinates)
-    min_y = min(all_y_coordinates)
-    mid_x = max_x - (max_x - min_x) / 2
-    mid_y = max_y - (max_y - min_y) / 2
-    line_list = list()
+        raise ValueError(
+            f"{OUTLINE_GAP_ERROR} there is {gaps}. Only one gap (the closing edge) is allowed; "
+            f"every other line end must meet the next line within {OUTLINE_SNAP_METRES:g} m."
+        )
 
-    # Now create and sort the line_list of boundary lines in a clockwise direction around it
-    for index, feature in enumerate(boundaries_geojson.get('features')):
-        if feature.get('properties').get('location') != "External":
-            # discard any internal boundaries from the boundary_polygon
+    ring, vertex_tags = _emit_ring(parts, chain)
+    if len(ring) >= 3 and _ring_signed_area(ring) > 0:
+        # Anticlockwise: reverse the CHAIN and re-emit, so tags are re-derived
+        # for the new direction (the closing edge keeps the line it leaves).
+        chain = [(index, not is_reversed) for index, is_reversed in reversed(chain)]
+        ring, vertex_tags = _emit_ring(parts, chain)
+
+    drawn_by = _feature_list(p['fid'] for p in parts)
+    if len(ring) < 3:
+        raise ValueError(
+            f"{OUTLINE_INVALID_ERROR} the outline drawn by {drawn_by} has fewer than 3 distinct corners."
+        )
+    if not shapely_geometry.LineString(ring + [ring[0]]).is_simple:
+        raise ValueError(
+            f"{OUTLINE_INVALID_ERROR} the outline drawn by {drawn_by} crosses or touches itself."
+        )
+    if joins[-1] > OUTLINE_SNAP_METRES:
+        logger.info(
+            "create_boundary_polygon_from_boundaries: closing edge is %.1f m, tagged %s",
+            joins[-1], vertex_tags[-1],
+        )
+
+    tags = {}
+    for i, tag in enumerate(vertex_tags):
+        tags.setdefault(tag, []).append(i)
+    return [list(point) for point in ring], tags
+
+
+def check_water_features_inside_outline(outline, inflow_geojson=None, catchment_geojson=None,
+                                        rainfall_geojson=None):
+    """TASK-3457 (D4/D10): raise ValueError(FEATURE_OUTSIDE_ERROR ...) when a
+    surface inflow or catchment has NO part inside the outline (its interior
+    does not meet the outline's interior). Anything that reaches inside passes:
+    ANUGA itself uses only the in-domain triangles.
+
+    Geometries are built with the same helpers ``apply_inflows_to_domain``
+    hands to ANUGA. Surface inflows whose ``data`` is None are skipped (they are
+    skipped at apply time too). Catchments are checked only when there is >= 1
+    rainfall feature (the only case they are applied).
+
+    Pure: needs no ANUGA domain (hydrata's pre-build guard calls it).
+    """
+    shapely_geometry = import_optional("shapely.geometry")
+    LineString, Polygon = shapely_geometry.LineString, shapely_geometry.Polygon
+
+    def _features(geojson):
+        return (geojson or {}).get('features') or []
+
+    def _fid(feature, n):
+        return f"#{n}" if feature.get('id') is None else str(feature.get('id'))
+
+    candidates = []
+    for n, feature in enumerate(_features(inflow_geojson)):
+        if (feature.get('properties') or {}).get('data') is None:
             continue
-        geometry = ogr.CreateGeometryFromJson(json.dumps(feature.get('geometry')))
-        centroid = json.loads(geometry.Centroid().ExportToJson()).get('coordinates')
-        base = centroid[0] - mid_x
-        height = centroid[1] - mid_y
-        # the angle in polar coordinates will sort our boundary lines into the correct order
-        angle = math.atan2(height, base)
-        line_list.append({
-            "centroid": centroid,
-            "boundary": feature.get('properties').get('boundary'),
-            "id": feature.get('id'),
-            "angle": angle,
-            "coordinates": _flatten_line_coordinates(feature.get('geometry')),
-        })
-    line_list.sort(key=lambda line: line.get('angle'), reverse=True)
+        coords = _flatten_line_coordinates(feature.get('geometry') or {})
+        candidates.append(('surface inflow', _fid(feature, n), coords, LineString, 2))
+    if _features(rainfall_geojson):
+        for n, feature in enumerate(_features(catchment_geojson)):
+            coords = _extract_polygon_outer_ring(feature.get('geometry') or {})
+            candidates.append(('catchment', _fid(feature, n), coords, Polygon, 3))
+    if not candidates:
+        return
 
-    # Now join all our lines in clockwise order and create the boundary tags object
-    boundary_polygon = list()
-    boundary_tags_list = list()
-    counter = 0
-    boundary_tags = deepcopy(boundary_tag_labels)
-    for line in line_list:
-        for coordinate in line.get("coordinates"):
-            boundary_polygon.append(coordinate)
-            boundary_tags[line.get("boundary")].append(counter)
-            boundary_tags_list.append(lookup_boundary_tag(counter, boundary_tags))
-            counter += 1
-
-    # now sort the boundary_polygon points in clockwise order, in case those original lines were drawn with different
-    # directions
-    boundary_polygon_with_angle_data = list()
-    sorted_boundary_polygon = list()
-    sorted_boundary_tags = deepcopy(boundary_tag_labels)
-    for index, point in enumerate(boundary_polygon):
-        base = point[0] - mid_x
-        height = point[1] - mid_y
-        angle = math.atan2(height, base)
-        boundary_polygon_with_angle_data.append({
-            "point": point,
-            "boundary": lookup_boundary_tag(index, boundary_tags),
-            "angle": angle
-        })
-    boundary_polygon_with_angle_data.sort(key=lambda point_blob: point_blob.get('angle'), reverse=True)
-    for index, point_blob in enumerate(boundary_polygon_with_angle_data):
-        sorted_boundary_polygon.append(point_blob.get('point'))
-        sorted_boundary_tags[point_blob.get('boundary')].append(index)
-
-    # # Make a dump of the centroids geometry (for debugging only - not returned anywhere).
-    # output_driver_centroids = ogr.GetDriverByName('GeoJSON')
-    # filepath_geojson_driver_centroids = os.path.join(package_dir, f'outputs_{run_label.split("run_")[1]}', f'{run_label}_boundary_centroids.geojson')
-    # output_data_source_centroids = output_driver_centroids.CreateDataSource(filepath_geojson_driver_centroids)
-    # output_layer_centroids = output_data_source_centroids.CreateLayer(filepath_geojson_driver_centroids, srs, geom_type=ogr.wkbPolygon)
-    # feature_definition_centroids = output_layer_centroids.GetLayerDefn()
-    # field_definition_centroids_1 = ogr.FieldDefn('index', ogr.OFTReal)
-    # output_layer_centroids.CreateField(field_definition_centroids_1)
-    # field_definition_centroids_2 = ogr.FieldDefn('angle', ogr.OFTReal)
-    # output_layer_centroids.CreateField(field_definition_centroids_2)
-    # field_definition_centroids_3 = ogr.FieldDefn('id', ogr.OFTString)
-    # field_definition_centroids_3.SetWidth(1000)
-    # output_layer_centroids.CreateField(field_definition_centroids_3)
-    # for index, line in enumerate(line_list):
-    #     output_feature_centroids = ogr.Feature(feature_definition_centroids)
-    #     centroid = line.get('centroid')
-    #     point = ogr.Geometry(ogr.wkbPoint)
-    #     point.AddPoint(centroid[0], centroid[1])
-    #     output_feature_centroids.SetGeometry(point)
-    #     output_feature_centroids.SetField('index', index)
-    #     output_feature_centroids.SetField('angle', line.get('angle'))
-    #     output_feature_centroids.SetField('id', line.get('id'))
-    #     output_layer_centroids.CreateFeature(output_feature_centroids)
-    #
-    # # Make a dump of the boundary polygon geometry (for debugging only - not returned anywhere).
-    # output_driver = ogr.GetDriverByName('GeoJSON')
-    # filepath_geojson_driver = os.path.join(package_dir, f'outputs_{run_label.split("run_")[1]}', f'{run_label}_boundary_polygon.geojson')
-    # output_data_source = output_driver.CreateDataSource(filepath_geojson_driver)
-    # output_layer = output_data_source.CreateLayer(filepath_geojson_driver, srs, geom_type=ogr.wkbPolygon)
-    # feature_definition = output_layer.GetLayerDefn()
-    # field_definition_1 = ogr.FieldDefn('index', ogr.OFTReal)
-    # output_layer.CreateField(field_definition_1)
-    # field_definition_2 = ogr.FieldDefn('boundary', ogr.OFTString)
-    # field_definition_2.SetWidth(1000)
-    # output_layer_centroids.CreateField(field_definition_2)
-    # for index, coordinate in enumerate(boundary_polygon):
-    #     output_feature = ogr.Feature(feature_definition)
-    #     point = ogr.Geometry(ogr.wkbPoint)
-    #     point.AddPoint(coordinate[0], coordinate[1])
-    #     output_feature.SetGeometry(point)
-    #     output_feature.SetField('index', index)
-    #     output_feature.SetField('boundary', boundary_tags_list[index])
-    #     output_layer.CreateFeature(output_feature)
-
-    return sorted_boundary_polygon, sorted_boundary_tags
+    domain = Polygon(outline) if outline and len(outline) >= 3 else None
+    outside = []
+    for kind, fid, coords, make, min_points in candidates:
+        try:
+            geom = make(coords) if len(coords) >= min_points else None
+        except Exception as exc:
+            raise ValueError(
+                f"check_water_features_inside_outline: {kind} {fid} has unreadable geometry "
+                f"({exc}); expected a flat list of [x, y] points."
+            ) from exc
+        if domain is None or geom is None or not geom.relate_pattern(domain, 'T********'):
+            outside.append((kind == 'catchment', fid, kind))
+    if outside:
+        names = ', '.join(f"{kind} {fid}" for _, fid, kind in sorted(outside))
+        verb = 'has' if len(outside) == 1 else 'have'
+        raise ValueError(f"{FEATURE_OUTSIDE_ERROR} {names} {verb} no part inside the boundary outline.")
 
 
 def build_time_boundary_function(time_boundary_features, defaults=None):
@@ -1276,10 +1414,15 @@ def apply_inflows_to_domain(
       * For each Catchment polygon, register a ``Polygonal_rate_operator``
         with a *negative* ``RAINFALL_FACTOR`` (the catchment absorbs the rain
         falling on it and re-introduces it as a Surface inflow elsewhere).
-      * For each Surface inflow line that is fully inside the boundary,
-        register an ``Inlet_operator``.
+      * For each Surface inflow line, register an ``Inlet_operator``.
+
+    TASK-3457 (D4): before ANY operator is registered, a surface inflow or
+    catchment with NO part inside the outline blocks the run
+    (``check_water_features_inside_outline``). Anything that reaches inside is
+    passed to ANUGA unchanged; ANUGA uses only the in-domain triangles.
 
     Raises:
+        ValueError: FEATURE_OUTSIDE_ERROR — a water feature wholly outside.
         NotImplementedError: if a catchment is paired with a timeseries
             rainfall (catchments need a single uniform rate), or if more than
             one rainfall polygon is paired with a catchment.
@@ -1297,7 +1440,13 @@ def apply_inflows_to_domain(
         [feature for feature in input_data.get('catchment').get('features')]
         if input_data.get('catchment') else []
     )
-    boundary_polygon = input_data.get('boundary_polygon')
+    # Once, BEFORE any operator is registered, so nothing is half-applied.
+    check_water_features_inside_outline(
+        input_data.get('boundary_polygon'),
+        inflow_geojson={'features': surface_inflow_lines},
+        catchment_geojson={'features': catchment_polygons},
+        rainfall_geojson={'features': rainfall_inflow_polygons},
+    )
 
     datetime_range = pd.date_range(start=start, periods=duration + 1, freq='s')
     inflow_dataframe = pd.DataFrame(datetime_range, columns=['timestamp'])
@@ -1426,15 +1575,13 @@ def apply_inflows_to_domain(
             inflow_dataframe[polygon_name] = uniform_rainfall_rate
             inflow_function = create_inflow_function(inflow_dataframe, polygon_name)
             geometry = _extract_polygon_outer_ring(catchment_polygon.get('geometry'))
-            # The catchment needs to be wholly in the domain:
-            if check_coordinates_are_in_polygon(geometry, boundary_polygon):
-                Polygonal_rate_operator(
-                    domain,
-                    rate=inflow_function,
-                    factor=-defaults_module.RAINFALL_FACTOR,
-                    polygon=geometry,
-                    default_rate=0.00,
-                )
+            Polygonal_rate_operator(
+                domain,
+                rate=inflow_function,
+                factor=-defaults_module.RAINFALL_FACTOR,
+                polygon=geometry,
+                default_rate=0.00,
+            )
 
     for inflow_line in surface_inflow_lines:
         polyline_name = inflow_line.get('id')
@@ -1453,8 +1600,7 @@ def apply_inflows_to_domain(
         inflow_function = create_inflow_function(inflow_dataframe, polyline_name)
         inflow_functions[polyline_name] = inflow_function
         geometry = _flatten_line_coordinates(inflow_line.get('geometry'))
-        if check_coordinates_are_in_polygon(geometry, boundary_polygon):
-            Inlet_operator(domain, geometry, Q=inflow_function)
+        Inlet_operator(domain, geometry, Q=inflow_function)
 
     return inflow_functions
 
