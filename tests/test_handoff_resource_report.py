@@ -285,3 +285,38 @@ def test_module_imports_without_django():
     assert result.returncode == 0, (
         f"run_anuga._handoff failed to import standalone:\nstderr: {result.stderr}"
     )
+
+
+def test_make_resource_sampler_wires_run_stats_provider():
+    """TASK-3373: the sampler is handed phase_tracker.get_run_stats so the run's
+    step/dt/wet physics ride raw.observed."""
+    from run_anuga import phase_tracker
+
+    captured = _capture_sampler_kwargs(None)
+    assert captured["run_summary_provider"] is phase_tracker.get_run_stats
+
+
+def test_make_resource_sampler_survives_older_sampler_without_run_provider():
+    """An older baked batch_common (no run_summary_provider kwarg) must NOT lose
+    the whole ledger: retry without the new kwarg."""
+    calls = []
+
+    def _factory(scratch_dir, **kwargs):
+        calls.append(dict(kwargs))
+        if "run_summary_provider" in kwargs:
+            raise TypeError("unexpected keyword argument 'run_summary_provider'")
+        return _FakeSampler({"tool": "anuga", "job_id": "j"})
+
+    fake_mod = types.ModuleType("gn_anuga.batch_common.resource_sampler")
+    fake_mod.ResourceSampler = _factory
+    module_patch = {
+        "gn_anuga": types.ModuleType("gn_anuga"),
+        "gn_anuga.batch_common": types.ModuleType("gn_anuga.batch_common"),
+        "gn_anuga.batch_common.resource_sampler": fake_mod,
+    }
+    with mock.patch.dict(sys.modules, module_patch):
+        sampler = _make_resource_sampler(
+            "/tmp", control_server="https://hydrata.com", ids={"run_id": 1},
+        )
+    assert sampler is not None
+    assert len(calls) == 2 and "run_summary_provider" not in calls[1]

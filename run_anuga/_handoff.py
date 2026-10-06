@@ -775,19 +775,34 @@ def _make_resource_sampler(scratch_dir, *, control_server, ids):
     # build phase run.py set, and the mesh-size features ride onto the summary.
     # The sampler stays tool-agnostic — phase tagging is opt-in via injection,
     # so terrain-merge / IDF (no provider) are unaffected.
+    sampler_kwargs = dict(
+        tool=RESOURCE_REPORT_TOOL,
+        control_server=control_server,
+        ids=ids,
+        code_shas=code_shas,
+        code_provenance=code_provenance,
+        request=request or None,
+        phase_provider=phase_tracker.get_phase,
+        phase_durations_provider=phase_tracker.get_phase_durations,
+        mesh_features_provider=phase_tracker.get_mesh_features,
+    )
     try:
-        return ResourceSampler(
-            scratch_dir,
-            tool=RESOURCE_REPORT_TOOL,
-            control_server=control_server,
-            ids=ids,
-            code_shas=code_shas,
-            code_provenance=code_provenance,
-            request=request or None,
-            phase_provider=phase_tracker.get_phase,
-            phase_durations_provider=phase_tracker.get_phase_durations,
-            mesh_features_provider=phase_tracker.get_mesh_features,
-        )
+        try:
+            # TASK-3373: run physics (steps/dt/wet series) ride observed.
+            return ResourceSampler(
+                scratch_dir,
+                run_summary_provider=phase_tracker.get_run_stats,
+                **sampler_kwargs,
+            )
+        except TypeError:
+            # An older baked batch_common without run_summary_provider: keep the
+            # ledger alive (run_anuga ships from main, batch_common from the
+            # hydrata checkout, so the two can skew on a rebuild).
+            logger.info(
+                "run_and_report: sampler lacks run_summary_provider; "
+                "constructing without run physics",
+            )
+            return ResourceSampler(scratch_dir, **sampler_kwargs)
     except Exception:
         logger.warning(
             "run_and_report: ResourceSampler construction failed; "

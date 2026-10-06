@@ -307,7 +307,6 @@ class SimulationMonitor:
 
         self._csv_path = os.path.join(output_dir, f"run_diagnostics_{batch_number}.csv")
         self._json_path = os.path.join(output_dir, f"run_summary_{batch_number}.json")
-        self._prev_steps = int(domain.number_of_steps)
         self._records = []
 
         self._start_wall_time = time.time()
@@ -426,11 +425,14 @@ class SimulationMonitor:
         domain = self.domain
 
         # --- Internal timestep stats ---
-        curr_steps = int(domain.number_of_steps)
-        n_steps = max(1, curr_steps - self._prev_steps)
-        self._prev_steps = curr_steps
+        # TASK-3373: the engine zeroes domain.number_of_steps after EVERY yield
+        # (generic_domain.evolve), so the value read here IS this window's own
+        # step count. The old cumulative delta logged steps=1 for every window
+        # after the first. The t=0 yield legitimately has 0 steps; only the dt
+        # divisor is floored at 1.
+        n_steps = max(0, int(domain.number_of_steps))
         last_dt_ms = float(domain.timestep) * 1000.0
-        mean_dt_ms = self.yieldstep / n_steps * 1000.0
+        mean_dt_ms = self.yieldstep / max(1, n_steps) * 1000.0
         # TASK-2622 (W1.1, epic 2618) — the smallest internal substep dt within
         # the just-completed yieldstep. ANUGA already tracks this itself
         # (generic_domain.update_timestep sets domain.recorded_min_timestep on
@@ -486,7 +488,66 @@ class SimulationMonitor:
         self._records.append(rec)
         self._writer.writerow(rec)
         self._csv_file.flush()
+        self._publish_observed_stats()
         return rec
+
+    # ------------------------------------------------------------------
+    # Ledger feed (TASK-3373): the physics that explains GPU cost variance
+    # ------------------------------------------------------------------
+
+    #: Max points in the per-yield series handed to the ledger (decimated).
+    SERIES_MAX_POINTS = 120
+
+    def observed_stats(self) -> dict:
+        """Aggregate the records into the compact ``observed`` run-summary bag.
+
+        Keys: n_steps, mean_dt_ms, min_dt_ms, wet_fraction_final,
+        wet_fraction_max, max_depth_m, yieldstep_series
+        ``[{t, cum_steps, mean_dt_ms, wet_fraction}]``. ``{}`` before the first
+        record. The t=0 yield (0 steps) is excluded from the dt aggregates.
+        """
+        recs = self._records
+        if not recs:
+            return {}
+        total = sum(r["n_steps"] for r in recs)
+        stepped = [r for r in recs if r["n_steps"] > 0]
+        mean_dt = (
+            sum(r["mean_dt_ms"] * r["n_steps"] for r in stepped) / total
+            if total else None
+        )
+        min_dt = min((r["min_dt_ms"] for r in stepped), default=None)
+        series, cum = [], 0
+        for r in recs:
+            cum += r["n_steps"]
+            series.append({
+                "t": r["sim_time_s"],
+                "cum_steps": cum,
+                "mean_dt_ms": r["mean_dt_ms"],
+                "wet_fraction": r["wet_fraction"],
+            })
+        if len(series) > self.SERIES_MAX_POINTS:
+            stride = -(-len(series) // self.SERIES_MAX_POINTS)
+            kept = series[::stride]
+            if kept[-1] is not series[-1]:
+                kept.append(series[-1])  # always keep the final point
+            series = kept
+        return {
+            "n_steps": total,
+            "mean_dt_ms": round(mean_dt, 3) if mean_dt is not None else None,
+            "min_dt_ms": min_dt,
+            "wet_fraction_final": recs[-1]["wet_fraction"],
+            "wet_fraction_max": max(r["wet_fraction"] for r in recs),
+            "max_depth_m": max(r["max_depth_m"] for r in recs),
+            "yieldstep_series": series,
+        }
+
+    def _publish_observed_stats(self) -> None:
+        """Hand the aggregate to the phase tracker for the sampler; never raises."""
+        try:
+            from run_anuga import phase_tracker
+            phase_tracker.set_run_stats(self.observed_stats())
+        except Exception:
+            logger.debug("observed-stats publish failed", exc_info=True)
 
     # ------------------------------------------------------------------
     # Formatting helpers
