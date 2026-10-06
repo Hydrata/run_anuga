@@ -9,6 +9,7 @@ import math
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 
 from run_anuga.diagnostics import (
     INSTABILITY_SPEED_THRESHOLD_MS,
@@ -175,6 +176,7 @@ class TestRecord:
         rec2 = mon.record(120.0, wall_time_s=15.5)
         assert rec2["n_steps"] == 470
 
+    @pytest.mark.requires_anuga
     def test_n_steps_sums_across_yields(self, tmp_path):
         """Oracle on a REAL anuga domain: the monitor's summed per-window
         n_steps over 3 yields == an INDEPENDENT count of the engine's steps
