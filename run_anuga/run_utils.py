@@ -791,6 +791,7 @@ def compute_mesh_qa(anuga_mesh):
       aspect_ratio_max — maximum ratio of longest to shortest edge per triangle
       duplicate_node_count — number of vertices duplicated (same x, y)
       has_degenerate_triangles — True if any triangle has zero or near-zero area
+      inradius_min_m / inradius_median_m — 2*area/perimeter across triangles
 
     All numeric fields default to 0 / False when the mesh has no triangles, so
     callers never need to guard for None.
@@ -820,6 +821,9 @@ def compute_mesh_qa(anuga_mesh):
             # W3 (TASK-1923) — area metrics
             'min_triangle_area': 0.0,
             'area_histogram': [],
+            # TASK-3374 (epic 3370) — inradius metrics
+            'inradius_min_m': 0.0,
+            'inradius_median_m': 0.0,
         }
 
     # Gather vertex coordinates for each triangle corner
@@ -883,6 +887,13 @@ def compute_mesh_qa(anuga_mesh):
     areas = 0.5 * cross
     min_triangle_area = float(numpy.min(areas))
 
+    # TASK-3374 (epic 3370) — inradius = 2 * area / perimeter, from the edge
+    # lengths and areas already computed above. Degenerate triangles give 0.
+    perimeters = l0 + l1 + l2
+    inradii = 2.0 * areas / numpy.where(perimeters < EPS, EPS, perimeters)
+    inradius_min_m = float(numpy.min(inradii))
+    inradius_median_m = float(numpy.median(inradii))
+
     # Log-spaced area histogram over 7+ decades (min_area – 10 M m²).
     # Edges span from 10x below the observed minimum up to 10 M m² so ALL
     # triangles fall within the first/last bin (no under- or overflow losses).
@@ -917,6 +928,9 @@ def compute_mesh_qa(anuga_mesh):
         # W3 (TASK-1923) — area metrics
         'min_triangle_area': round(min_triangle_area, 4),
         'area_histogram': area_histogram,
+        # TASK-3374 (epic 3370) — inradius metrics
+        'inradius_min_m': round(inradius_min_m, 4),
+        'inradius_median_m': round(inradius_median_m, 4),
     }
 
 
