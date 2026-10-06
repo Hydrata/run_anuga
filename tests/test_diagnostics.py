@@ -9,6 +9,7 @@ import math
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 
 from run_anuga.diagnostics import (
     INSTABILITY_SPEED_THRESHOLD_MS,
@@ -165,14 +166,50 @@ class TestRecord:
         rec = mon.record(60.0, wall_time_s=16.0)
         assert rec["n_steps"] == 480
 
-    def test_n_steps_delta(self, tmp_path):
-        # Second yieldstep should see the delta, not total
+    def test_n_steps_is_per_window_not_cumulative(self, tmp_path):
+        # TASK-3373: the engine zeroes number_of_steps after every yield, so
+        # each window's reading IS its own count (no delta against the prior).
         mon = self._make_monitor(tmp_path, initial_steps=0)
         mon.domain.number_of_steps = 480
         mon.record(60.0, wall_time_s=16.0)
-        mon.domain.number_of_steps = 960
+        mon.domain.number_of_steps = 470  # engine reset to 0, then 470 steps
         rec2 = mon.record(120.0, wall_time_s=15.5)
-        assert rec2["n_steps"] == 480
+        assert rec2["n_steps"] == 470
+
+    @pytest.mark.requires_anuga
+    def test_n_steps_sums_across_yields(self, tmp_path):
+        """Oracle on a REAL anuga domain: the monitor's summed per-window
+        n_steps over 3 yields == an INDEPENDENT count of the engine's steps
+        (apply_fractional_steps runs exactly once per evolve step)."""
+        import anuga
+
+        d = anuga.rectangular_cross_domain(8, 8, len1=80.0, len2=80.0)
+        d.set_quantity("elevation", lambda x, y: -x / 100.0)
+        d.set_quantity("friction", 0.0)
+        d.set_quantity("stage", lambda x, y: 0.5 * (x < 20))
+        refl = anuga.Reflective_boundary(d)
+        d.set_boundary({"left": refl, "right": refl, "top": refl, "bottom": refl})
+        d.set_name("oracle_diag")
+        d.set_datadir(str(tmp_path))
+
+        engine_steps = {"n": 0}
+        orig = d.apply_fractional_steps
+
+        def _counted():
+            engine_steps["n"] += 1
+            return orig()
+
+        d.apply_fractional_steps = _counted
+
+        mon = SimulationMonitor(d, str(tmp_path), 1, yieldstep=2.0)
+        yields = 0
+        for t in d.evolve(yieldstep=2.0, finaltime=6.0):
+            mon.record(t, wall_time_s=0.1)
+            yields += 1
+        summed = sum(r["n_steps"] for r in mon._records)
+        assert yields == 4  # t=0 plus 3 windows
+        assert engine_steps["n"] > 3
+        assert summed == engine_steps["n"]
 
     def test_last_dt_ms(self, tmp_path):
         mon = self._make_monitor(tmp_path, timestep=0.125)
@@ -526,7 +563,7 @@ def _make_monitor_with_records(tmp_path, n_records=2, duration_s=120.0,
         duration_s=duration_s, run_label="run_7_3_5", scenario_config=cfg,
     )
     for i in range(1, n_records + 1):
-        domain.number_of_steps = i * 480
+        domain.number_of_steps = 480  # per-window (engine resets each yield)
         domain.timestep = 0.125
         mon.record(i * 60.0, wall_time_s=16.0, mem_mb=512.0)
     return mon
@@ -946,3 +983,37 @@ class TestAllreduceFlowScalars:
         assert rec["wet_cells"] == local["n_wet"] == 3
         assert rec["volume_m3"] == round(local["volume_m3"], 1)
         assert rec["max_speed_ms"] == round(local["max_speed_ms"], 3)
+
+
+class TestObservedStatsFeed:
+    """TASK-3373: aggregate handed to the sampler via phase_tracker."""
+
+    def test_observed_stats_and_phase_tracker_publish(self, tmp_path):
+        from run_anuga import phase_tracker
+
+        phase_tracker.reset()
+        domain = _make_mock_domain(timestep=0.125, number_of_steps=0)
+        mon = SimulationMonitor(domain, str(tmp_path), 1, yieldstep=60)
+        for i, steps in enumerate([0, 480, 240], start=0):
+            domain.number_of_steps = steps
+            mon.record(i * 60.0, wall_time_s=1.0)
+        stats = phase_tracker.get_run_stats()
+        assert stats["n_steps"] == 720
+        assert stats["wet_fraction_final"] == stats["wet_fraction_max"] == 0.75
+        assert stats["max_depth_m"] > 0
+        assert stats["min_dt_ms"] is not None
+        assert [p["cum_steps"] for p in stats["yieldstep_series"]] == [0, 480, 720]
+        assert set(stats["yieldstep_series"][0]) == {
+            "t", "cum_steps", "mean_dt_ms", "wet_fraction"}
+        phase_tracker.reset()
+        assert phase_tracker.get_run_stats() == {}
+
+    def test_series_is_decimated_but_keeps_final_point(self, tmp_path):
+        domain = _make_mock_domain()
+        mon = SimulationMonitor(domain, str(tmp_path), 1, yieldstep=60)
+        for i in range(1, 501):
+            domain.number_of_steps = 10
+            mon.record(i * 60.0, wall_time_s=0.1)
+        series = mon.observed_stats()["yieldstep_series"]
+        assert len(series) <= SimulationMonitor.SERIES_MAX_POINTS + 1
+        assert series[-1]["cum_steps"] == 5000
