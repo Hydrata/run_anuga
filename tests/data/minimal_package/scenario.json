@@ -10,7 +10,7 @@
     "boundary": "boundary.geojson",
     "friction": null,
     "inflow": null,
-    "structure": null,
+    "building": null,
     "mesh_region": null,
     "hydrology_status": null,
     "catchment": null,

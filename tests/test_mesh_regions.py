@@ -73,7 +73,7 @@ class TestMakeInteriorRegionsGeo:
 class TestMakeFrictionsGeo:
     def test_building_friction_value(self):
         input_data = {
-            "structure": {
+            "building": {
                 "features": [
                     {
                         "geometry": {"coordinates": [_polygon_coords(321040, 5812040, 20)]},
@@ -103,7 +103,7 @@ class TestMakeFrictionsGeo:
 
     def test_all_default_always_present(self):
         """The 'All' default friction is always the last entry."""
-        for input_data in [{}, {"structure": {"features": []}}, {"friction": {"features": []}}]:
+        for input_data in [{}, {"building": {"features": []}}, {"friction": {"features": []}}]:
             frictions = make_frictions(input_data)
             assert frictions[-1] == ["All", defaults.DEFAULT_MANNINGS_N]
 
@@ -113,7 +113,7 @@ class TestMakeInteriorHolesGeo:
     def test_reflective_hole_has_indices(self):
         coords = _polygon_coords(321040, 5812040, 20)
         input_data = {
-            "structure": {
+            "building": {
                 "features": [
                     {
                         "geometry": {"coordinates": [coords]},
@@ -130,10 +130,10 @@ class TestMakeInteriorHolesGeo:
         assert tags[0] == expected_tag
 
     def test_mannings_not_in_holes(self):
-        """Mannings structures are friction polygons, not interior holes."""
+        """Mannings buildings are friction polygons, not interior holes."""
         coords = _polygon_coords(321040, 5812040, 20)
         input_data = {
-            "structure": {
+            "building": {
                 "features": [
                     {
                         "geometry": {"coordinates": [coords]},
@@ -143,13 +143,13 @@ class TestMakeInteriorHolesGeo:
             }
         }
         holes, tags = make_interior_holes_and_tags(input_data)
-        assert holes is None  # Mannings structures filtered out
+        assert holes is None  # Mannings buildings filtered out
         assert tags is None
 
     def test_holes_and_tags_same_length(self):
         """holes and tags lists must always be the same length."""
         input_data = {
-            "structure": {
+            "building": {
                 "features": [
                     {
                         "geometry": {"coordinates": [_polygon_coords(321000, 5812000, 20)]},
@@ -166,7 +166,7 @@ class TestMakeInteriorHolesGeo:
         assert len(holes) == len(tags)
 
     def test_empty_features_returns_none(self):
-        input_data = {"structure": {"features": []}}
+        input_data = {"building": {"features": []}}
         holes, tags = make_interior_holes_and_tags(input_data)
         assert holes is None
         assert tags is None

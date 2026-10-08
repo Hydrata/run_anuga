@@ -133,7 +133,7 @@ class TestMakeInteriorRegions:
 class TestMakeFrictions:
     def test_with_buildings(self):
         input_data = {
-            "structure": {
+            "building": {
                 "features": [
                     {
                         "geometry": {"coordinates": [[[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]]]},
@@ -171,7 +171,7 @@ class TestMakeFrictions:
 
     def test_structure_non_mannings_excluded(self):
         input_data = {
-            "structure": {
+            "building": {
                 "features": [
                     {
                         "geometry": {"coordinates": [[[0, 0], [1, 0], [1, 1], [0, 0]]]},
@@ -181,12 +181,12 @@ class TestMakeFrictions:
             }
         }
         frictions = make_frictions(input_data)
-        # Only the 'All' default, Holes structures aren't friction
+        # Only the 'All' default, Holes buildings aren't friction
         assert len(frictions) == 1
 
     def test_combined_buildings_and_friction(self):
         input_data = {
-            "structure": {
+            "building": {
                 "features": [
                     {
                         "geometry": {"coordinates": [[[0, 0], [1, 0], [1, 1], [0, 0]]]},
@@ -219,7 +219,7 @@ class TestMakeInteriorHolesAndTags:
 
     def test_mannings_structures_skipped(self):
         input_data = {
-            "structure": {
+            "building": {
                 "features": [
                     {
                         "geometry": {"coordinates": [[[0, 0], [1, 0], [1, 1], [0, 0]]]},
@@ -234,7 +234,7 @@ class TestMakeInteriorHolesAndTags:
 
     def test_reflective_structure(self):
         input_data = {
-            "structure": {
+            "building": {
                 "features": [
                     {
                         "geometry": {"coordinates": [[[0, 0], [1, 0], [1, 1], [0, 0]]]},
@@ -252,10 +252,10 @@ class TestMakeInteriorHolesAndTags:
     def test_mixed_structures(self):
         # ADR-4 / TASK-1270: only 'Reflective' produces an interior hole;
         # 'Mannings' is a friction zone (skipped here). The two non-touching
-        # Reflective structures each become a hole with matching tags, so the
+        # Reflective buildings each become a hole with matching tags, so the
         # holes and tags lists must stay length-parity aligned.
         input_data = {
-            "structure": {
+            "building": {
                 "features": [
                     {
                         "geometry": {"coordinates": [[[0, 0], [1, 0], [1, 1], [0, 0]]]},

@@ -426,21 +426,21 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
                 )
                 domain.set_quantity('elevation', elevation_function, verbose=False, alpha=0.99, location='centroids')
 
-            # TASK-1299: post-mesh Raised structure elevation correction.
-            # Apply per-structure height additions AFTER the base DEM is seated.
-            # Only structures with method='Raised' are modified; Reflective and
+            # TASK-1299: post-mesh Raised building elevation correction.
+            # Apply per-building height additions AFTER the base DEM is seated.
+            # Only buildings with method='Raised' are modified; Reflective and
             # Mannings are untouched (Reflective is a mesh void; Mannings is friction).
             # This replaces the old universal +5m gdal_rasterize burn (removed in 1270).
             raised_pairs = make_raised_elevation_pairs(input_data)
             if raised_pairs:
-                logger.critical(f"Applying raised elevation for {len(raised_pairs)} Raised structure(s)")
+                logger.critical(f"Applying raised elevation for {len(raised_pairs)} Raised building(s)")
                 try:
                     # TASK-2149 F1: seat Raised heights via ABSOLUTE centroids so the
                     # point-in-polygon test matches the absolute-UTM Raised polygons
                     # regardless of the mesh geo_reference offset (previously absolute=False
-                    # silently dropped every Raised structure on any local-offset mesh).
+                    # silently dropped every Raised building on any local-offset mesh).
                     applied = apply_raised_elevation_correction(domain, raised_pairs)
-                    logger.critical(f"Raised elevation applied for {applied}/{len(raised_pairs)} structure(s)")
+                    logger.critical(f"Raised elevation applied for {applied}/{len(raised_pairs)} building(s)")
                 except Exception as e:
                     logger.error(f"Failed to apply raised elevation: {e} — continuing without Raised correction")
 
@@ -455,7 +455,7 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
             frictions = make_frictions(input_data)
             # PRE-FLIGHT (TASK-1138): only a friction RASTER is nodata-checkable.
             # make_frictions (TASK-1259) returns a list that merges the optional
-            # ['Extent', raster] pair with any per-structure Manning's-n polygon
+            # ['Extent', raster] pair with any per-building Manning's-n polygon
             # patches; the next() below extracts the raster pair (if present) to
             # nodata-check it. composite_quantity_setting_function below uses
             # anuga's default nan_treatment='exception'.
@@ -483,7 +483,7 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
 
             # TASK-2226 — defense-in-depth for the run-1283 negative-inlet-volume
             # class. Re-run ANUGA's own protection on the whole rank-0 domain,
-            # AFTER the Raised-structure correction + stage=0.0 init and BEFORE
+            # AFTER the Raised-building correction + stage=0.0 init and BEFORE
             # distribute(), so the PARALLEL Parallel_Inlet_operator never asserts
             # on a negative inlet volume at the first evolve step (the serial path
             # already got this for free from evolve). Idempotent with evolve's own

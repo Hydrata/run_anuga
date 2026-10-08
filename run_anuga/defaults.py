@@ -5,7 +5,7 @@ These values were previously hardcoded throughout run.py and run_utils.py.
 Override them by passing explicit values in scenario.json or function arguments.
 """
 
-# Structure / building parameters
+# Building (footprint) parameters
 BUILDING_BURN_HEIGHT_M = 5.0
 """Height (metres) added to the DEM where buildings are rasterised."""
 

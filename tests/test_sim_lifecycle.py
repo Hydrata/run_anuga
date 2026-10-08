@@ -71,7 +71,7 @@ class TestSimLifecycle:
         assert len(progress) > 0
 
     def test_run_sim_output_directory_structure(self, small_test_copy):
-        """Output directory has expected structure."""
+        """Output directory has expected building."""
         from run_anuga.run import run_sim
 
         run_sim(str(small_test_copy))

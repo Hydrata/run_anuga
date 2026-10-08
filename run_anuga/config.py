@@ -36,6 +36,11 @@ class ScenarioConfig(BaseModel):
     friction: Optional[str] = None
     inflow: Optional[str] = None
     rainfall: Optional[str] = None
+    building: Optional[str] = None
+    # TASK-3586 legacy package key (deprecated): packages written before the
+    # Structure -> Building rename point at the building-footprint file under
+    # 'structure'. _load_package_data reads it as 'building' when the new key
+    # is absent, so a stored package on S3 re-runs unchanged.
     structure: Optional[str] = None
     mesh_region: Optional[str] = None
     hydrology_status: Optional[str] = None

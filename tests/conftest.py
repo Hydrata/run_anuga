@@ -112,7 +112,7 @@ def scenario_package(tmp_path):
 
 @pytest.fixture
 def scenario_package_full(scenario_package):
-    """Scenario package with optional inputs (friction, inflow, structure, mesh_region)."""
+    """Scenario package with optional inputs (friction, inflow, building, mesh_region)."""
     inputs = scenario_package / "inputs"
 
     # Add friction
@@ -142,8 +142,8 @@ def scenario_package_full(scenario_package):
         }]
     }))
 
-    # Add structure
-    (inputs / "structure.geojson").write_text(json.dumps({
+    # Add building
+    (inputs / "building.geojson").write_text(json.dumps({
         "type": "FeatureCollection",
         "features": [{
             "type": "Feature",
@@ -159,7 +159,7 @@ def scenario_package_full(scenario_package):
     cfg = json.loads((scenario_package / "scenario.json").read_text())
     cfg["friction"] = "friction.geojson"
     cfg["inflow"] = "inflow.geojson"
-    cfg["structure"] = "structure.geojson"
+    cfg["building"] = "building.geojson"
     (scenario_package / "scenario.json").write_text(json.dumps(cfg))
 
     return scenario_package

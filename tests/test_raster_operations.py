@@ -2,12 +2,12 @@
 
 Requires geopandas (marked requires_geo).
 
-Note: the ``burn_structures_into_raster`` and ``_clip_and_resample`` tests that
+Note: the ``burn_buildings_into_raster`` and ``_clip_and_resample`` tests that
 formerly lived here were removed during the run_anuga single-main unification
 (TASK-2149). The universal DEM burn was retired on the cloud pipeline
-(ADR-4 / TASK-1270 — structures now route to Reflective holes / Raised
+(ADR-4 / TASK-1270 — buildings now route to Reflective holes / Raised
 elevation / Mannings friction) and ``_clip_and_resample`` no longer exists.
-Current structure/mesh coverage lives in test_reflective_mesh.py and
+Current building/mesh coverage lives in test_reflective_mesh.py and
 test_mesh_qa.py.
 """
 
