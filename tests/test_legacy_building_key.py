@@ -108,16 +108,26 @@ class TestLegacyBuildingKey:
         data = _load_package_data(str(new_package))
         assert data["building"] == BUILDINGS
         assert data["building_filename"].endswith("str_1_building_01.json")
-        assert "structure" not in data
+        # Deprecated read alias (TASK-3587): a web box still on a pre-rename
+        # hydrata reads input_data['structure'] (raised-building guard, mesh
+        # estimate). Same object, not a second input.
+        assert data["structure"] is data["building"]
 
     def test_legacy_key_loads_under_building_and_warns(self, legacy_package, caplog):
         with caplog.at_level(logging.WARNING, logger="run_anuga.run_utils"):
             data = _load_package_data(str(legacy_package))
         assert data["building"] == BUILDINGS
         assert data["building_filename"].endswith("str_1_structure_01.json")
-        # The legacy key is NOT surfaced as its own input: one layer, one key.
-        assert "structure" not in data
+        # The legacy key is only an alias of the one building input.
+        assert data["structure"] is data["building"]
         assert any("legacy 'structure' key" in r.getMessage() for r in caplog.records)
+
+    def test_no_structure_alias_without_a_building(self, legacy_package):
+        cfg = json.loads((legacy_package / "scenario.json").read_text())
+        cfg.pop("structure")
+        (legacy_package / "scenario.json").write_text(json.dumps(cfg))
+        data = _load_package_data(str(legacy_package))
+        assert "building" not in data and "structure" not in data
 
     def test_new_key_wins_when_both_present(self, new_package):
         cfg = json.loads((new_package / "scenario.json").read_text())

@@ -119,6 +119,11 @@ def _load_package_data(package_dir):
                 f"({legacy_filename}); reading it as '{new_key}'"
             )
             _load_input_file(input_data, package_dir, new_key, legacy_filename)
+        # Deprecated read alias (remove with TASK-3587): a web box still on a
+        # pre-rename hydrata reads the layer as input_data['structure']. The
+        # same object, so nothing downstream sees two inputs.
+        if new_key in input_data:
+            input_data[legacy_key] = input_data[new_key]
 
     elevation_filepath = os.path.join(package_dir, f"inputs/{input_data['scenario_config'].get('elevation')}")
     if input_data['scenario_config'].get('elevation') and os.path.isfile(elevation_filepath):
