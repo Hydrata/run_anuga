@@ -170,3 +170,35 @@ class TestMakeInteriorHolesGeo:
         holes, tags = make_interior_holes_and_tags(input_data)
         assert holes is None
         assert tags is None
+
+
+@pytest.mark.requires_geo
+class TestMeshRegionOutsideOutlineWarning:
+    """TASK-3457 (D4/A5): ANUGA silently ignores (log.info) a mesh region that
+    is not wholly inside the bounding polygon (run_anuga passes
+    fail_if_polygons_outside=False). Say so at WARNING, naming the region."""
+
+    OUTLINE = [[0, 0], [0, 100], [100, 100], [100, 0]]
+
+    def _input(self, ring, fid):
+        return {
+            "boundary_polygon": self.OUTLINE,
+            "mesh_region": {"features": [
+                {"id": fid, "geometry": {"type": "Polygon", "coordinates": [ring]},
+                 "properties": {"resolution": 2.0, "resolution_units": "m"}},
+            ]},
+        }
+
+    def test_region_half_outside_warns_naming_it(self, caplog):
+        ring = [[50, 50], [150, 50], [150, 80], [50, 80], [50, 50]]
+        with caplog.at_level("WARNING", logger="run_anuga.run_utils"):
+            regions = make_interior_regions(self._input(ring, "mr.half"))
+        assert len(regions) == 1  # still handed to ANUGA (as an area)
+        warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+        assert any("mr.half" in m and "will not be applied" in m for m in warnings), warnings
+
+    def test_region_inside_does_not_warn(self, caplog):
+        ring = [[10, 10], [100, 10], [100, 50], [10, 50], [10, 10]]  # touches the edge: inside
+        with caplog.at_level("WARNING", logger="run_anuga.run_utils"):
+            make_interior_regions(self._input(ring, "mr.in"))
+        assert not [r for r in caplog.records if r.levelname == "WARNING"]

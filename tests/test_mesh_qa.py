@@ -137,3 +137,33 @@ class TestComputeMeshQaBCTypes:
 
 # NOTE: TestExportCorpusFeatureColumns lives in the hydrata repo test suite:
 # apps/gn_anuga/tests/test_mesh_qa_corpus.py (requires Django/gn_anuga import).
+
+
+class TestComputeMeshQaInradius:
+    """TASK-3374 (epic 3370) — inradius_min_m / inradius_median_m.
+
+    inradius = 2 * area / perimeter. Feeds the cost model's
+    triangles x duration / median-inradius signal on BOTH the web path and
+    the anuga-build Batch payload (mesh_qa).
+    """
+
+    def test_inradius_single_right_triangle(self):
+        from run_anuga.run_utils import compute_mesh_qa
+        qa = compute_mesh_qa(_make_fake_mesh(_UNIT_TRIANGLE))
+        expected = 2 * 0.5 / (2 + 2 ** 0.5)
+        assert abs(qa['inradius_min_m'] - expected) < 1e-3
+        assert abs(qa['inradius_median_m'] - expected) < 1e-3
+
+    def test_inradius_min_and_median_over_several_triangles(self):
+        from run_anuga.run_utils import compute_mesh_qa
+        qa = compute_mesh_qa(_make_fake_mesh(_TWO_AREA_TRIANGLES))
+        small = 2 * 0.5 / (2 + 2 ** 0.5)
+        big = 2 * 5000.0 / (200 + 100 * 2 ** 0.5)
+        assert abs(qa['inradius_min_m'] - small) < 1e-3
+        assert abs(qa['inradius_median_m'] - (small + big) / 2) < 1e-2
+
+    def test_inradius_present_and_zero_on_empty_mesh(self):
+        from run_anuga.run_utils import compute_mesh_qa
+        qa = compute_mesh_qa(_make_fake_mesh([]))
+        assert qa['inradius_min_m'] == 0.0
+        assert qa['inradius_median_m'] == 0.0

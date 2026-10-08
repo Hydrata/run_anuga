@@ -72,6 +72,7 @@ ALL_PHASES = BUILD_PHASES + (PHASE_COG_EXPORT, PHASE_ARCHIVE)
 _lock = threading.Lock()
 _current_phase: Optional[str] = None
 _mesh_features: Dict[str, object] = {}
+_run_stats: Dict[str, object] = {}
 
 # TASK-2672 (epic 2662 D4): optional phase-transition listener — the events
 # dialect posts a typed `phase` event on each transition. Module-global so
@@ -202,6 +203,29 @@ def get_mesh_features() -> Dict[str, object]:
         return dict(_mesh_features)
 
 
+def set_run_stats(stats: Dict[str, object]) -> None:
+    """Replace the run-summary bag (TASK-3373).
+
+    ``SimulationMonitor.record`` republishes the whole aggregate each yieldstep
+    (n_steps, mean/min dt, wet fractions, max depth, compact per-yield series),
+    so a run killed mid-evolve still leaves its last-known physics for the
+    sampler. REPLACE not merge: the monitor owns the full picture.
+    """
+    global _run_stats
+    with _lock:
+        _run_stats = dict(stats)
+
+
+def get_run_stats() -> Dict[str, object]:
+    """Return a shallow copy of the run-summary bag.
+
+    Handed to the sampler as its ``run_summary_provider``; ``{}`` before the
+    first yieldstep (and after :func:`reset`).
+    """
+    with _lock:
+        return dict(_run_stats)
+
+
 def reset() -> None:
     """Clear the phase, duration accumulators, and the mesh-feature bag.
 
@@ -213,4 +237,5 @@ def reset() -> None:
         _current_phase = None
         _phase_start_time = None
         _mesh_features.clear()
+        _run_stats.clear()
         _phase_durations.clear()

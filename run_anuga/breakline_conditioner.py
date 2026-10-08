@@ -169,6 +169,14 @@ def condition_breaklines(breakline_geojson, boundary_polygon,
         except Exception:
             logger.warning(f"condition_breaklines: clip failed for {feature.get('id')} — skipping")
             continue
+        # TASK-3457 (A5): never drop or shorten a line without saying so.
+        if clipped.is_empty or clipped.length <= 0.0:
+            logger.warning(f"condition_breaklines: breakline {feature.get('id')} dropped: wholly outside "
+                           f"the model outline")
+            continue
+        if clipped.length < line.length - 1e-6:
+            logger.warning(f"condition_breaklines: breakline {feature.get('id')} clipped to the model outline "
+                           f"({clipped.length:.1f} of {line.length:.1f} m kept)")
         for part in _iter_linestrings(clipped):
             try:
                 processed = _simplify_densify(part, near_spacing)

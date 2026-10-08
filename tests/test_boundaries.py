@@ -80,17 +80,21 @@ class TestCreateBoundaryPolygon:
         polygon, tags = create_boundary_polygon_from_boundaries(geojson)
         assert "wall" not in tags
 
-    def test_no_crs_returns_empty(self):
-        """Missing CRS returns empty polygon and tags."""
-        geojson = {
-            "type": "FeatureCollection",
-            "features": [
-                _make_boundary_feature("b1", [[0, 0], [100, 0]], "south"),
-            ]
-        }
-        polygon, tags = create_boundary_polygon_from_boundaries(geojson)
-        assert polygon == []
-        assert tags == {}
+    def test_no_crs_equals_with_crs(self):
+        """TASK-3457 (D8): crs is optional (it was vestigial — the srs built
+        from it was never used). Without crs the outline is the same as with."""
+        features = [
+            _make_boundary_feature("b1", [[0, 0], [100, 0]], "south"),
+            _make_boundary_feature("b2", [[100, 0], [100, 100]], "east"),
+            _make_boundary_feature("b3", [[100, 100], [0, 100]], "north"),
+            _make_boundary_feature("b4", [[0, 100], [0, 0]], "west"),
+        ]
+        with_crs = create_boundary_polygon_from_boundaries(_make_boundary_geojson(features))
+        without_crs = create_boundary_polygon_from_boundaries(
+            {"type": "FeatureCollection", "features": features}
+        )
+        assert without_crs == with_crs
+        assert len(without_crs[0]) == 4
 
     def test_duplicate_boundary_names(self):
         """Two segments with the same boundary name are merged."""
@@ -113,9 +117,14 @@ class TestCreateBoundaryPolygon:
         with open(path) as f:
             geojson = json.load(f)
         polygon, tags = create_boundary_polygon_from_boundaries(geojson)
-        assert len(polygon) == 8  # 4 segments x 2 points each
-        assert "Transmissive" in tags
-        assert "Reflective" in tags
+        # TASK-3457: lines chained end to end (shared corners merged), clockwise.
+        assert polygon == [
+            [321000.0, 5812000.0],
+            [321000.0, 5812100.0],
+            [321100.0, 5812100.0],
+            [321100.0, 5812000.0],
+        ]
+        assert tags == {"Reflective": [0, 2], "Transmissive": [1, 3]}
 
     def test_polygon_coordinates_are_numeric(self):
         """All polygon coordinates should be numbers."""

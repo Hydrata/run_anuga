@@ -213,7 +213,7 @@ def _stage_fake_gn_anuga(root: Path, schema_version: int) -> Path:
     return app
 
 
-def _run_entrypoint(tmp_path, *, process_id, schema_version=1, aws_fails=True):
+def _run_entrypoint(tmp_path, *, process_id, schema_version=1, aws_fails=True, extra_env=None):
     """Run the shipped entrypoint against a one-shot raw-socket HTTP stub.
 
     Returns ``(completed_process, captured)`` where ``captured`` is ``{}`` when
@@ -279,6 +279,8 @@ def _run_entrypoint(tmp_path, *, process_id, schema_version=1, aws_fails=True):
     env["RESULT_S3_BUCKET"] = "hydrata-results"
     env["MANIFEST_S3_URI"] = "s3://bucket/key.json"
     env["PYTHONPATH"] = str(_stage_fake_gn_anuga(tmp_path, schema_version))
+    env.pop("TERRAIN_COMPUTE_VERB", None)
+    env.update(extra_env or {})
     if process_id is None:
         env.pop("HYDRATA_PROCESS_ID", None)
     else:
@@ -425,3 +427,29 @@ def test_the_real_server_validator_is_not_a_no_op(tmp_path):
     future_version = dict(body, schema_version=body["schema_version"] + 1000)
     verdict = _validate_with_real_server(json.dumps(future_version))
     assert verdict["type"] is None and "newer than this server" in verdict["error"]
+
+
+# ---------------------------------------------------------------------------
+# TASK-3232 — TERRAIN_COMPUTE_VERB selects the verb (allow-listed)
+# ---------------------------------------------------------------------------
+
+def test_verb_defaults_to_merge_and_report(tmp_path):
+    proc, _ = _run_entrypoint(tmp_path, process_id=None, aws_fails=False)
+    assert proc.returncode == 0, proc.stderr
+    assert "stub merge ['merge-and-report'," in proc.stdout
+
+
+def test_verb_terrain_prep_runs_the_terrain_prep_verb(tmp_path):
+    proc, _ = _run_entrypoint(tmp_path, process_id=None, aws_fails=False,
+                              extra_env={"TERRAIN_COMPUTE_VERB": "terrain-prep"})
+    assert proc.returncode == 0, proc.stderr
+    assert "stub merge ['terrain-prep'," in proc.stdout
+
+
+def test_verb_unknown_exits_2_before_any_download(tmp_path):
+    proc, cap = _run_entrypoint(tmp_path, process_id=None, aws_fails=False,
+                                extra_env={"TERRAIN_COMPUTE_VERB": "rm -rf"})
+    assert proc.returncode == 2
+    assert "unknown TERRAIN_COMPUTE_VERB" in proc.stderr
+    assert "Downloading manifest" not in proc.stdout
+    assert not cap
