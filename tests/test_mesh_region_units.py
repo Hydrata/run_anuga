@@ -85,8 +85,6 @@ class TestMeshRegionUnitRealMesh:
     """The real mesher: a marked LENGTH region meshes at res**2/2, not at res."""
 
     def _count(self, region_resolution):
-        pytest.importorskip("anuga", reason="anuga not installed")
-        pytest.importorskip("meshpy.triangle", reason="meshpy not installed")
         from run_anuga.run_utils import create_anuga_mesh
         with tempfile.TemporaryDirectory() as tmp:
             input_data = {
