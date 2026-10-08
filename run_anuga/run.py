@@ -74,6 +74,37 @@ _MULTIPROCESSOR_OPENMP = 1
 _MULTIPROCESSOR_GPU = 2
 
 
+def make_default_boundary_maps(anuga, domain):
+    """Boundary objects keyed by every tag a Hydrata mesh can carry.
+
+    TASK-3590: Reflective building holes are tagged ``'reflective'`` (lowercase)
+    by run_utils.make_interior_holes_and_tags, while external boundary features
+    use the capitalised ``'Reflective'``. Both bind to a Reflective_boundary;
+    without the lowercase key every run with a Reflective building died at
+    set_boundary with KeyError: 'reflective'.
+    """
+    return {
+        'exterior': anuga.Dirichlet_boundary([0, 0, 0]),
+        'interior': anuga.Reflective_boundary(domain),
+        'Dirichlet': anuga.Dirichlet_boundary([0, 0, 0]),
+        'Reflective': anuga.Reflective_boundary(domain),
+        'reflective': anuga.Reflective_boundary(domain),
+        'Transmissive': anuga.Transmissive_boundary(domain),
+        'ghost': None
+    }
+
+
+def bind_boundary_tags(tags, boundary_maps):
+    """Map each mesh boundary tag to its boundary object; name any unknown tag."""
+    unknown = sorted({tag for tag in tags if tag not in boundary_maps})
+    if unknown:
+        raise ValueError(
+            f"mesh boundary tag(s) {unknown} have no boundary condition; "
+            f"known tags: {sorted(boundary_maps)}"
+        )
+    return {tag: boundary_maps[tag] for tag in tags}
+
+
 def _resolve_multiprocessor_mode(input_data):
     """Resolve multiprocessor_mode: env OVERRIDES scenario.json (TASK-2197).
 
@@ -533,14 +564,7 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
                 Inlet_operator=Inlet_operator,
                 defaults_module=defaults,
             )
-        default_boundary_maps = {
-            'exterior': anuga.Dirichlet_boundary([0, 0, 0]),
-            'interior': anuga.Reflective_boundary(domain),
-            'Dirichlet': anuga.Dirichlet_boundary([0, 0, 0]),
-            'Reflective': anuga.Reflective_boundary(domain),
-            'Transmissive': anuga.Transmissive_boundary(domain),
-            'ghost': None
-        }
+        default_boundary_maps = make_default_boundary_maps(anuga, domain)
         # Build a 'Time' boundary entry only when at least one external
         # boundary feature carries boundary='Time'. The per-feature `data`
         # has already been resolved server-side by Boundary.make_file —
@@ -558,10 +582,9 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
             default_boundary_maps['Time'] = anuga.Time_boundary(
                 domain=domain, function=time_function,
             )
-        boundaries = dict()
-        for tag in domain.boundary.values():
-            boundaries[tag] = default_boundary_maps[tag]
-        domain.set_boundary(boundaries)
+        domain.set_boundary(
+            bind_boundary_tags(domain.boundary.values(), default_boundary_maps)
+        )
 
         # TASK-1954 (epic 1952): GPU-mode flag — read multiprocessor_mode from
         # scenario.json (default 1 = OpenMP, preserves today's behaviour exactly).
