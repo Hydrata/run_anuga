@@ -337,15 +337,71 @@ def get_sql_triangles_from_anuga_mesh(anuga_mesh):
     return output
 
 
+#: TASK-3186 (epic 3200, Option A) — the units marker a MeshRegion feature must
+#: carry before its ``resolution`` is meshed. ``resolution`` is a target edge
+#: LENGTH in metres (the scenario.resolution convention, promised by the UI
+#: since gmc b9892e052); older import-authored layers stored ANUGA AREAS in the
+#: same column, and nothing in a bare number says which. hydrata's
+#: ``convert_mesh_region_units`` command stamps ``resolution_units = 'm'`` per
+#: feature (converting √(2A) where the stored value was an area); layers created
+#: after the fix get it as the column default. The marker travels INSIDE the
+#: package's mesh_region GeoJSON, so a Batch-baked mesher sees it too.
+MESH_REGION_UNITS_KEY = 'resolution_units'
+MESH_REGION_UNITS_LENGTH_M = 'm'
+
+
+class MeshRegionUnitsUnmarked(ValueError):
+    """A mesh region with a ``resolution`` but no ``resolution_units == 'm'`` marker."""
+
+
+def _mesh_region_units(properties):
+    """The feature's units marker, matched case-insensitively on key and value."""
+    for key, value in (properties or {}).items():
+        if str(key).lower() == MESH_REGION_UNITS_KEY:
+            return str(value).strip().lower() if value is not None else None
+    return None
+
+
 def make_interior_regions(input_data):
+    """(polygon, maximum_triangle_area) per mesh-region feature.
+
+    The stored ``resolution`` is an edge LENGTH; ANUGA wants an AREA, so the
+    conversion ``res**2 / 2`` (the same as scenario.resolution in
+    create_anuga_mesh, and as hydrata's estimator prices a region) happens HERE
+    and nowhere else — make_breaklines already appends AREAS to the same
+    interior_regions list, so converting at the consumer would square them.
+
+    A feature with a resolution but without the length marker is REFUSED
+    (MeshRegionUnitsUnmarked) rather than meshed: an unconverted stored area A
+    would otherwise mesh at A²/2 — silently 4-50x coarser — while the estimate
+    and every gate read healthy. A null resolution passes through unchanged.
+    """
     interior_regions = list()
+    unmarked = []
     if input_data.get('mesh_region'):
         outline = input_data.get('boundary_polygon')
-        for mesh_region in input_data['mesh_region']['features']:
+        for index, mesh_region in enumerate(input_data['mesh_region']['features']):
             mesh_polygon = _extract_polygon_outer_ring(mesh_region.get('geometry'))
-            mesh_resolution = mesh_region.get('properties').get('resolution')
+            properties = mesh_region.get('properties') or {}
             _warn_if_mesh_region_outside_outline(mesh_region.get('id'), mesh_polygon, outline)
-            interior_regions.append((mesh_polygon, mesh_resolution,))
+            mesh_resolution = properties.get('resolution')
+            if mesh_resolution is None:
+                interior_regions.append((mesh_polygon, None,))
+                continue
+            if _mesh_region_units(properties) != MESH_REGION_UNITS_LENGTH_M:
+                unmarked.append(str(mesh_region.get('id', f'#{index}')))
+                continue
+            interior_regions.append((mesh_polygon, (float(mesh_resolution) ** 2) / 2,))
+    if unmarked:
+        project = (input_data.get('scenario_config') or {}).get('project', '<project id>')
+        raise MeshRegionUnitsUnmarked(
+            f"Refusing to mesh project {project}: mesh region feature(s) {', '.join(unmarked)} "
+            f"carry a resolution but no '{MESH_REGION_UNITS_KEY} = {MESH_REGION_UNITS_LENGTH_M}' "
+            "marker, so it is unknown whether the stored value is an edge length (m) or a legacy "
+            "ANUGA triangle area (m²). An operator must run: python manage.py "
+            f"convert_mesh_region_units --project {project} --stored-as area|length --apply "
+            "(area converts each value to sqrt(2*A); length only stamps the marker)."
+        )
     return interior_regions
 
 

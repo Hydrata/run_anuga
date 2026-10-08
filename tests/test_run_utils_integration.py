@@ -116,32 +116,32 @@ class TestMakeInteriorRegionsEmptyAndNone:
     def test_polygon_empty_coordinates_yields_empty_ring_tuple(self):
         from run_anuga.run_utils import make_interior_regions
         input_data = {'mesh_region': {'features': [
-            _empty_polygon_feature(kind='Polygon', properties={'resolution': 5.0}),
+            _empty_polygon_feature(kind='Polygon', properties={'resolution': 5.0, 'resolution_units': 'm'}),
         ]}}
-        assert make_interior_regions(input_data) == [([], 5.0)]
+        assert make_interior_regions(input_data) == [([], 12.5)]  # TASK-3186: res**2/2
 
     def test_multipolygon_empty_coordinates_yields_empty_ring_tuple(self):
         from run_anuga.run_utils import make_interior_regions
         input_data = {'mesh_region': {'features': [
-            _empty_polygon_feature(kind='MultiPolygon', properties={'resolution': 5.0}),
+            _empty_polygon_feature(kind='MultiPolygon', properties={'resolution': 5.0, 'resolution_units': 'm'}),
         ]}}
-        assert make_interior_regions(input_data) == [([], 5.0)]
+        assert make_interior_regions(input_data) == [([], 12.5)]  # TASK-3186: res**2/2
 
     def test_polygon_none_coordinates_yields_empty_ring_tuple(self):
         from run_anuga.run_utils import make_interior_regions
         input_data = {'mesh_region': {'features': [{
             'type': 'Feature',
             'geometry': {'type': 'Polygon', 'coordinates': None},
-            'properties': {'resolution': 5.0},
+            'properties': {'resolution': 5.0, 'resolution_units': 'm'},
         }]}}
-        assert make_interior_regions(input_data) == [([], 5.0)]
+        assert make_interior_regions(input_data) == [([], 12.5)]  # TASK-3186: res**2/2
 
     def test_polygon_valid_real_coordinates_yields_ring(self):
         from run_anuga.run_utils import make_interior_regions
         input_data = {'mesh_region': {'features': [
-            _polygon_feature(properties={'resolution': 5.0}),
+            _polygon_feature(properties={'resolution': 5.0, 'resolution_units': 'm'}),
         ]}}
-        assert make_interior_regions(input_data) == [(OUTER_RING, 5.0)]
+        assert make_interior_regions(input_data) == [(OUTER_RING, 12.5)]  # TASK-3186: res**2/2
 
 
 class TestMakeInteriorHolesEmptyAndNone:
