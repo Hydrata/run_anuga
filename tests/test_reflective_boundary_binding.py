@@ -74,6 +74,11 @@ class TestBoundaryMapCoversHoleTags:
         with pytest.raises(ValueError, match="'culvert'"):
             bind_boundary_tags(['exterior', 'culvert'], maps)
 
+    def test_tags_may_be_a_one_shot_iterator(self):
+        maps = make_default_boundary_maps(_FakeAnuga(), domain=None)
+        bound = bind_boundary_tags(iter(['exterior', 'reflective']), maps)
+        assert bound == {'exterior': 'Dirichlet_boundary', 'reflective': 'Reflective_boundary'}
+
     def test_external_tags_still_bind(self):
         maps = make_default_boundary_maps(_FakeAnuga(), domain=None)
         bound = bind_boundary_tags(
@@ -113,3 +118,43 @@ class TestReflectiveBuildingDomainSetBoundary:
                 bind_boundary_tags(domain.boundary.values(), make_default_boundary_maps(anuga, domain))
             )
             assert isinstance(domain.boundary_map['reflective'], anuga.Reflective_boundary)
+
+
+@pytest.mark.requires_anuga
+class TestRunSimWithReflectiveBuilding:
+    """The whole run_sim path, not just the helpers: a package carrying a
+    Reflective building must run to completion. Runs in a subprocess because a
+    run_sim failure ends in MPI.COMM_WORLD.Abort, which kills the process."""
+
+    def test_small_test_with_a_reflective_building_completes(self, small_test_copy):
+        import json
+        import subprocess
+        import sys
+
+        building = {
+            'type': 'FeatureCollection',
+            'features': [{
+                'type': 'Feature', 'id': 'str_1',
+                'geometry': {'type': 'Polygon', 'coordinates': [[
+                    [251080.0, 6271880.0], [251110.0, 6271880.0], [251110.0, 6271910.0],
+                    [251080.0, 6271910.0], [251080.0, 6271880.0],
+                ]]},
+                'properties': {'method': 'Reflective'},
+            }],
+        }
+        (small_test_copy / 'inputs' / 'building.geojson').write_text(json.dumps(building))
+        scenario_path = small_test_copy / 'scenario.json'
+        scenario = json.loads(scenario_path.read_text())
+        scenario.update({'building': 'building.geojson', 'structure': None, 'duration': 60})
+        scenario_path.write_text(json.dumps(scenario))
+
+        result = subprocess.run(
+            [sys.executable, '-m', 'run_anuga.cli', 'run', str(small_test_copy)],
+            capture_output=True, text=True, timeout=600,
+        )
+        output = result.stdout + result.stderr
+        assert result.returncode == 0, output[-3000:]
+        assert list(small_test_copy.glob('outputs_*/*.sww')), 'run_sim produced no .sww'
+        run_log = '\n'.join(p.read_text() for p in small_test_copy.glob('outputs_*/run_anuga_*.log'))
+        tags_line = next(line for line in run_log.splitlines() if 'Boundary tags ==' in line)
+        assert "'reflective'" in tags_line  # the building hole really reached the domain

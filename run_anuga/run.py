@@ -96,6 +96,7 @@ def make_default_boundary_maps(anuga, domain):
 
 def bind_boundary_tags(tags, boundary_maps):
     """Map each mesh boundary tag to its boundary object; name any unknown tag."""
+    tags = list(tags)
     unknown = sorted({tag for tag in tags if tag not in boundary_maps})
     if unknown:
         raise ValueError(
