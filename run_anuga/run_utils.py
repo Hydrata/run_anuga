@@ -51,6 +51,21 @@ def is_dir_check(path):
         raise argparse.ArgumentTypeError(f"readable_dir:{path} is not a valid path")
 
 
+# TASK-3586: new input key -> the key a pre-rename package used for the same file.
+LEGACY_INPUT_KEYS = {'building': 'structure'}
+
+
+def _load_input_file(input_data, package_dir, data_type, filename):
+    """Read inputs/<filename> into input_data[data_type] (+ its _filename) when present."""
+    if not filename:
+        return
+    filepath = os.path.join(package_dir, f"inputs/{filename}")
+    if os.path.isfile(filepath):
+        input_data[f'{data_type}_filename'] = filepath
+        with open(filepath) as f:
+            input_data[data_type] = json.load(f)
+
+
 def _load_package_data(package_dir):
     """Load and validate scenario config + input files. Pure Python, no geo deps."""
     if not os.path.isfile(os.path.join(package_dir, 'scenario.json')):
@@ -81,7 +96,7 @@ def _load_package_data(package_dir):
         'friction',
         'inflow',
         'rainfall',
-        'structure',
+        'building',
         'mesh_region',
         'network',
         'catchment',
@@ -90,11 +105,25 @@ def _load_package_data(package_dir):
         'breakline',  # TASK-1271 W4.3 — breaklines for mesh edge conformance
     ]
     for data_type in data_types:
-        filepath = os.path.join(package_dir, f"inputs/{input_data['scenario_config'].get(data_type)}")
-        if input_data['scenario_config'].get(data_type) and os.path.isfile(filepath):
-            input_data[f'{data_type}_filename'] = filepath
-            with open(filepath) as f:
-                input_data[data_type] = json.load(f)
+        _load_input_file(input_data, package_dir, data_type, input_data['scenario_config'].get(data_type))
+
+    # TASK-3586: the building-footprint layer was called 'structure' before the
+    # rename. A package built pre-rename (stored on S3 / a run directory) still
+    # carries the file under that key; read it as 'building' so holes, Mannings
+    # patches and Raised heights are identical for both keys.
+    for new_key, legacy_key in LEGACY_INPUT_KEYS.items():
+        legacy_filename = input_data['scenario_config'].get(legacy_key)
+        if new_key not in input_data and legacy_filename:
+            logger.warning(
+                f"scenario.json uses the legacy '{legacy_key}' key for the {new_key} layer "
+                f"({legacy_filename}); reading it as '{new_key}'"
+            )
+            _load_input_file(input_data, package_dir, new_key, legacy_filename)
+        # Deprecated read alias (remove with TASK-3587): a web box still on a
+        # pre-rename hydrata reads the layer as input_data['structure']. The
+        # same object, so nothing downstream sees two inputs.
+        if new_key in input_data:
+            input_data[legacy_key] = input_data[new_key]
 
     elevation_filepath = os.path.join(package_dir, f"inputs/{input_data['scenario_config'].get('elevation')}")
     if input_data['scenario_config'].get('elevation') and os.path.isfile(elevation_filepath):
@@ -196,16 +225,16 @@ def get_utm_geo_reference(epsg_str):
 
 
 def create_anuga_mesh(input_data):
-    """Create the ANUGA mesh from boundary, regions, structures and breaklines.
+    """Create the ANUGA mesh from boundary, regions, buildings and breaklines.
 
-    Structure method routing (ADR-4, TASK-1269/1270):
+    Building method routing (ADR-4, TASK-1269/1270):
       Reflective → interior_hole with reflective wall tags (the mesh void path).
                    Sliver-merge applied before passing to Triangle (TASK-1270,
                    ported from run_anuga 5604fc1). NO DEM burn for Reflective.
       Mannings   → friction zone only; not a mesh hole; handled in make_frictions.
       Raised     → post-mesh elevation correction (handled in run.py after meshing).
 
-    The universal gdal_rasterize burn that previously hit EVERY structure is
+    The universal gdal_rasterize burn that previously hit EVERY building is
     REMOVED here. Only the Raised method applies an elevation change, and that
     happens post-mesh as a Domain quantity correction (TASK-1299).
 
@@ -259,7 +288,7 @@ def create_anuga_mesh(input_data):
     # speed stability heuristic. Feeding Triangle ABSOLUTE-UTM coordinates (no local
     # offset) reproduces the field-validated result exactly (ARR 5/5, stable).
     #
-    # EXCEPTION: when interior holes are present (Reflective structures), KEEP the
+    # EXCEPTION: when interior holes are present (Reflective buildings), KEEP the
     # local offset — absolute coordinates near the hole boundaries produced degenerate
     # near-zero-area triangles in the 5604fc1 investigation. Holes are rare in
     # rain-on-grid; the common no-hole path is what the benchmark validates.
@@ -280,7 +309,7 @@ def create_anuga_mesh(input_data):
         f"creating anuga_mesh (mesh_geo_reference="
         f"{'absolute-UTM' if mesh_geo_reference is not None else 'local-offset'})"
     )
-    # TASK-1270: universal burn removed. Only Raised structures apply a height
+    # TASK-1270: universal burn removed. Only Raised buildings apply a height
     # change (post-mesh, in run.py). Reflective is a mesh void; Mannings is friction-only.
     def _build_mesh(bl):
         return anuga.pmesh.mesh_interface.create_mesh_from_regions(
@@ -544,7 +573,7 @@ def _ring_to_coords(geom):
 
 
 def make_interior_holes_and_tags(input_data):
-    """Build interior mesh holes for Reflective structures.
+    """Build interior mesh holes for Reflective buildings.
 
     ADR-4 / TASK-1270 routing:
       Reflective → interior mesh hole with reflective wall tags.
@@ -556,16 +585,16 @@ def make_interior_holes_and_tags(input_data):
       Raised     → post-mesh elevation; skipped here.
     """
     raw_polys = []
-    if input_data.get('structure'):
-        for structure in input_data['structure']['features']:
-            method = structure.get('properties', {}).get('method')
+    if input_data.get('building'):
+        for building in input_data['building']['features']:
+            method = building.get('properties', {}).get('method')
             if method == 'Reflective':
-                raw_polys.append(_extract_polygon_outer_ring(structure.get('geometry')))
+                raw_polys.append(_extract_polygon_outer_ring(building.get('geometry')))
             elif method in ('Mannings', 'Raised'):
                 pass  # handled elsewhere
             else:
                 if method is not None:
-                    logger.error(f"Unknown structure method: {method!r} — skipping")
+                    logger.error(f"Unknown building method: {method!r} — skipping")
 
     if not raw_polys:
         return None, None
@@ -617,33 +646,33 @@ def compute_yieldstep(duration):
 def make_frictions(input_data):
     # Raster precedence (TASK-830 / TASK-1259): a friction raster sets the
     # base Manning's value at full raster resolution across the whole domain.
-    # Per-structure Manning's-n patches (method='Mannings') must STILL overlay
+    # Per-building Manning's-n patches (method='Mannings') must STILL overlay
     # the raster — ANUGA's composite_quantity_setting_function evaluates entries
-    # in order, last-match wins, so appending the structure patches AFTER the
+    # in order, last-match wins, so appending the building patches AFTER the
     # raster entry applies them on top.
     #
-    # Old behaviour (pre-TASK-1259): early-return dropped all structure patches
-    # when a raster was present.  New behaviour: raster first, then structure
+    # Old behaviour (pre-TASK-1259): early-return dropped all building patches
+    # when a raster was present.  New behaviour: raster first, then building
     # patches, no 'All' fallback (raster already covers the whole domain).
     #
-    # Without a raster: polygon-only path unchanged (structure + friction polys
+    # Without a raster: polygon-only path unchanged (building + friction polys
     # + 'All' fallback).
     # See docs/reports/2026-05-13-q-1-task-830-friction-raster-attachment.html.
     frictions = list()
     if input_data.get('friction_raster_filename'):
         frictions.append(['Extent', input_data['friction_raster_filename']])
-        # Overlay per-structure Manning's-n patches on top of the raster.
-        if input_data.get('structure'):
-            for structure in input_data['structure']['features']:
-                if structure.get('properties').get('method') == 'Mannings':
-                    structure_polygon = _extract_polygon_outer_ring(structure.get('geometry'))
-                    frictions.append((structure_polygon, defaults.BUILDING_MANNINGS_N,))
+        # Overlay per-building Manning's-n patches on top of the raster.
+        if input_data.get('building'):
+            for building in input_data['building']['features']:
+                if building.get('properties').get('method') == 'Mannings':
+                    building_polygon = _extract_polygon_outer_ring(building.get('geometry'))
+                    frictions.append((building_polygon, defaults.BUILDING_MANNINGS_N,))
         return frictions
-    if input_data.get('structure'):
-        for structure in input_data['structure']['features']:
-            if structure.get('properties').get('method') == 'Mannings':
-                structure_polygon = _extract_polygon_outer_ring(structure.get('geometry'))
-                frictions.append((structure_polygon, defaults.BUILDING_MANNINGS_N,))
+    if input_data.get('building'):
+        for building in input_data['building']['features']:
+            if building.get('properties').get('method') == 'Mannings':
+                building_polygon = _extract_polygon_outer_ring(building.get('geometry'))
+                frictions.append((building_polygon, defaults.BUILDING_MANNINGS_N,))
     if input_data.get('friction'):
         for friction in input_data['friction']['features']:
             friction_polygon = _extract_polygon_outer_ring(friction.get('geometry'))
@@ -654,37 +683,37 @@ def make_frictions(input_data):
 
 
 def make_raised_elevation_pairs(input_data):
-    """Build (polygon, raised_height) pairs for Raised-method structures.
+    """Build (polygon, raised_height) pairs for Raised-method buildings.
 
     TASK-1299: The Raised method applies a post-mesh elevation correction to
     building footprints. This replaces the old universal +5m DEM-burn: only
-    structures with method='Raised' get an elevation adjustment, and the height
-    is per-structure (defaulting to Scenario.default_raised_height via the
+    buildings with method='Raised' get an elevation adjustment, and the height
+    is per-building (defaulting to Scenario.default_raised_height via the
     scenario_config key 'default_raised_height').
 
     Returns a list of (polygon_coords, height_m) pairs, empty if no Raised
-    structures are present. Caller applies these via
+    buildings are present. Caller applies these via
     composite_quantity_setting_function AFTER the base DEM elevation is seated.
     """
     default_raised_height = float(
         input_data.get('scenario_config', {}).get('default_raised_height', defaults.BUILDING_BURN_HEIGHT_M)
     )
     pairs = []
-    if not input_data.get('structure'):
+    if not input_data.get('building'):
         return pairs
-    for structure in input_data['structure']['features']:
-        method = structure.get('properties', {}).get('method')
+    for building in input_data['building']['features']:
+        method = building.get('properties', {}).get('method')
         if method != 'Raised':
             continue
-        height = structure.get('properties', {}).get('raised_height')
+        height = building.get('properties', {}).get('raised_height')
         height = float(height) if height is not None else default_raised_height
-        polygon = _extract_polygon_outer_ring(structure.get('geometry'))
+        polygon = _extract_polygon_outer_ring(building.get('geometry'))
         pairs.append((polygon, height))
     return pairs
 
 
 def apply_raised_elevation_correction(domain, raised_pairs):
-    """Add per-structure Raised heights to a built domain's centroid elevation.
+    """Add per-building Raised heights to a built domain's centroid elevation.
 
     TASK-2149 (F1): the point-in-polygon test MUST use ABSOLUTE centroid coordinates
     — make_raised_elevation_pairs returns polygons in absolute UTM. Testing LOCAL
@@ -694,7 +723,7 @@ def apply_raised_elevation_correction(domain, raised_pairs):
     applied. Using absolute=True makes the correction offset-independent — it works on
     both the absolute-UTM no-hole mesh and the local-offset hole mesh.
 
-    Returns the number of Raised structures that matched at least one centroid.
+    Returns the number of Raised buildings that matched at least one centroid.
     """
     from anuga.geometry.polygon import inside_polygon
     centroids = domain.get_centroid_coordinates(absolute=True)
@@ -719,7 +748,7 @@ def apply_negative_depth_protection(domain):
     ANUGA's serial evolve calls protect_against_infinitesimal_and_negative_
     heights() before any operator's first ``__call__``, so a serial
     Inlet_operator never sees a negative inlet volume even when a Raised
-    structure (or any bed cell above stage=0.0) leaves the inlet region
+    building (or any bed cell above stage=0.0) leaves the inlet region
     dry-above-stage. The PARALLEL path's Parallel_Inlet_operator asserts on that
     negative volume at the FIRST evolve step — BEFORE the scattered sub-domains
     ever reach protect (run 1283: MPI_ABORT rank 10,
@@ -729,7 +758,7 @@ def apply_negative_depth_protection(domain):
 
     It is idempotent with evolve's own protect — a successful run is unchanged;
     the only observable effect is preventing that first-step assert. The
-    gn_anuga build-time guard (assert_inflow_does_not_overlap_raised_structure,
+    gn_anuga build-time guard (assert_inflow_does_not_overlap_raised_building,
     epic 2204 W4) blocks the KNOWN geometry conflict at build time; this closes
     the residual class the guard cannot see — any mechanism that leaves an inlet
     region dry-above-stage.
@@ -2136,10 +2165,10 @@ def setup_logger(input_data, username=None, password=None, batch_number=1,
     return logger
 
 
-def burn_structures_into_raster(structures_filename, raster_filename, backup=True):
+def burn_buildings_into_raster(buildings_filename, raster_filename, backup=True):
     if backup:
         shutil.copyfile(raster_filename, f"{raster_filename[:-4]}_original.tif")
-    output = subprocess.run(["gdal_rasterize", "-burn", str(defaults.BUILDING_BURN_HEIGHT_M), "-add", structures_filename, raster_filename], capture_output=True, universal_newlines=True)
+    output = subprocess.run(["gdal_rasterize", "-burn", str(defaults.BUILDING_BURN_HEIGHT_M), "-add", buildings_filename, raster_filename], capture_output=True, universal_newlines=True)
     print(output)
     if output.returncode != 0:
         raise RuntimeError(output.stderr)

@@ -1,10 +1,10 @@
-"""TASK-1270 / W4.2 — Validation test: Reflective structures as interior mesh holes.
+"""TASK-1270 / W4.2 — Validation test: Reflective buildings as interior mesh holes.
 
 Tests that:
 1. make_interior_holes_and_tags routes method='Reflective' to the interior-hole path.
 2. The sliver-merge fix (ported from run_anuga 5604fc1) is applied — min edge length
    is above the sliver threshold (0.5m) when adjacent buildings are passed.
-3. create_anuga_mesh produces a valid mesh with Reflective structures as interior voids.
+3. create_anuga_mesh produces a valid mesh with Reflective buildings as interior voids.
 4. A short timestep CFL check confirms the mesh doesn't collapse.
 
 Design: uses a synthetic 200m x 200m domain (EPSG:28355) with two adjacent
@@ -74,8 +74,8 @@ BUILDING_B = [
 MIN_EDGE_LENGTH_M = 0.5
 
 
-def _make_structure_geojson(rings, method='Reflective'):
-    """Build a minimal GeoJSON FeatureCollection of polygon structures."""
+def _make_building_geojson(rings, method='Reflective'):
+    """Build a minimal GeoJSON FeatureCollection of polygon buildings."""
     return {
         'type': 'FeatureCollection',
         'features': [
@@ -115,8 +115,8 @@ class TestMakeInteriorHolesReflective:
     """TASK-1270: make_interior_holes_and_tags routes Reflective to the hole path."""
 
     def test_reflective_produces_holes(self):
-        """A single Reflective structure produces one interior hole."""
-        input_data = {'structure': _make_structure_geojson([BUILDING_A])}
+        """A single Reflective building produces one interior hole."""
+        input_data = {'building': _make_building_geojson([BUILDING_A])}
         holes, tags = make_interior_holes_and_tags(input_data)
         assert holes is not None, "Expected interior holes, got None"
         assert len(holes) >= 1
@@ -125,7 +125,7 @@ class TestMakeInteriorHolesReflective:
 
     def test_adjacent_buildings_merge_reduces_sliver(self):
         """Two adjacent buildings sharing a vertex merge into ≤ 2 holes (sliver-safe)."""
-        input_data = {'structure': _make_structure_geojson([BUILDING_A, BUILDING_B])}
+        input_data = {'building': _make_building_geojson([BUILDING_A, BUILDING_B])}
         holes, tags = make_interior_holes_and_tags(input_data)
         assert holes is not None
         # The two touching squares MUST merge to fewer than 2 holes
@@ -133,20 +133,20 @@ class TestMakeInteriorHolesReflective:
         assert len(holes) <= 2, f"Expected ≤2 merged holes, got {len(holes)}"
 
     def test_mannings_skipped(self):
-        """Mannings structures produce no holes."""
-        input_data = {'structure': _make_structure_geojson([BUILDING_A], method='Mannings')}
+        """Mannings buildings produce no holes."""
+        input_data = {'building': _make_building_geojson([BUILDING_A], method='Mannings')}
         holes, tags = make_interior_holes_and_tags(input_data)
         assert holes is None
 
     def test_raised_skipped(self):
-        """Raised structures produce no holes (post-mesh path)."""
-        input_data = {'structure': _make_structure_geojson([BUILDING_A], method='Raised')}
+        """Raised buildings produce no holes (post-mesh path)."""
+        input_data = {'building': _make_building_geojson([BUILDING_A], method='Raised')}
         holes, tags = make_interior_holes_and_tags(input_data)
         assert holes is None
 
     def test_hole_tags_are_reflective(self):
         """Each hole is tagged with 'reflective' wall indices."""
-        input_data = {'structure': _make_structure_geojson([BUILDING_A])}
+        input_data = {'building': _make_building_geojson([BUILDING_A])}
         holes, tags = make_interior_holes_and_tags(input_data)
         assert holes is not None
         for i, tag in enumerate(tags):
@@ -158,7 +158,7 @@ class TestMakeInteriorHolesReflective:
 
 
 # ---------------------------------------------------------------------------
-# Integration test: create_anuga_mesh with Reflective structures
+# Integration test: create_anuga_mesh with Reflective buildings
 # ---------------------------------------------------------------------------
 
 class TestReflectiveMeshIntegration:
@@ -173,7 +173,7 @@ class TestReflectiveMeshIntegration:
             "boundary_tags": BOUNDARY_TAGS,
         }
         if rings:
-            input_data['structure'] = _make_structure_geojson(rings)
+            input_data['building'] = _make_building_geojson(rings)
         return input_data
 
     def test_mesh_with_reflective_holes_is_sliver_safe(self):
@@ -211,7 +211,7 @@ class TestReflectiveMeshIntegration:
             )
 
     def test_no_structures_produces_valid_mesh(self):
-        """Baseline: mesh without structures is also valid."""
+        """Baseline: mesh without buildings is also valid."""
         with tempfile.TemporaryDirectory() as tmp_dir:
             input_data = self._build_input_data(tmp_dir, rings=None)
             _, anuga_mesh = create_anuga_mesh(input_data)

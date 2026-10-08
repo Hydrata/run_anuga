@@ -96,11 +96,11 @@ class TestMakeFrictionsEmptyAndNone:
 
     def test_mannings_structure_empty_polygon_yields_empty_ring(self):
         from run_anuga.run_utils import make_frictions
-        input_data = {'structure': {'features': [
+        input_data = {'building': {'features': [
             _empty_polygon_feature(kind='Polygon', properties={'method': 'Mannings'}),
         ]}}
         result = make_frictions(input_data)
-        # First entry is the empty Mannings structure polygon
+        # First entry is the empty Mannings building polygon
         assert result[0][0] == []
 
     def test_friction_no_features_returns_only_default_all(self):
@@ -155,7 +155,7 @@ class TestMakeInteriorHolesEmptyAndNone:
     def test_reflective_polygon_yields_reflective_tag(self):
         """Reflective polygon → one hole with reflective wall tags."""
         from run_anuga.run_utils import make_interior_holes_and_tags
-        input_data = {'structure': {'features': [
+        input_data = {'building': {'features': [
             _polygon_feature(properties={'method': 'Reflective'}),
         ]}}
         holes, tags = make_interior_holes_and_tags(input_data)
@@ -173,7 +173,7 @@ class TestMakeInteriorHolesEmptyAndNone:
     def test_multipolygon_reflective_method_yields_hole(self):
         """Reflective MultiPolygon → at least one hole."""
         from run_anuga.run_utils import make_interior_holes_and_tags
-        input_data = {'structure': {'features': [
+        input_data = {'building': {'features': [
             _multipolygon_feature(properties={'method': 'Reflective'}),
         ]}}
         holes, tags = make_interior_holes_and_tags(input_data)
@@ -182,9 +182,9 @@ class TestMakeInteriorHolesEmptyAndNone:
         assert 'reflective' in tags[0]
 
     def test_mannings_structure_is_skipped(self):
-        """Mannings structures produce no holes (friction-only)."""
+        """Mannings buildings produce no holes (friction-only)."""
         from run_anuga.run_utils import make_interior_holes_and_tags
-        input_data = {'structure': {'features': [
+        input_data = {'building': {'features': [
             _polygon_feature(properties={'method': 'Mannings'}),
         ]}}
         holes, tags = make_interior_holes_and_tags(input_data)
@@ -192,9 +192,9 @@ class TestMakeInteriorHolesEmptyAndNone:
         assert tags is None
 
     def test_raised_structure_is_skipped(self):
-        """Raised structures produce no holes (post-mesh elevation)."""
+        """Raised buildings produce no holes (post-mesh elevation)."""
         from run_anuga.run_utils import make_interior_holes_and_tags
-        input_data = {'structure': {'features': [
+        input_data = {'building': {'features': [
             _polygon_feature(properties={'method': 'Raised'}),
         ]}}
         holes, tags = make_interior_holes_and_tags(input_data)
@@ -202,7 +202,7 @@ class TestMakeInteriorHolesEmptyAndNone:
         assert tags is None
 
     def test_no_structures_returns_none(self):
-        """No structure input → None, None."""
+        """No building input → None, None."""
         from run_anuga.run_utils import make_interior_holes_and_tags
         holes, tags = make_interior_holes_and_tags({})
         assert holes is None
@@ -214,7 +214,7 @@ class TestMakeInteriorHolesEmptyAndNone:
         # Two unit squares sharing the edge x=5 (they touch).
         square_a = [[0.0, 0.0], [5.0, 0.0], [5.0, 5.0], [0.0, 5.0], [0.0, 0.0]]
         square_b = [[5.0, 0.0], [10.0, 0.0], [10.0, 5.0], [5.0, 5.0], [5.0, 0.0]]
-        input_data = {'structure': {'features': [
+        input_data = {'building': {'features': [
             _polygon_feature('a', ring=square_a, properties={'method': 'Reflective'}),
             _polygon_feature('b', ring=square_b, properties={'method': 'Reflective'}),
         ]}}

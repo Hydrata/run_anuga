@@ -1,4 +1,4 @@
-"""Regression tests for Raised-structure elevation seating.
+"""Regression tests for Raised-building elevation seating.
 
 TASK-2149 (F1): apply_raised_elevation_correction must use ABSOLUTE centroid
 coordinates so the point-in-polygon test matches the absolute-UTM Raised polygons
@@ -19,7 +19,7 @@ def _domain_with_offset(xll, yll):
     """A 100x100 m local-coordinate mesh with an explicit geo_reference offset.
 
     (xll, yll) != (0, 0) reproduces the local-offset regime in which the old
-    absolute=False code silently dropped Raised structures.
+    absolute=False code silently dropped Raised buildings.
     """
     import anuga
     points, vertices, boundary = anuga.rectangular_cross(20, 20, len1=100.0, len2=100.0)
@@ -46,7 +46,7 @@ class TestApplyRaisedElevationCorrection:
         domain = _domain_with_offset(xll, yll)
         applied = apply_raised_elevation_correction(domain, [(_abs_poly(xll, yll), 5.0)])
         elev = domain.get_quantity("elevation").get_values(location="centroids")
-        assert applied == 1, "Raised structure matched no centroids — absolute=False regression"
+        assert applied == 1, "Raised building matched no centroids — absolute=False regression"
         assert elev.max() == pytest.approx(15.0), "footprint centroids not raised by 5 m"
         assert elev.min() == pytest.approx(10.0), "outside-footprint centroids must be untouched"
         assert (elev > 14.9).sum() > 0 and (elev < 10.1).sum() > 0
@@ -62,7 +62,7 @@ class TestApplyRaisedElevationCorrection:
         assert elev.min() == pytest.approx(10.0)
 
     def test_per_structure_heights(self):
-        """Distinct heights applied per structure."""
+        """Distinct heights applied per building."""
         from run_anuga.run_utils import apply_raised_elevation_correction
         xll, yll = 382000.0, 6354000.0
         domain = _domain_with_offset(xll, yll)
@@ -80,4 +80,4 @@ class TestApplyRaisedElevationCorrection:
         assert apply_raised_elevation_correction(domain, []) == 0
         assert apply_raised_elevation_correction(domain, [([], 5.0)]) == 0
         elev = domain.get_quantity("elevation").get_values(location="centroids")
-        assert elev.max() == pytest.approx(10.0), "no structure should have changed elevation"
+        assert elev.max() == pytest.approx(10.0), "no building should have changed elevation"

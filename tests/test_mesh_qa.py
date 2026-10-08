@@ -24,7 +24,7 @@ def _make_fake_mesh(triangle_coords):
     """Build a fake anuga mesh object from a list of (v0, v1, v2) coordinate triples.
 
     Each triple is ((x0,y0),(x1,y1),(x2,y2)).  We derive the vertices/triangles
-    arrays exactly like the real ANUGA tri_mesh structure.
+    arrays exactly like the real ANUGA tri_mesh building.
     """
     all_verts = []
     triangles = []

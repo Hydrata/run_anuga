@@ -56,13 +56,13 @@ class TestLoadPackageData:
     def test_optional_inputs_absent(self, scenario_package):
         data = _load_package_data(str(scenario_package))
         assert "friction" not in data
-        assert "structure" not in data
+        assert "building" not in data
 
     def test_optional_inputs_present(self, scenario_package_full):
         data = _load_package_data(str(scenario_package_full))
         assert "friction" in data
         assert "inflow" in data
-        assert "structure" in data
+        assert "building" in data
 
     def test_resolution_from_config(self, scenario_package):
         # Scenario has resolution: 10 via minimal_package fixture doesn't set it,

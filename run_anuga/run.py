@@ -74,6 +74,38 @@ _MULTIPROCESSOR_OPENMP = 1
 _MULTIPROCESSOR_GPU = 2
 
 
+def make_default_boundary_maps(anuga, domain):
+    """Boundary objects keyed by every tag a Hydrata mesh can carry.
+
+    TASK-3590: Reflective building holes are tagged ``'reflective'`` (lowercase)
+    by run_utils.make_interior_holes_and_tags, while external boundary features
+    use the capitalised ``'Reflective'``. Both bind to a Reflective_boundary;
+    without the lowercase key every run with a Reflective building died at
+    set_boundary with KeyError: 'reflective'.
+    """
+    return {
+        'exterior': anuga.Dirichlet_boundary([0, 0, 0]),
+        'interior': anuga.Reflective_boundary(domain),
+        'Dirichlet': anuga.Dirichlet_boundary([0, 0, 0]),
+        'Reflective': anuga.Reflective_boundary(domain),
+        'reflective': anuga.Reflective_boundary(domain),
+        'Transmissive': anuga.Transmissive_boundary(domain),
+        'ghost': None
+    }
+
+
+def bind_boundary_tags(tags, boundary_maps):
+    """Map each mesh boundary tag to its boundary object; name any unknown tag."""
+    tags = list(tags)
+    unknown = sorted({tag for tag in tags if tag not in boundary_maps})
+    if unknown:
+        raise ValueError(
+            f"mesh boundary tag(s) {unknown} have no boundary condition; "
+            f"known tags: {sorted(boundary_maps)}"
+        )
+    return {tag: boundary_maps[tag] for tag in tags}
+
+
 def _resolve_multiprocessor_mode(input_data):
     """Resolve multiprocessor_mode: env OVERRIDES scenario.json (TASK-2197).
 
@@ -426,21 +458,21 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
                 )
                 domain.set_quantity('elevation', elevation_function, verbose=False, alpha=0.99, location='centroids')
 
-            # TASK-1299: post-mesh Raised structure elevation correction.
-            # Apply per-structure height additions AFTER the base DEM is seated.
-            # Only structures with method='Raised' are modified; Reflective and
+            # TASK-1299: post-mesh Raised building elevation correction.
+            # Apply per-building height additions AFTER the base DEM is seated.
+            # Only buildings with method='Raised' are modified; Reflective and
             # Mannings are untouched (Reflective is a mesh void; Mannings is friction).
             # This replaces the old universal +5m gdal_rasterize burn (removed in 1270).
             raised_pairs = make_raised_elevation_pairs(input_data)
             if raised_pairs:
-                logger.critical(f"Applying raised elevation for {len(raised_pairs)} Raised structure(s)")
+                logger.critical(f"Applying raised elevation for {len(raised_pairs)} Raised building(s)")
                 try:
                     # TASK-2149 F1: seat Raised heights via ABSOLUTE centroids so the
                     # point-in-polygon test matches the absolute-UTM Raised polygons
                     # regardless of the mesh geo_reference offset (previously absolute=False
-                    # silently dropped every Raised structure on any local-offset mesh).
+                    # silently dropped every Raised building on any local-offset mesh).
                     applied = apply_raised_elevation_correction(domain, raised_pairs)
-                    logger.critical(f"Raised elevation applied for {applied}/{len(raised_pairs)} structure(s)")
+                    logger.critical(f"Raised elevation applied for {applied}/{len(raised_pairs)} building(s)")
                 except Exception as e:
                     logger.error(f"Failed to apply raised elevation: {e} — continuing without Raised correction")
 
@@ -455,7 +487,7 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
             frictions = make_frictions(input_data)
             # PRE-FLIGHT (TASK-1138): only a friction RASTER is nodata-checkable.
             # make_frictions (TASK-1259) returns a list that merges the optional
-            # ['Extent', raster] pair with any per-structure Manning's-n polygon
+            # ['Extent', raster] pair with any per-building Manning's-n polygon
             # patches; the next() below extracts the raster pair (if present) to
             # nodata-check it. composite_quantity_setting_function below uses
             # anuga's default nan_treatment='exception'.
@@ -483,7 +515,7 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
 
             # TASK-2226 — defense-in-depth for the run-1283 negative-inlet-volume
             # class. Re-run ANUGA's own protection on the whole rank-0 domain,
-            # AFTER the Raised-structure correction + stage=0.0 init and BEFORE
+            # AFTER the Raised-building correction + stage=0.0 init and BEFORE
             # distribute(), so the PARALLEL Parallel_Inlet_operator never asserts
             # on a negative inlet volume at the first evolve step (the serial path
             # already got this for free from evolve). Idempotent with evolve's own
@@ -533,14 +565,7 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
                 Inlet_operator=Inlet_operator,
                 defaults_module=defaults,
             )
-        default_boundary_maps = {
-            'exterior': anuga.Dirichlet_boundary([0, 0, 0]),
-            'interior': anuga.Reflective_boundary(domain),
-            'Dirichlet': anuga.Dirichlet_boundary([0, 0, 0]),
-            'Reflective': anuga.Reflective_boundary(domain),
-            'Transmissive': anuga.Transmissive_boundary(domain),
-            'ghost': None
-        }
+        default_boundary_maps = make_default_boundary_maps(anuga, domain)
         # Build a 'Time' boundary entry only when at least one external
         # boundary feature carries boundary='Time'. The per-feature `data`
         # has already been resolved server-side by Boundary.make_file —
@@ -558,10 +583,9 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
             default_boundary_maps['Time'] = anuga.Time_boundary(
                 domain=domain, function=time_function,
             )
-        boundaries = dict()
-        for tag in domain.boundary.values():
-            boundaries[tag] = default_boundary_maps[tag]
-        domain.set_boundary(boundaries)
+        domain.set_boundary(
+            bind_boundary_tags(domain.boundary.values(), default_boundary_maps)
+        )
 
         # TASK-1954 (epic 1952): GPU-mode flag — read multiprocessor_mode from
         # scenario.json (default 1 = OpenMP, preserves today's behaviour exactly).

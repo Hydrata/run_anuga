@@ -114,7 +114,7 @@ class TestMakeFrictions:
         assert result[0][1] == 0.03
 
     def test_mannings_structure_multipolygon_returns_2d_ring(self):
-        input_data = {'structure': {'features': [{
+        input_data = {'building': {'features': [{
             'geometry': _multipolygon(),
             'properties': {'method': 'Mannings'},
         }]}}
@@ -153,7 +153,7 @@ class TestMakeInteriorHolesAndTags:
     # simplify the coords come back as tuples, so we compare via tuple-conversion.
 
     def test_reflective_polygon_yields_hole_with_tag(self):
-        input_data = {'structure': {'features': [{
+        input_data = {'building': {'features': [{
             'geometry': _polygon(),
             'properties': {'method': 'Reflective'},
         }]}}
@@ -164,7 +164,7 @@ class TestMakeInteriorHolesAndTags:
         assert 'reflective' in tags[0]
 
     def test_reflective_multipolygon_yields_hole_with_tag(self):
-        input_data = {'structure': {'features': [{
+        input_data = {'building': {'features': [{
             'geometry': _multipolygon(),
             'properties': {'method': 'Reflective'},
         }]}}
@@ -174,7 +174,7 @@ class TestMakeInteriorHolesAndTags:
         assert tags is not None
 
     def test_mannings_yields_none(self):
-        input_data = {'structure': {'features': [{
+        input_data = {'building': {'features': [{
             'geometry': _polygon(),
             'properties': {'method': 'Mannings'},
         }]}}
@@ -184,12 +184,12 @@ class TestMakeInteriorHolesAndTags:
 
 
 class TestMakeRaisedElevationPairs:
-    """TASK-1299: make_raised_elevation_pairs routes Raised structures to post-mesh path."""
+    """TASK-1299: make_raised_elevation_pairs routes Raised buildings to post-mesh path."""
 
     def test_raised_structure_returns_pair_with_default_height(self):
-        """Raised structure with no per-structure height uses scenario default."""
+        """Raised building with no per-building height uses scenario default."""
         input_data = {
-            'structure': {'features': [{
+            'building': {'features': [{
                 'geometry': _polygon(),
                 'properties': {'method': 'Raised'},
             }]},
@@ -202,9 +202,9 @@ class TestMakeRaisedElevationPairs:
         assert len(coords) > 0
 
     def test_raised_structure_per_structure_height_overrides_default(self):
-        """Per-structure raised_height overrides the scenario default."""
+        """Per-building raised_height overrides the scenario default."""
         input_data = {
-            'structure': {'features': [{
+            'building': {'features': [{
                 'geometry': _polygon(),
                 'properties': {'method': 'Raised', 'raised_height': 3.5},
             }]},
@@ -216,9 +216,9 @@ class TestMakeRaisedElevationPairs:
         assert height == 3.5
 
     def test_reflective_structure_produces_no_raised_pairs(self):
-        """Reflective structures are mesh holes; no post-mesh elevation correction."""
+        """Reflective buildings are mesh holes; no post-mesh elevation correction."""
         input_data = {
-            'structure': {'features': [{
+            'building': {'features': [{
                 'geometry': _polygon(),
                 'properties': {'method': 'Reflective'},
             }]},
@@ -228,9 +228,9 @@ class TestMakeRaisedElevationPairs:
         assert pairs == []
 
     def test_mannings_structure_produces_no_raised_pairs(self):
-        """Mannings structures are friction-only; no post-mesh elevation correction."""
+        """Mannings buildings are friction-only; no post-mesh elevation correction."""
         input_data = {
-            'structure': {'features': [{
+            'building': {'features': [{
                 'geometry': _polygon(),
                 'properties': {'method': 'Mannings'},
             }]},
@@ -240,14 +240,14 @@ class TestMakeRaisedElevationPairs:
         assert pairs == []
 
     def test_no_structure_returns_empty(self):
-        """No structures → empty list."""
+        """No buildings → empty list."""
         pairs = make_raised_elevation_pairs({})
         assert pairs == []
 
     def test_mixed_methods_only_raises_returned(self):
-        """Mixed structure methods → only Raised structures in pairs."""
+        """Mixed building methods → only Raised buildings in pairs."""
         input_data = {
-            'structure': {'features': [
+            'building': {'features': [
                 {'geometry': _polygon(), 'properties': {'method': 'Reflective'}},
                 {'geometry': _polygon(), 'properties': {'method': 'Raised', 'raised_height': 2.0}},
                 {'geometry': _polygon(), 'properties': {'method': 'Mannings'}},

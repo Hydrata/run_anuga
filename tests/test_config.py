@@ -43,7 +43,7 @@ class TestScenarioConfigDefaults:
             elevation="dem.tif",
             friction="friction.geojson",
             inflow="inflow.geojson",
-            structure="structure.geojson",
+            building="building.geojson",
             mesh_region="mesh.geojson",
             hydrology_status="complete",
             catchment="catchment.geojson",
