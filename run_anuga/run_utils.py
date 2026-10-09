@@ -1558,10 +1558,16 @@ def apply_inflows_to_domain(
         rain.__name__ = name
         return rain
 
-    def _merge_timeseries(name, rows):
+    def _merge_timeseries(name, rows, zero_after_last_block=False):
         """Merge a timeseries list of ``{timestamp, value}`` dicts into
         ``inflow_dataframe`` under column ``name``, ffill-aligned to the
         model's per-second timestamp index.
+
+        ``zero_after_last_block`` (TASK-3547, rainfall hyetographs): each row
+        is a block lasting until the next row, and the LAST block lasts the
+        series' own final interval (last_t - previous_t); after it ends the
+        rate is 0 instead of the last value held to the end of the run. A
+        one-row series has no interval to end on and stays a held rate.
         """
         nonlocal inflow_dataframe
         new_dataframe = pd.DataFrame(rows)
@@ -1618,6 +1624,14 @@ def apply_inflows_to_domain(
         # AFTER the all-NaN guard, which it would otherwise mask.
         inflow_dataframe[name] = inflow_dataframe[name].fillna(0.0)
 
+        # TASK-3547 (operator decision 08-10-26, option B) — a hyetograph's
+        # last block ends; it does not keep raining until the run ends.
+        if zero_after_last_block:
+            stamps = new_dataframe['timestamp'].drop_duplicates().sort_values()
+            if len(stamps) >= 2:
+                block_end = stamps.iloc[-1] + (stamps.iloc[-1] - stamps.iloc[-2])
+                inflow_dataframe.loc[inflow_dataframe['timestamp'] >= block_end, name] = 0.0
+
     for inflow_polygon in rainfall_inflow_polygons:
         polygon_name = inflow_polygon.get('id')
         data = inflow_polygon.get('properties').get('data')
@@ -1629,7 +1643,7 @@ def apply_inflows_to_domain(
             )
             continue
         if isinstance(data, list):
-            _merge_timeseries(polygon_name, data)
+            _merge_timeseries(polygon_name, data, zero_after_last_block=True)
         else:
             inflow_dataframe[polygon_name] = float(data)
         inflow_function = create_inflow_function(inflow_dataframe, polygon_name)

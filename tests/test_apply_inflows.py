@@ -244,3 +244,91 @@ def test_check_water_features_inside_outline_direct_call():
     )
     # D10: without rainfall the catchment is not checked
     check_water_features_inside_outline(outline, catchment_geojson=catchments)
+
+
+# ── TASK-3547 (epic 3483 W5): a rainfall hyetograph stops after its last block ──
+#
+# Operator decision 08-10-26 (option B): after a RAINFALL series' last row ends
+# (last_t + last_dt, the series' own final interval) the engine applies 0, not
+# the last value held to the end of the run. hydrology/design_storm.py writes
+# one row per block (value = block depth / block hours), so the old ffill turned
+# a "50 mm over 2 h" storm into 50 mm + 20 mm/h x 4 h inside a 6 h run. Inflow
+# hydrographs keep their ffill (a held base flow is the intended semantics).
+
+HOUR = 3600
+
+
+def _storm_rows(start, offsets_h, values):
+    from datetime import timedelta
+    return [
+        {'timestamp': (start + timedelta(hours=h)).isoformat(), 'value': v}
+        for h, v in zip(offsets_h, values)
+    ]
+
+
+def _apply_series(mocks, start, duration, rainfall=None, inflow=None):
+    input_data = _input_data(
+        rainfall_features=[_rainfall_feature('rain.storm', rainfall)] if rainfall is not None else None,
+        inflow_features=[_surface_feature('surf.hydro', inflow)] if inflow is not None else None,
+    )
+    return apply_inflows_to_domain(
+        input_data=input_data, domain=mocks['domain'], start=start, duration=duration,
+        Polygonal_rate_operator=mocks['Polygonal_rate_operator'],
+        Inlet_operator=mocks['Inlet_operator'],
+    )
+
+
+def _depth(fn, duration):
+    """Integral of a per-second rate (units/h) over the run, in units."""
+    return sum(float(fn(t)) for t in range(duration)) / HOUR
+
+
+def test_rainfall_storm_2h_inside_6h_run_applies_exactly_its_designed_depth(mocks, start):
+    fns = _apply_series(mocks, start, 6 * HOUR, rainfall=_storm_rows(start, [0, 1], [30.0, 20.0]))
+    rain = fns['rain.storm']
+    assert _depth(rain, 6 * HOUR) == pytest.approx(50.0)
+    assert float(rain(2 * HOUR - 1)) == 20.0, 'the last block still rains to its end'
+    assert float(rain(2 * HOUR)) == 0.0, 'rain is 0 once the last block ends'
+    assert float(rain(6 * HOUR)) == 0.0
+
+
+def test_rainfall_storm_starting_mid_run_is_zero_before_and_after(mocks, start):
+    fns = _apply_series(mocks, start, 6 * HOUR, rainfall=_storm_rows(start, [1, 2, 3], [10.0, 40.0, 10.0]))
+    rain = fns['rain.storm']
+    assert float(rain(HOUR - 1)) == 0.0
+    assert float(rain(4 * HOUR)) == 0.0
+    assert _depth(rain, 6 * HOUR) == pytest.approx(60.0)
+
+
+def test_rainfall_rows_out_of_order_still_end_after_the_last_block(mocks, start):
+    rows = _storm_rows(start, [1, 0], [20.0, 30.0])
+    fns = _apply_series(mocks, start, 6 * HOUR, rainfall=rows)
+    assert _depth(fns['rain.storm'], 6 * HOUR) == pytest.approx(50.0)
+
+
+def test_rainfall_series_longer_than_the_run_is_unchanged(mocks, start):
+    fns = _apply_series(mocks, start, 2 * HOUR, rainfall=_storm_rows(start, [0, 1, 2, 3], [5.0, 5.0, 5.0, 5.0]))
+    assert _depth(fns['rain.storm'], 2 * HOUR) == pytest.approx(10.0)
+
+
+def test_rainfall_single_row_series_keeps_its_held_value(mocks, start):
+    """One row has no interval to end on: it stays a held rate (as before)."""
+    fns = _apply_series(mocks, start, 2 * HOUR, rainfall=_storm_rows(start, [0], [7.0]))
+    assert float(fns['rain.storm'](2 * HOUR - 1)) == 7.0
+
+
+def test_inflow_hydrograph_still_holds_its_last_value(mocks, start):
+    """AC2 — inflow (Inlet_operator) series keep ffill semantics."""
+    fns = _apply_series(mocks, start, 6 * HOUR, inflow=_storm_rows(start, [0, 1], [3.0, 2.0]))
+    q = fns['surf.hydro']
+    assert float(q(2 * HOUR)) == 2.0
+    assert float(q(6 * HOUR)) == 2.0
+
+
+def test_rainfall_and_inflow_same_rows_differ_only_after_the_last_block(mocks, start):
+    rows = _storm_rows(start, [0, 1], [30.0, 20.0])
+    fns = _apply_series(mocks, start, 4 * HOUR, rainfall=rows, inflow=rows)
+    for t in (0, HOUR - 1, HOUR, 2 * HOUR - 1):
+        assert float(fns['rain.storm'](t)) == float(fns['surf.hydro'](t))
+    assert float(fns['rain.storm'](3 * HOUR)) == 0.0
+    assert float(fns['surf.hydro'](3 * HOUR)) == 20.0
