@@ -100,6 +100,12 @@ class TestRequiresCapability:
                 {"epsg": "EPSG:28355", "boundary": "b.geojson", "duration": 60, "requires": ["nonexistent"]}
             )
 
+    def test_null_requires_is_valid(self):
+        config = ScenarioConfig.model_validate(
+            {"epsg": "EPSG:28355", "boundary": "b.geojson", "duration": 60, "requires": None}
+        )
+        assert config.requires is None
+
     def test_package_load_refuses_unknown_capability(self, scenario_package):
         _set_scenario(scenario_package, requires=["nonexistent"])
         with pytest.raises(UnsupportedCapabilityError, match="'nonexistent'"):
@@ -235,6 +241,20 @@ class TestExchangeRegions:
         mesh = grid_mesh(321000.0, 5812000.0, 20, 20, 5.0)
         assert mesh.local_cell_edge((321032.0, 5812051.0)) == pytest.approx(5.0)
         assert mesh.local_cell_edge((320000.0, 5812051.0)) is None
+
+    def test_a_large_triangle_beside_a_fine_cluster_is_still_found(self):
+        """The nearest centroids all belong to a fine cluster outside the big
+        triangle that really contains the point: the full-scan fallback finds it."""
+        nodes = [(0.0, 0.0), (10.0, 0.0), (0.0, 10.0)]
+        triangles = [(0, 1, 2)]
+        for k in range(80):
+            x = 0.2 + 0.01 * k
+            base = len(nodes)
+            nodes += [(x, -0.2), (x + 0.005, -0.2), (x, -0.195)]
+            triangles.append((base, base + 1, base + 2))
+        mesh = MeshView(nodes, triangles)
+        assert mesh.containing_triangle((0.5, 0.1)) == 0
+        assert mesh.local_cell_edge((0.5, 0.1)) == pytest.approx(10.0)
 
     def test_regions_sit_on_the_approach_side_with_at_least_four_triangles(self):
         mesh = grid_mesh(321000.0, 5812000.0, 20, 20, 5.0)

@@ -12,7 +12,7 @@ map-editor insert that sent explicit NULLs) still gets the documented values.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
 from run_anuga.culverts import constants
@@ -20,14 +20,6 @@ from run_anuga.culverts import constants
 
 class CulvertBuildError(ValueError):
     """A culvert cannot be built into the model; the message says why, in plain words."""
-
-
-#: Every D10 field, in the order the metrics/log lines use.
-D10_FIELDS = (
-    "name", "shape", "width_m", "height_m", "diameter_m", "upstream_invert_m",
-    "downstream_invert_m", "barrels", "wall_thickness_m", "entrance_type", "material",
-    "manning_n", "blockage_pct", "length_override_m", "description",
-)
 
 
 @dataclass
@@ -49,7 +41,6 @@ class Culvert:
     manning_n: Optional[float] = None
     length_override_m: Optional[float] = None
     description: Optional[str] = None
-    extra: dict = field(default_factory=dict)
 
     @property
     def label(self) -> str:
@@ -96,10 +87,6 @@ class Culvert:
         dx, dy = tip[0] - neighbour[0], tip[1] - neighbour[1]
         norm = math.hypot(dx, dy)
         return dx / norm, dy / norm
-
-    def properties(self) -> dict:
-        """The D10 fields with defaults filled (what the stub operator logs)."""
-        return {name: getattr(self, name) for name in D10_FIELDS}
 
 
 def _number(value, name, problems, *, integer=False):
@@ -191,7 +178,6 @@ def _parse_feature(index, feature):
     if length_override is not None and length_override <= 0:
         problems.append(f"length_override_m must be greater than 0 when set, got {length_override}")
 
-    known = set(D10_FIELDS) | {"fid"}
     culvert = Culvert(
         feature_id=feature_id,
         name=str(name),
@@ -210,7 +196,6 @@ def _parse_feature(index, feature):
         manning_n=_number(properties.get("manning_n"), "manning_n", problems),
         length_override_m=length_override,
         description=properties.get("description"),
-        extra={k: v for k, v in properties.items() if k not in known},
     )
     return culvert, problems
 

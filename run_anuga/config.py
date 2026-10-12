@@ -86,7 +86,7 @@ class ScenarioConfig(BaseModel):
     breakline: Optional[str] = None
     # TASK-3638 (epic 3585) — culvert layer file and the capability guard list.
     culvert: Optional[str] = None
-    requires: list[str] = []
+    requires: Optional[list[str]] = None
     # Default near-spacing (m) for breakline grading when no per-line value set.
     default_near_spacing: Optional[float] = 2.0
 
@@ -104,7 +104,7 @@ class ScenarioConfig(BaseModel):
 
     @field_validator("requires")
     @classmethod
-    def check_requires(cls, v: list[str]) -> list[str]:
+    def check_requires(cls, v: Optional[list[str]]) -> Optional[list[str]]:
         check_required_capabilities({"requires": v})
         return v
 

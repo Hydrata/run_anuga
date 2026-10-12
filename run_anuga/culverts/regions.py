@@ -23,6 +23,12 @@ from run_anuga._imports import import_optional
 from run_anuga.culverts import constants
 
 
+#: containing_triangle tests this many nearest centroids before a full scan.
+_NEAREST_CANDIDATES = 64
+#: Triangles per block in the full-scan fallback (bounds the temporary arrays).
+_SCAN_CHUNK = 500_000
+
+
 @dataclass
 class MeshView:
     """Absolute node coordinates (N, 2) + triangle vertex indices (M, 3)."""
@@ -36,10 +42,9 @@ class MeshView:
         numpy = import_optional("numpy")
         self.nodes = numpy.asarray(self.nodes, dtype=float)
         self.triangles = numpy.asarray(self.triangles, dtype=int)
-        corners = self.nodes[self.triangles]  # (M, 3, 2)
-        self.centroids = corners.mean(axis=1)
-        e1 = corners[:, 1] - corners[:, 0]
-        e2 = corners[:, 2] - corners[:, 0]
+        a, b, c = (self.nodes[self.triangles[:, k]] for k in range(3))
+        self.centroids = (a + b + c) / 3.0
+        e1, e2 = b - a, c - a
         self.areas = 0.5 * numpy.abs(e1[:, 0] * e2[:, 1] - e1[:, 1] * e2[:, 0])
 
     @classmethod
@@ -57,26 +62,44 @@ class MeshView:
         return cls(vertices, anuga_mesh.tri_mesh.triangles)
 
     def containing_triangle(self, point):
-        """Index of the triangle containing ``point`` (on an edge counts), or None."""
+        """Index of the triangle containing ``point`` (on an edge counts), or None.
+
+        Tests the nearest centroids first (the containing triangle is almost
+        always among them), then falls back to a chunked scan of the whole mesh
+        so a large triangle beside a fine Mesh region is never missed. Never
+        materialises an (M, 3, 2) array: a production mesh has millions of
+        triangles on rank 0.
+        """
         numpy = import_optional("numpy")
         x, y = float(point[0]), float(point[1])
-        corners = self.nodes[self.triangles]
-        lo, hi = corners.min(axis=1), corners.max(axis=1)
-        tol = 1e-9 * max(1.0, abs(x), abs(y))
-        candidates = numpy.nonzero(
-            (lo[:, 0] - tol <= x) & (x <= hi[:, 0] + tol) & (lo[:, 1] - tol <= y) & (y <= hi[:, 1] + tol)
-        )[0]
-        for index in candidates:
-            a, b, c = corners[index]
-            d1 = (x - b[0]) * (a[1] - b[1]) - (a[0] - b[0]) * (y - b[1])
-            d2 = (x - c[0]) * (b[1] - c[1]) - (b[0] - c[0]) * (y - c[1])
-            d3 = (x - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (y - a[1])
-            scale = tol * max(1.0, float(self.areas[index]))
-            has_neg = (d1 < -scale) or (d2 < -scale) or (d3 < -scale)
-            has_pos = (d1 > scale) or (d2 > scale) or (d3 > scale)
-            if not (has_neg and has_pos):
-                return int(index)
+        count = len(self.triangles)
+        if count == 0:
+            return None
+        distance2 = (self.centroids[:, 0] - x) ** 2 + (self.centroids[:, 1] - y) ** 2
+        nearest = min(_NEAREST_CANDIDATES, count)
+        first = numpy.argpartition(distance2, nearest - 1)[:nearest]
+        found = self._first_containing(first[numpy.argsort(distance2[first])], x, y)
+        if found is not None or nearest == count:
+            return found
+        for start in range(0, count, _SCAN_CHUNK):
+            found = self._first_containing(numpy.arange(start, min(start + _SCAN_CHUNK, count)), x, y)
+            if found is not None:
+                return found
         return None
+
+    def _first_containing(self, indices, x, y):
+        """First of ``indices`` whose triangle contains (x, y), else None (vectorised)."""
+        numpy = import_optional("numpy")
+        a, b, c = (self.nodes[self.triangles[indices, k]] for k in range(3))
+        d1 = (x - b[:, 0]) * (a[:, 1] - b[:, 1]) - (a[:, 0] - b[:, 0]) * (y - b[:, 1])
+        d2 = (x - c[:, 0]) * (b[:, 1] - c[:, 1]) - (b[:, 0] - c[:, 0]) * (y - c[:, 1])
+        d3 = (x - a[:, 0]) * (c[:, 1] - a[:, 1]) - (c[:, 0] - a[:, 0]) * (y - a[:, 1])
+        # Sign tolerance scales with the triangle (cross products are length**2).
+        scale = 1e-9 * numpy.maximum(1.0, self.areas[indices])
+        has_neg = (d1 < -scale) | (d2 < -scale) | (d3 < -scale)
+        has_pos = (d1 > scale) | (d2 > scale) | (d3 > scale)
+        hits = numpy.nonzero(~(has_neg & has_pos))[0]
+        return int(indices[hits[0]]) if len(hits) else None
 
     def local_cell_edge(self, point):
         """sqrt(2 * area) of the triangle containing ``point``, or None outside the mesh."""
@@ -115,15 +138,19 @@ def rectangle(point, outward, width, depth):
     ]
 
 
-def triangles_in_rectangle(mesh, point, outward, width, depth):
-    """Triangle ids whose centroid lies inside the rectangle (in the local frame)."""
+def triangles_in_rectangle(mesh, point, outward, width, depth, candidates=None):
+    """Triangle ids whose centroid lies inside the rectangle (in the local frame).
+
+    ``candidates`` (an index array) restricts the test to a pre-selected subset.
+    """
     numpy = import_optional("numpy")
     ux, uy = outward
-    rel = mesh.centroids - numpy.array([float(point[0]), float(point[1])])
+    ids = numpy.arange(len(mesh.centroids)) if candidates is None else candidates
+    rel = mesh.centroids[ids] - numpy.array([float(point[0]), float(point[1])])
     along = rel[:, 0] * ux + rel[:, 1] * uy
     across = rel[:, 0] * -uy + rel[:, 1] * ux
     inside = (along >= 0.0) & (along <= depth) & (numpy.abs(across) <= width / 2.0)
-    return [int(i) for i in numpy.nonzero(inside)[0]]
+    return [int(i) for i in ids[inside]]
 
 
 def build_exchange_region(mesh, end, point, outward, footprint_width, cell_edge):
@@ -131,15 +158,22 @@ def build_exchange_region(mesh, end, point, outward, footprint_width, cell_edge)
 
     The caller fails the build when the returned region still holds too few.
     """
+    numpy = import_optional("numpy")
     width = max(footprint_width, constants.REGION_MIN_WIDTH_CELL_EDGES * cell_edge)
     depth = constants.REGION_DEPTH_CELL_EDGES * cell_edge
+    # Every rectangle the expansion can reach fits in this circle: select its
+    # centroids once instead of rescanning the whole mesh per step.
+    grow = constants.REGION_EXPANSION_FACTOR ** constants.MAX_REGION_EXPANSIONS
+    reach2 = (width * grow / 2.0) ** 2 + (depth * grow) ** 2
+    distance2 = ((mesh.centroids - numpy.array([float(point[0]), float(point[1])])) ** 2).sum(axis=1)
+    candidates = numpy.nonzero(distance2 <= reach2)[0]
     expansions = 0
-    ids = triangles_in_rectangle(mesh, point, outward, width, depth)
+    ids = triangles_in_rectangle(mesh, point, outward, width, depth, candidates)
     while len(ids) < constants.MIN_REGION_TRIANGLES and expansions < constants.MAX_REGION_EXPANSIONS:
         width *= constants.REGION_EXPANSION_FACTOR
         depth *= constants.REGION_EXPANSION_FACTOR
         expansions += 1
-        ids = triangles_in_rectangle(mesh, point, outward, width, depth)
+        ids = triangles_in_rectangle(mesh, point, outward, width, depth, candidates)
     return ExchangeRegion(
         end=end,
         polygon=rectangle(point, outward, width, depth),
