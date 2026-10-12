@@ -18,6 +18,37 @@ from typing import Optional
 
 from pydantic import BaseModel, field_validator
 
+#: TASK-3638 (epic 3585, D16): the package capabilities this runner implements.
+#: A package lists what it needs in scenario.json ``requires``; a runner that
+#: lacks one must refuse the package rather than silently drop the input (an
+#: older runner ignores unknown keys and would report a culvert-free run as a
+#: success).
+SUPPORTED_CAPABILITIES = frozenset({"culvert"})
+
+
+class UnsupportedCapabilityError(ValueError):
+    """scenario.json ``requires`` names a capability this runner does not have."""
+
+
+def check_required_capabilities(scenario_config) -> list:
+    """Return the package's ``requires`` list; raise if any entry is unsupported.
+
+    Accepts the raw scenario.json dict. A missing or empty ``requires`` passes.
+    """
+    requires = (scenario_config or {}).get("requires") or []
+    if isinstance(requires, str) or not isinstance(requires, (list, tuple)):
+        raise UnsupportedCapabilityError(
+            f"scenario.json 'requires' must be a list of capability names, got {requires!r}"
+        )
+    missing = sorted({str(name) for name in requires} - SUPPORTED_CAPABILITIES)
+    if missing:
+        raise UnsupportedCapabilityError(
+            f"This package requires capability {', '.join(repr(m) for m in missing)}, which this "
+            f"version of run_anuga does not support (supported: {', '.join(sorted(SUPPORTED_CAPABILITIES))}). "
+            "Refusing to run rather than silently ignore it: upgrade run_anuga."
+        )
+    return list(requires)
+
 
 class ScenarioConfig(BaseModel):
     """Validated configuration for an ANUGA flood simulation run."""
@@ -53,6 +84,9 @@ class ScenarioConfig(BaseModel):
     model_start: Optional[str] = None
     # TASK-1271 W4.3 — breaklines for mesh edge conformance
     breakline: Optional[str] = None
+    # TASK-3638 (epic 3585) — culvert layer file and the capability guard list.
+    culvert: Optional[str] = None
+    requires: list[str] = []
     # Default near-spacing (m) for breakline grading when no per-line value set.
     default_near_spacing: Optional[float] = 2.0
 
@@ -66,6 +100,12 @@ class ScenarioConfig(BaseModel):
                 f"Unsupported format_version '{v}'. "
                 "This version of run_anuga supports '1.0'."
             )
+        return v
+
+    @field_validator("requires")
+    @classmethod
+    def check_requires(cls, v: list[str]) -> list[str]:
+        check_required_capabilities({"requires": v})
         return v
 
     @property

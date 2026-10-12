@@ -14,6 +14,7 @@ from run_anuga.run_utils import setup_input_data, create_anuga_mesh, \
     compute_mesh_qa, extract_boundary_condition_types, compute_yieldstep  # W3 (TASK-1923)
 from run_anuga import defaults
 from run_anuga import phase_tracker
+from run_anuga.culverts import MeshView, prepare_culverts
 from run_anuga.callbacks import NullCallback
 from run_anuga.diagnostics import (
     SimulationMonitor, collect_flow_scalars, finalize_monitor_safely,
@@ -426,6 +427,13 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
                     use_cache=False,
                     verbose=False,
                 )
+            # TASK-3638 (epic 3585): place each culvert on the BUILT mesh (both the
+            # fresh-mesh and the pre-built-mesh paths reach here): D15 exchange
+            # regions, the length / >= 4-triangle build checks (CulvertBuildError
+            # fails the run before any paid compute), the coarse-mesh warning,
+            # and culverts/metrics.json in the output directory.
+            if input_data.get('culverts'):
+                prepare_culverts(input_data, MeshView.from_domain(domain), log=logger)
             # Fallback feature source for the pre-existing-mesh path (a checkpoint
             # rebuild reuses the .msh, so create_anuga_mesh is skipped): read the
             # element count straight off the built Domain's mesh.
@@ -565,6 +573,11 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
                 Inlet_operator=Inlet_operator,
                 defaults_module=defaults,
             )
+            # TASK-3638: stub culvert operator on every rank (it logs the
+            # culverts and moves no water; the coupling engine replaces it in W3).
+            if input_data.get('culverts'):
+                from run_anuga.culverts.operator import make_stub_operator
+                make_stub_operator(domain, input_data['culverts'], log=logger)
         default_boundary_maps = make_default_boundary_maps(anuga, domain)
         # Build a 'Time' boundary entry only when at least one external
         # boundary feature carries boundary='Time'. The per-feature `data`

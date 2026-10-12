@@ -1460,6 +1460,12 @@ def build_and_report(
             input_data = setup_input_data(str(package_dir))
             with phase_tracker.phase(phase_tracker.PHASE_MESH_GEN):
                 mesh_filepath, anuga_mesh = create_anuga_mesh(input_data)
+            if input_data.get('culverts'):
+                # TASK-3638: fail the BUILD job (before the paid run) when a
+                # culvert cannot be placed on this mesh; warnings are logged.
+                # The run writes culverts/metrics.json, not the build.
+                from run_anuga.culverts import MeshView, analyse_culverts
+                analyse_culverts(input_data['culverts'], MeshView.from_pmesh(anuga_mesh), log=logger)
             triangle_count = int(len(anuga_mesh.tri_mesh.triangles))
             node_count = int(len(anuga_mesh.tri_mesh.vertices))
             mesh_area = float(anuga_mesh.tri_mesh.calc_mesh_area())
