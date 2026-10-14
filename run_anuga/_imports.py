@@ -14,6 +14,8 @@ _EXTRA_MAP = {
     "dill": "sim",
     "psutil": "sim",
     "shapely": "sim",
+    "anuga_drainage": "sim",
+    "pyswmm": "sim",
     "rasterio": "sim",
     "geopandas": "sim",
     "cv2": "viz",

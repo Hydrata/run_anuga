@@ -1,7 +1,7 @@
 """TASK-3638 (epic 3585 W2b): culvert package parsing, the requires_capability
 guard, D15 exchange regions, build-time checks, the coarse-mesh warning,
-culverts/metrics.json (the pinned hydrata <-> run_anuga contract) and the stub
-operator.
+culverts/metrics.json (the pinned hydrata <-> run_anuga contract) and the
+per-culvert hydraulic results (the coupler run itself is tests/test_culvert_e2e.py).
 
 The unit tests need only numpy + shapely (both in [dev]); the real-mesh and
 end-to-end tests carry requires_anuga and run in a SUBPROCESS, because a
@@ -9,7 +9,6 @@ run_sim failure ends in MPI.COMM_WORLD.Abort, which kills pytest silently.
 """
 
 import json
-import math
 import subprocess
 import sys
 import textwrap
@@ -419,7 +418,7 @@ class TestMetricsContract:
         assert not (tmp_path / "culverts").exists()
 
 
-# ── real ANUGA mesh + end-to-end stub run (subprocess) ────────────────
+# ── real ANUGA mesh (subprocess); the end-to-end run is tests/test_culvert_e2e.py ──
 
 SMALL_TEST_CULVERT = culvert_feature(
     fid=101, name="Small test box", coords=((251060.0, 6271900.0), (251100.0, 6271900.0)),
@@ -463,42 +462,97 @@ class TestRealMesh:
         assert "Small test box" in report["warnings"][0]
 
 
-@pytest.mark.requires_anuga
-class TestStubRunEndToEnd:
+# ── per-culvert hydraulic results (TASK-3642, pure numpy) ─────────────
 
-    def test_run_with_a_culvert_writes_metrics_and_logs_the_stub(self, small_test_copy):
-        _add_culvert_layer(small_test_copy, collection(SMALL_TEST_CULVERT))
-        _set_scenario(small_test_copy, duration=60)
-        result = subprocess.run(
-            [sys.executable, "-m", "run_anuga.cli", "run", str(small_test_copy)],
-            capture_output=True, text=True, timeout=600,
+
+class TestCulvertHydraulics:
+
+    CONTROLS = ("barrel", "inlet", "reverse-inlet", "n/a")
+
+    @staticmethod
+    def series():
+        return {
+            "time_s": [0.0, 10.0, 20.0, 30.0],
+            "q_m3s": [0.0, 1.0, 2.5, -0.5],
+            "hw_level_m": [100.0, 100.5, 101.4, 100.2],
+            "tw_level_m": [99.0, 99.2, 99.9, 100.1],
+            "control": [0, 0, 1, 2],
+        }
+
+    def test_definitions(self):
+        from run_anuga.culverts.outputs import culvert_hydraulics
+
+        [culvert] = load_culverts(collection(culvert_feature(width_m=2.0, height_m=1.0, blockage_pct=50)))
+        h = culvert_hydraulics(culvert, 100.0, self.series(), self.CONTROLS)
+        assert set(h) == HYDRAULIC_KEYS
+        assert h["peak_hw_level_m"] == 101.4 and h["peak_hw_depth_m"] == 1.4 and h["peak_hw_time_s"] == 20.0
+        assert h["hw_over_d"] == pytest.approx(1.4)  # against the UNBLOCKED rise
+        assert h["peak_tw_level_m"] == 100.1
+        assert h["peak_q_m3s"] == 2.5 and h["peak_q_time_s"] == 20.0
+        assert h["barrel_velocity_ms"] == pytest.approx(2.5 / (2.0 * 0.5 * 1.0))  # reduced-area flow area
+        assert h["regime_at_peak"] == "inlet"
+        assert h["regime_fractions"] == {"barrel": 0.5, "inlet": 0.25, "reverse-inlet": 0.25}
+        assert h["surcharge_s"] == 10.0  # depth 1.4 > rise 1.0 for the one 10 s sample
+        assert json.dumps(h)
+
+    def test_a_reverse_peak_keeps_its_sign(self):
+        from run_anuga.culverts.outputs import culvert_hydraulics
+
+        [culvert] = load_culverts(collection(culvert_feature()))
+        series = self.series()
+        series["q_m3s"] = [0.0, -4.0, 1.0, 0.0]
+        h = culvert_hydraulics(culvert, 100.0, series, self.CONTROLS)
+        assert h["peak_q_m3s"] == -4.0 and h["peak_q_time_s"] == 10.0
+
+    def test_empty_series_gives_no_values(self):
+        from run_anuga.culverts.outputs import culvert_hydraulics
+
+        [culvert] = load_culverts(collection(culvert_feature()))
+        empty = {k: [] for k in ("time_s", "q_m3s", "hw_level_m", "tw_level_m", "control")}
+        assert culvert_hydraulics(culvert, 100.0, empty, self.CONTROLS) == {}
+
+    def test_metrics_document_carries_hydraulics_path_and_run_fields(self):
+        mesh = grid_mesh(321000.0, 5812000.0, 20, 20, 5.0)
+        results = analyse_culverts(load_culverts(collection(culvert_feature())), mesh)
+        document = metrics_document(
+            results, hydraulics=[{"peak_q_m3s": 1.5, "not_a_contract_key": 9}],
+            timeseries_paths=["culverts/timeseries_7.csv"], run_fields={"swmm_routing_error_pct": 0.01},
         )
-        output = result.stdout + result.stderr
-        assert result.returncode == 0, output[-3000:]
-        [output_dir] = small_test_copy.glob("outputs_*")
-        assert list(output_dir.glob("*.sww"))
-        document = json.loads((output_dir / "culverts" / "metrics.json").read_text())
         [entry] = document["culverts"]
         assert set(entry) == CONTRACT_KEYS
-        assert entry["feature_id"] == 101 and entry["name"] == "Small test box"
-        assert entry["triangles_inlet"] >= 4 and entry["triangles_outlet"] >= 4
-        assert math.isfinite(entry["coarseness_ratio"])
-        assert all(entry[key] is None for key in HYDRAULIC_KEYS)
-        run_log = "\n".join(p.read_text() for p in output_dir.glob("run_anuga_*.log")) + output
-        assert "culvert stub operator: Culvert 'Small test box' (feature 101)" in run_log
-        assert "coarseness ratio" in run_log
+        assert entry["peak_q_m3s"] == 1.5 and entry["timeseries_path"] == "culverts/timeseries_7.csv"
+        assert document["swmm_routing_error_pct"] == 0.01
 
-    def test_end_inside_a_reflective_building_stops_the_run(self, small_test_copy):
-        """AC3 through the real runner: plain message, non-zero exit, before the mesh."""
-        _add_culvert_layer(small_test_copy, collection(SMALL_TEST_CULVERT))
-        (small_test_copy / "inputs" / "building.geojson").write_text(json.dumps(collection(building(
-            "Reflective", [[251095, 6271895], [251110, 6271895], [251110, 6271910], [251095, 6271910],
-                           [251095, 6271895]], fid="shed"))))
-        _set_scenario(small_test_copy, building="building.geojson", structure=None, duration=60)
-        result = subprocess.run(
-            [sys.executable, "-m", "run_anuga.cli", "run", str(small_test_copy)],
-            capture_output=True, text=True, timeout=600,
-        )
-        assert result.returncode != 0
-        assert "is inside Reflective building shed" in result.stdout + result.stderr
-        assert not list(small_test_copy.glob("outputs_*/*.msh"))
+    def test_timeseries_csv_matches_the_structure_result_columns(self, tmp_path):
+        from run_anuga.culverts.outputs import write_timeseries_csv
+
+        relative = write_timeseries_csv(str(tmp_path), 7, self.series(), self.CONTROLS)
+        assert relative == "culverts/timeseries_7.csv"
+        lines = (tmp_path / relative).read_text().splitlines()
+        assert lines[0] == "time_s,q_m3s,hw_level_m,tw_level_m,control"
+        assert len(lines) == 5 and lines[3].endswith(",inlet")
+
+    def test_long_series_is_thinned_keeping_first_and_last(self, tmp_path, monkeypatch):
+        from run_anuga.culverts.outputs import write_timeseries_csv
+
+        monkeypatch.setattr(constants, "TIMESERIES_MAX_ROWS", 5)
+        n = 100
+        series = {"time_s": list(range(n)), "q_m3s": [0.0] * n, "hw_level_m": [0.0] * n,
+                  "tw_level_m": [0.0] * n, "control": [0] * n}
+        relative = write_timeseries_csv(str(tmp_path), 1, series, self.CONTROLS)
+        rows = (tmp_path / relative).read_text().splitlines()[1:]
+        assert len(rows) == 5 and rows[0].startswith("0,") and rows[-1].startswith("99,")
+
+
+@pytest.mark.requires_anuga
+class TestCouplerGuards:
+
+    def test_multi_process_runs_are_refused_plainly(self, monkeypatch):
+        import types
+
+        import anuga
+        from run_anuga.culverts.operator import attach_culvert_coupler
+
+        monkeypatch.setattr(anuga, "numprocs", 2, raising=False)
+        with pytest.raises(CulvertBuildError, match="multi-process"):
+            attach_culvert_coupler(types.SimpleNamespace(numproc=2), [], "/nonexistent", 60)

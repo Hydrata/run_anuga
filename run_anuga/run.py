@@ -14,7 +14,7 @@ from run_anuga.run_utils import setup_input_data, create_anuga_mesh, \
     compute_mesh_qa, extract_boundary_condition_types, compute_yieldstep  # W3 (TASK-1923)
 from run_anuga import defaults
 from run_anuga import phase_tracker
-from run_anuga.culverts import MeshView, prepare_culverts
+from run_anuga.culverts import CulvertBuildError, MeshView, prepare_culverts
 from run_anuga.callbacks import NullCallback
 from run_anuga.diagnostics import (
     SimulationMonitor, collect_flow_scalars, finalize_monitor_safely,
@@ -324,6 +324,7 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
     run_args = RunContext(package_dir, username, password)
     input_data = setup_input_data(package_dir)
     run_args.scenario_config = input_data['scenario_config']
+    culvert_results, culvert_coupler = [], None  # TASK-3642: set only when the package has culverts
 
     # TASK-2681 (epic 2662 W4.1): the token-gated HydrataCallback
     # auto-construction that used to sit here is GONE with the /log/ +
@@ -433,7 +434,13 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
             # fails the run before any paid compute), the coarse-mesh warning,
             # and culverts/metrics.json in the output directory.
             if input_data.get('culverts'):
-                prepare_culverts(input_data, MeshView.from_domain(domain), log=logger)
+                if anuga.numprocs > 1:
+                    # The SWMM coupler runs on one process (TASK-3642); fail before any paid compute.
+                    raise CulvertBuildError(
+                        "Culverts are not supported in multi-process (MPI) runs yet; "
+                        "run this scenario on a single process."
+                    )
+                culvert_results = prepare_culverts(input_data, MeshView.from_domain(domain), log=logger)
             # Fallback feature source for the pre-existing-mesh path (a checkpoint
             # rebuild reuses the .msh, so create_anuga_mesh is skipped): read the
             # element count straight off the built Domain's mesh.
@@ -573,11 +580,13 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
                 Inlet_operator=Inlet_operator,
                 defaults_module=defaults,
             )
-            # TASK-3638: stub culvert operator on every rank (it logs the
-            # culverts and moves no water; the coupling engine replaces it in W3).
-            if input_data.get('culverts'):
-                from run_anuga.culverts.operator import make_stub_operator
-                make_stub_operator(domain, input_data['culverts'], log=logger)
+            # TASK-3642 (epic 3585): attach the SWMM culvert coupler (anuga_drainage,
+            # design 1) after distribute() and the inflow operators. Serial only
+            # (guarded above); no culvert layer -> nothing attached, no metrics.
+            if culvert_results:
+                from run_anuga.culverts.operator import attach_culvert_coupler
+                culvert_coupler = attach_culvert_coupler(
+                    domain, culvert_results, input_data['output_directory'], duration, log=logger)
         default_boundary_maps = make_default_boundary_maps(anuga, domain)
         # Build a 'Time' boundary entry only when at least one external
         # boundary feature carries boundary='Time'. The per-feature `data`
@@ -766,6 +775,10 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
         # Evolve done — clear the phase so post-processing (sww_merge / result
         # publish) isn't attributed to 'evolve' (TASK-1910).
         phase_tracker.set_phase(None)
+        if culvert_coupler is not None:
+            # TASK-3642: close SWMM, write the per-culvert series + D16 metrics into <output>/culverts/.
+            from run_anuga.culverts.outputs import write_culvert_outputs
+            write_culvert_outputs(input_data['output_directory'], culvert_results, culvert_coupler, log=logger)
         barrier()
         domain.sww_merge(verbose=True, delete_old=True)
         barrier()

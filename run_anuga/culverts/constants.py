@@ -50,3 +50,16 @@ METRICS_SCHEMA_VERSION = 1
 METRICS_DIRNAME = "culverts"
 METRICS_FILENAME = "metrics.json"
 TIMESERIES_HEADER = ("time_s", "q_m3s", "hw_level_m", "tw_level_m")
+
+#: The SWMM coupler (TASK-3642, design 1): the fractional-step operator eases the
+#: exchanged discharge toward SWMM's value over this timescale, and each outflow is
+#: injected with a momentum jet along the barrel direction (both as validated in the
+#: Towradgi spike, TASK-3634).
+COUPLER_SMOOTHING_TIMESCALE_S = 30.0
+COUPLER_USE_MOMENTUM_JET = True
+#: SWMM is opened for the run duration plus this margin (it must outlast the last ANUGA step).
+COUPLER_DURATION_MARGIN_S = 60.0
+#: Time series sampling: every second, thinned to at most this many rows per culvert.
+TIMESERIES_MAX_ROWS = 10000
+#: Subdirectory of <output>/culverts/ for the SWMM work files (.inp/.rpt/.out).
+SWMM_WORKDIR_NAME = "swmm"
