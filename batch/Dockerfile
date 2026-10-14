@@ -93,7 +93,7 @@ ARG HYDRATA_SHA=unknown
 # pinned commit, installed with pyswmm + swmm-toolkit in BOTH targets. PENDING PUSH:
 # the epic's fork branch is not on GitHub yet, so this SHA only resolves after the
 # W3 gate push; the top re-pins it to the landed fork SHA.
-ARG ANUGA_DRAINAGE_SHA=825dc0f5a59de087f06ae362fee0fe8e2681ba79
+ARG ANUGA_DRAINAGE_SHA=7a483643b6100957ae63076418e5524ba871e4e8
 
 # GPU toolchain base (pre-built locally by deploy scripts/gpu-dev/
 # build-gpu-dev-image.sh --multi-arch; supplies nvhpc + CUDA + venv +

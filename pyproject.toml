@@ -37,7 +37,7 @@ sim = [
     # fork commit is not on GitHub until the W3 gate push.
     "pyswmm==2.2.0",
     "swmm-toolkit==0.17.0",
-    "anuga_drainage @ git+https://github.com/Hydrata/anuga_drainage@825dc0f5a59de087f06ae362fee0fe8e2681ba79",
+    "anuga_drainage @ git+https://github.com/Hydrata/anuga_drainage@7a483643b6100957ae63076418e5524ba871e4e8",
 ]
 viz = [
     "matplotlib>=3.6",
