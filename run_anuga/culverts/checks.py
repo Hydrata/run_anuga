@@ -5,9 +5,10 @@ Two stages:
 * :func:`check_culvert_placement` — before the mesh is built (cheap): both ends
   inside the model outline and not inside a Reflective building (a mesh hole).
 * :func:`analyse_culverts` — once a mesh exists: the local cell edge at each
-  end, the length check, the D15 exchange regions (>= 4 triangles each) and the
-  coarse-mesh warning. It FAILS the build for a culvert that cannot be coupled,
-  and WARNS (never fails) when the mesh is coarse.
+  end, the D15 exchange regions (>= 4 triangles each), the short-culvert and
+  coarse-mesh warnings. It FAILS the build for a culvert that cannot be coupled
+  (end off the mesh, < 4 triangles), and WARNS (never fails) when the culvert
+  is short for the mesh or the mesh is coarse.
 
 Every failure is collected and raised once, naming each culvert, so the user
 fixes the whole layer in one pass.
@@ -113,6 +114,20 @@ def coarse_mesh_warning(culvert, end, cell_edge_m) -> Optional[str]:
     )
 
 
+def short_culvert_warning(culvert, largest_edge_m) -> Optional[str]:
+    """The warning text when ``culvert`` is shorter than MIN_LENGTH_CELL_EDGES local cell edges, else None."""
+    if culvert.length_m >= constants.MIN_LENGTH_CELL_EDGES * largest_edge_m:
+        return None
+    target_edge = culvert.length_m / constants.MIN_LENGTH_CELL_EDGES
+    return (
+        f"{culvert.label}: it is {culvert.length_m:.2f} m long, shorter than "
+        f"{constants.MIN_LENGTH_CELL_EDGES:g} local cell edges ({largest_edge_m:.2f} m each), so its Inlet "
+        "and Outlet exchange regions may sample the same or neighbouring cells and the result is less "
+        f"reliable. Suggested max triangle area near the culvert: {target_edge ** 2 / 2.0:.2f} m2 "
+        "(draw a Mesh region)."
+    )
+
+
 @dataclass
 class CulvertMeshResult:
     culvert: object
@@ -156,15 +171,6 @@ def analyse_culverts(culverts, mesh, log=None) -> list:
             continue
 
         largest_edge = max(cell_edges.values())
-        if culvert.length_m < constants.MIN_LENGTH_CELL_EDGES * largest_edge:
-            failures.append(
-                f"{culvert.label}: it is {culvert.length_m:.2f} m long, shorter than "
-                f"{constants.MIN_LENGTH_CELL_EDGES:g} local cell edges ({largest_edge:.2f} m each), so its "
-                "Inlet and Outlet would sample the same cells. Lengthen it or refine the mesh "
-                "around it with a Mesh region."
-            )
-            continue
-
         regions = {}
         for end in ENDS:
             xy = culvert.inlet_xy if end == "inlet" else culvert.outlet_xy
@@ -184,6 +190,10 @@ def analyse_culverts(culverts, mesh, log=None) -> list:
             continue
 
         result = CulvertMeshResult(culvert=culvert, regions=regions, cell_edges_m=cell_edges)
+        short_warning = short_culvert_warning(culvert, largest_edge)
+        if short_warning:
+            result.warnings.append(short_warning)
+            log.warning(short_warning)
         for end in ENDS:
             warning = coarse_mesh_warning(culvert, end, cell_edges[end])
             if warning:

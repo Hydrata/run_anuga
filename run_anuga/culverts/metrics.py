@@ -32,6 +32,8 @@ def culvert_metrics_entry(result) -> dict:
         "blockage_pct": float(culvert.blockage_pct),
         "blockage_method": constants.BLOCKAGE_METHOD,
     }
+    # Additive to the D16 keys (schema_version stays 1): build-time warnings for this culvert.
+    entry["warnings"] = list(result.warnings)
     entry.update({key: None for key in HYDRAULIC_KEYS})
     entry["timeseries_path"] = None
     return entry

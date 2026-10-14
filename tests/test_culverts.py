@@ -39,11 +39,11 @@ CONTRACT_KEYS = {
     "feature_id", "name", "triangles_inlet", "triangles_outlet", "coarseness_ratio",
     "blockage_pct", "blockage_method", "peak_hw_level_m", "peak_hw_depth_m", "peak_hw_time_s",
     "hw_over_d", "peak_tw_level_m", "peak_q_m3s", "peak_q_time_s", "barrel_velocity_ms",
-    "regime_at_peak", "regime_fractions", "surcharge_s", "timeseries_path",
+    "regime_at_peak", "regime_fractions", "surcharge_s", "timeseries_path", "warnings",
 }
 HYDRAULIC_KEYS = CONTRACT_KEYS - {
     "feature_id", "name", "triangles_inlet", "triangles_outlet", "coarseness_ratio",
-    "blockage_pct", "blockage_method", "timeseries_path",
+    "blockage_pct", "blockage_method", "timeseries_path", "warnings",
 }
 
 
@@ -287,10 +287,29 @@ class TestExchangeRegions:
         with pytest.raises(CulvertBuildError, match="Outlet exchange region holds 0 triangle"):
             analyse_culverts(culverts, mesh)
 
-    def test_too_short_for_the_mesh_fails_the_build(self):
+    def test_short_culvert_builds_with_a_warning(self, caplog):
+        """TASK-3669 AC1+AC3: 10 m on a 5 m mesh builds; the warning is logged and kept for metrics.json."""
         mesh = grid_mesh(321000.0, 5812000.0, 20, 20, 5.0)
-        culverts = load_culverts(collection(culvert_feature(coords=((321040.0, 5812050.0), (321052.0, 5812050.0)))))
-        with pytest.raises(CulvertBuildError, match="shorter than 3 local cell edges"):
+        culverts = load_culverts(collection(culvert_feature(coords=((321040.0, 5812050.0), (321050.0, 5812050.0)))))
+        with caplog.at_level("WARNING"):
+            [result] = analyse_culverts(culverts, mesh)
+        short = [w for w in result.warnings if "shorter than 3 local cell edges" in w]
+        assert len(short) == 1
+        assert "C7" in short[0] and "10.00 m long" in short[0] and "5.00 m each" in short[0]
+        assert "Suggested max triangle area near the culvert: 5.56 m2" in short[0]  # (10/3)**2 / 2
+        assert short[0] in caplog.text
+        [entry] = metrics_document([result])["culverts"]
+        assert short[0] in entry["warnings"]
+
+    def test_long_enough_culvert_has_no_short_warning(self):
+        mesh = grid_mesh(321000.0, 5812000.0, 20, 20, 5.0)
+        [result] = analyse_culverts(load_culverts(collection(culvert_feature())), mesh)
+        assert not [w for w in result.warnings if "shorter than" in w]
+
+    def test_short_culvert_with_a_region_off_the_mesh_edge_still_fails(self):
+        mesh = grid_mesh(321000.0, 5812000.0, 20, 20, 5.0)
+        culverts = load_culverts(collection(culvert_feature(coords=((321090.0, 5812050.0), (321100.0, 5812050.0)))))
+        with pytest.raises(CulvertBuildError, match="exchange region holds 0 triangle"):
             analyse_culverts(culverts, mesh)
 
     def test_end_off_the_mesh_fails_the_build(self):

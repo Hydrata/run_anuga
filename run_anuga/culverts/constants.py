@@ -25,8 +25,9 @@ REGION_EXPANSION_FACTOR = 1.25
 #: ... at most this many times, before the build gives up and fails.
 MAX_REGION_EXPANSIONS = 8
 
-#: A culvert shorter than this many local cell edges fails the build: its two
-#: exchange regions would sample the same few cells.
+#: A culvert shorter than this many local cell edges gets a build WARNING
+#: (operator ruling 13-10-26, TASK-3669): its two exchange regions sample the
+#: same few cells. It never fails the build.
 MIN_LENGTH_CELL_EDGES = 3.0
 
 #: D10 per-feature defaults filled in when the package omits them.
