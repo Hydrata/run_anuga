@@ -18,7 +18,13 @@ from run_anuga._imports import import_optional
 from run_anuga import defaults
 from run_anuga.breakline_conditioner import condition_breaklines
 from run_anuga._logging import install_mname_filter
-from run_anuga.config import ScenarioConfig
+from run_anuga.config import ScenarioConfig, check_required_capabilities
+from run_anuga.culverts import (
+    CULVERT_CAPABILITY,
+    CulvertBuildError,
+    check_culvert_placement,
+    load_culverts,
+)
 
 try:
     from celery.utils.log import get_task_logger
@@ -74,6 +80,9 @@ def _load_package_data(package_dir):
     input_data = dict()
     with open(os.path.join(package_dir, 'scenario.json')) as f:
         input_data['scenario_config'] = json.load(f)
+    # TASK-3638: refuse a package needing a capability this runner lacks BEFORE
+    # anything else — validation below only warns, and unknown keys are dropped.
+    requires = check_required_capabilities(input_data['scenario_config'])
     try:
         ScenarioConfig.model_validate(input_data['scenario_config'])
     except Exception as e:
@@ -103,9 +112,20 @@ def _load_package_data(package_dir):
         'nodes',
         'links',
         'breakline',  # TASK-1271 W4.3 — breaklines for mesh edge conformance
+        'culvert',  # TASK-3638 (epic 3585) — hydraulic structures
     ]
     for data_type in data_types:
         _load_input_file(input_data, package_dir, data_type, input_data['scenario_config'].get(data_type))
+
+    # TASK-3638: a package that requires culverts must carry them — never run
+    # without a culvert the user drew. Parsing fills the D10 defaults and
+    # refuses malformed features with a plain message.
+    if CULVERT_CAPABILITY in requires and not input_data.get('culvert'):
+        raise CulvertBuildError(
+            "scenario.json requires 'culvert' but the package has no culvert layer file "
+            f"(culvert = {input_data['scenario_config'].get('culvert')!r})"
+        )
+    input_data['culverts'] = load_culverts(input_data.get('culvert'))
 
     # TASK-3586: the building-footprint layer was called 'structure' before the
     # rename. A package built pre-rename (stored on S3 / a run directory) still
@@ -152,6 +172,9 @@ def setup_input_data(package_dir):
         raise AttributeError('No boundary data found')
     input_data['boundary_polygon'] = boundary_polygon
     input_data['boundary_tags'] = boundary_tags
+    # TASK-3638: culvert ends must sit inside the model and outside Reflective
+    # buildings — checked before the (expensive) mesh build.
+    check_culvert_placement(input_data.get('culverts'), boundary_polygon, input_data.get('building'))
     return input_data
 
 

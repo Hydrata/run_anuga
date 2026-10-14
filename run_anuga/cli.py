@@ -54,8 +54,29 @@ def cmd_info(args):
             print(f"  {f} ({size:,} bytes)")
 
 
+def _refuse_unsupported_capabilities(package_dir):
+    """Exit non-zero, naming the capability, when scenario.json ``requires`` one
+    this runner lacks (TASK-3638). Runs before run_sim so the refusal is plain
+    even on a box without the sim stack; run_sim re-checks for every caller."""
+    import json
+
+    from run_anuga.config import UnsupportedCapabilityError, check_required_capabilities
+
+    try:
+        with open(os.path.join(package_dir, "scenario.json")) as f:
+            scenario_config = json.load(f)
+    except (OSError, ValueError):
+        return  # run_sim reports a missing/unreadable scenario.json itself
+    try:
+        check_required_capabilities(scenario_config)
+    except UnsupportedCapabilityError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
 def cmd_run(args):
     """Run an ANUGA flood simulation."""
+    _refuse_unsupported_capabilities(args.package_dir)
     from run_anuga.run import run_sim
     from run_anuga.callbacks import LoggingCallback
 

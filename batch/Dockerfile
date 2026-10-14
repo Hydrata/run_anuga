@@ -89,6 +89,9 @@ ARG ANUGA_CORE_SHA=93368189eb35eef847094dde027d6d6dcb2b0059
 # rebuild-batch-image.sh / CI — "unknown" on a plain local build).
 ARG RUN_ANUGA_SHA=unknown
 ARG HYDRATA_SHA=unknown
+# Culvert engine (TASK-3643, epic 3585): the Hydrata fork of anuga_drainage at ONE
+# pinned commit, cloned in the src stage and installed with pyswmm + swmm-toolkit in BOTH targets.
+ARG ANUGA_DRAINAGE_SHA=7a483643b6100957ae63076418e5524ba871e4e8
 
 # GPU toolchain base (pre-built locally by deploy scripts/gpu-dev/
 # build-gpu-dev-image.sh --multi-arch; supplies nvhpc + CUDA + venv +
@@ -107,6 +110,14 @@ ARG ANUGA_CORE_SHA
 RUN git clone https://github.com/Hydrata/anuga_core.git /src/anuga_core \
     && git -C /src/anuga_core checkout --detach "${ANUGA_CORE_SHA}" \
     && rm -rf /src/anuga_core/.git
+# anuga_drainage (culvert engine, TASK-3643): the Hydrata fork at the ONE pinned SHA, cloned
+# here like anuga_core so cpu/gpu install it from src, never from git. HYDRATA_SOURCE_SHA records
+# the commit checked out (.git is dropped); assert-culvert-engine.py proves it matches the pin.
+ARG ANUGA_DRAINAGE_SHA
+RUN git clone https://github.com/Hydrata/anuga_drainage.git /src/anuga_drainage \
+    && git -C /src/anuga_drainage checkout --detach "${ANUGA_DRAINAGE_SHA}" \
+    && git -C /src/anuga_drainage rev-parse HEAD > /src/anuga_drainage/HYDRATA_SOURCE_SHA \
+    && rm -rf /src/anuga_drainage/.git
 # run_anuga tree (+ batch/entrypoint.sh + the gn_anuga overlay when staged).
 COPY . /src/run_anuga
 # Plain-build degrade: guarantee gn_anuga/ exists so the targets' COPY
@@ -201,6 +212,16 @@ COPY --from=src /src/run_anuga/gn_anuga /app/gn_anuga
 COPY --from=src /src/run_anuga /app/run_anuga_src
 RUN pip install --no-cache-dir "/app/run_anuga_src[sim,platform,playback]"
 
+# ---- culvert engine (TASK-3643, epic 3585) --------------------------------
+# SWMM 5.2 barrel + the anuga_drainage fractional-step coupler. BOTH targets
+# carry the same three pins (tests/unit/test_dockerfile_swmm.py in Hydrata/deploy
+# asserts it) so no site can run a culvert package on an image that lacks the
+# engine. The guard fails the BUILD if the pins or the fork commit drift.
+ARG ANUGA_DRAINAGE_SHA
+COPY --from=src /src/anuga_drainage /app/anuga_drainage
+RUN pip install --no-cache-dir "pyswmm==2.2.0" "swmm-toolkit==0.17.0" /app/anuga_drainage \
+    && python /app/run_anuga_src/batch/assert-culvert-engine.py "${ANUGA_DRAINAGE_SHA}"
+
 # ---- playback-capability guard (TASK-2749) --------------------------------
 # Symmetric with the gpu target's guard. The cpu target has always carried the
 # playback extra, but the two stages must stay symmetric or the next
@@ -252,7 +273,7 @@ FROM ${GPU_BASE} AS gpu
 
 # curl: entrypoint.sh's terminal /error/ POST safety net (absent from the
 # nvhpc base). awscli: the entrypoint's S3 package/result ops.
-RUN apt-get update && apt-get install -y --no-install-recommends curl \
+RUN apt-get update && apt-get install -y --no-install-recommends curl git \
     && rm -rf /var/lib/apt/lists/* \
     && pip install --no-cache-dir awscli
 
@@ -337,6 +358,16 @@ COPY --from=src /src/run_anuga/gn_anuga /app/gn_anuga
 # batch-gpu-a10g + batch-gpu-l40s), so this was reachable in production.
 COPY --from=src /src/run_anuga /app/run_anuga_src
 RUN pip install --no-cache-dir "/app/run_anuga_src[sim,platform,playback]"
+
+# ---- culvert engine (TASK-3643, epic 3585) --------------------------------
+# SWMM 5.2 barrel + the anuga_drainage fractional-step coupler. BOTH targets
+# carry the same three pins (tests/unit/test_dockerfile_swmm.py in Hydrata/deploy
+# asserts it) so no site can run a culvert package on an image that lacks the
+# engine. The guard fails the BUILD if the pins or the fork commit drift.
+ARG ANUGA_DRAINAGE_SHA
+COPY --from=src /src/anuga_drainage /app/anuga_drainage
+RUN pip install --no-cache-dir "pyswmm==2.2.0" "swmm-toolkit==0.17.0" /app/anuga_drainage \
+    && python /app/run_anuga_src/batch/assert-culvert-engine.py "${ANUGA_DRAINAGE_SHA}"
 
 # ---- playback-capability guard (TASK-2749) --------------------------------
 # KEEP THIS AFTER THE LAST pip install OF THE STAGE, same placement rule as the
