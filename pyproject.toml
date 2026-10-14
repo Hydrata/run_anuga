@@ -32,6 +32,12 @@ sim = [
     "GDAL",
     "rasterio>=1.3",
     "geopandas>=0.13",
+    # Culvert engine (TASK-3643, epic 3585): SWMM 5.2 + the anuga_drainage coupler.
+    # Keep in step with batch/Dockerfile (ANUGA_DRAINAGE_SHA). PENDING PUSH: the
+    # fork commit is not on GitHub until the W3 gate push.
+    "pyswmm==2.2.0",
+    "swmm-toolkit==0.17.0",
+    "anuga_drainage @ git+https://github.com/Hydrata/anuga_drainage@825dc0f5a59de087f06ae362fee0fe8e2681ba79",
 ]
 viz = [
     "matplotlib>=3.6",
