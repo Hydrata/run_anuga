@@ -16,7 +16,9 @@ numpy only, on absolute coordinates; callers adapt a Domain or a pmesh to
 
 from __future__ import annotations
 
+import json
 import math
+import os
 from dataclasses import dataclass, field
 
 from run_anuga._imports import import_optional
@@ -182,3 +184,55 @@ def build_exchange_region(mesh, end, point, outward, footprint_width, cell_edge)
         depth_m=depth,
         expansions=expansions,
     )
+
+
+#: Written beside culverts/metrics.json (TASK-3646): the D15 regions, for the map.
+EXCHANGE_REGIONS_FILENAME = "exchange_regions.geojson"
+
+
+def exchange_regions_geojson(results, epsg=None) -> dict:
+    """One Polygon Feature per culvert end, in the model's absolute coordinates.
+
+    ``results`` are checks.CulvertMeshResult. Properties: feature_id, name, end,
+    triangle_count, coarseness_ratio (the culvert's value, exactly as in
+    metrics.json) and cell_edge_m (this end's local cell edge). Read-only over
+    the regions already built: writing it changes nothing in the hydraulics.
+    """
+    features = []
+    for result in results:
+        culvert = result.culvert
+        for end in ("inlet", "outlet"):
+            region = result.regions[end]
+            cell_edge = (result.cell_edges_m or {}).get(end)
+            features.append({
+                "type": "Feature",
+                "geometry": {
+                    "type": "Polygon",
+                    "coordinates": [[[round(float(x), 3), round(float(y), 3)] for x, y in region.polygon]],
+                },
+                "properties": {
+                    "feature_id": culvert.feature_id,
+                    "name": culvert.name,
+                    "end": end,
+                    "triangle_count": int(region.triangle_count),
+                    "coarseness_ratio": round(float(result.coarseness_ratio), 4),
+                    "cell_edge_m": round(float(cell_edge), 4) if cell_edge is not None else None,
+                },
+            })
+    document = {"type": "FeatureCollection", "features": features}
+    if epsg:
+        code = str(epsg).strip()
+        code = code if code.upper().startswith("EPSG:") else f"EPSG:{code}"
+        document["crs"] = {"type": "name", "properties": {"name": code.upper()}}
+    return document
+
+
+def write_exchange_regions(output_directory, results, epsg=None) -> str:
+    """Write culverts/exchange_regions.geojson (atomic); returns its path."""
+    path = os.path.join(output_directory, constants.METRICS_DIRNAME, EXCHANGE_REGIONS_FILENAME)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = f"{path}.tmp"
+    with open(tmp, "w") as f:
+        json.dump(exchange_regions_geojson(results, epsg), f)
+    os.replace(tmp, path)
+    return path

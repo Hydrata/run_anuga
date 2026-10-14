@@ -413,6 +413,39 @@ class TestMetricsContract:
         assert written["culverts"][0]["feature_id"] == 7
         assert json.dumps(written)  # plain JSON types only
 
+    def test_exchange_region_geojson_beside_metrics_matches_it(self, tmp_path):
+        """TASK-3646 AC1: one polygon per end; count + ratio agree with metrics.json."""
+        mesh = grid_mesh(321000.0, 5812000.0, 20, 20, 5.0)
+        input_data = {
+            "culverts": load_culverts(collection(culvert_feature())),
+            "output_directory": str(tmp_path),
+            "scenario_config": {"epsg": "EPSG:32755"},
+        }
+        [result] = prepare_culverts(input_data, mesh)
+        metrics = json.loads((tmp_path / "culverts" / "metrics.json").read_text())["culverts"][0]
+        regions = json.loads((tmp_path / "culverts" / "exchange_regions.geojson").read_text())
+        assert regions["type"] == "FeatureCollection"
+        assert regions["crs"]["properties"]["name"] == "EPSG:32755"
+        by_end = {f["properties"]["end"]: f for f in regions["features"]}
+        assert sorted(by_end) == ["inlet", "outlet"]
+        for end in ("inlet", "outlet"):
+            feature = by_end[end]
+            props = feature["properties"]
+            assert props["feature_id"] == 7 and props["name"] == "C7"
+            assert props["triangle_count"] == metrics[f"triangles_{end}"] >= constants.MIN_REGION_TRIANGLES
+            assert props["coarseness_ratio"] == metrics["coarseness_ratio"]
+            assert props["cell_edge_m"] == pytest.approx(result.cell_edges_m[end], abs=1e-4)
+            ring = feature["geometry"]["coordinates"][0]
+            assert feature["geometry"]["type"] == "Polygon" and ring[0] == ring[-1] and len(ring) == 5
+            assert ring == [[round(x, 3), round(y, 3)] for x, y in result.regions[end].polygon]
+
+    def test_exchange_region_geojson_without_epsg_has_no_crs(self, tmp_path):
+        mesh = grid_mesh(321000.0, 5812000.0, 20, 20, 5.0)
+        input_data = {"culverts": load_culverts(collection(culvert_feature())), "output_directory": str(tmp_path)}
+        prepare_culverts(input_data, mesh)
+        regions = json.loads((tmp_path / "culverts" / "exchange_regions.geojson").read_text())
+        assert "crs" not in regions and len(regions["features"]) == 2
+
     def test_no_culverts_writes_nothing(self, tmp_path):
         assert prepare_culverts({"culverts": [], "output_directory": str(tmp_path)}, None) == []
         assert not (tmp_path / "culverts").exists()
