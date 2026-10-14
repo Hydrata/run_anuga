@@ -795,9 +795,15 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
             # publish = cog-export + archive).
             with phase_tracker.phase(phase_tracker.PHASE_COG_EXPORT):
                 post_process_sww(package_dir, run_args=run_args, domain=domain)
-    except Exception:
+    except Exception as exc:
         callback.on_status('error')
         logger.error(f"{traceback.format_exc()}")
+        # TASK-3657: MPI Abort below kills this process before run_and_report's
+        # own except can post the terminal error event, so a culvert build error
+        # (written in plain words for the user) is reported HERE, first.
+        if isinstance(exc, CulvertBuildError) and telemetry_client is not None and anuga.myid == 0:
+            from run_anuga._handoff import _report_terminal_error
+            _report_terminal_error(telemetry_client, str(exc))
         # Belt-and-braces in case a caller clobbered logger.handlers.
         print(traceback.format_exc(), file=sys.stderr)
         sys.stderr.flush()

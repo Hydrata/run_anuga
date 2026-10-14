@@ -11,6 +11,7 @@ import json
 import math
 import subprocess
 import sys
+import textwrap
 
 import pytest
 
@@ -92,3 +93,35 @@ class TestCulvertE2E:
         assert result.returncode != 0
         assert "is inside Reflective building shed" in output
         assert not list(small_test_copy.glob("outputs_*/*.msh"))
+
+
+    def test_culvert_e2e_mesh_build_error_is_posted_as_the_terminal_error_before_abort(self, small_test_copy, tmp_path):
+        """TASK-3657: MPI Abort kills the process, so a mesh-dependent CulvertBuildError must
+        reach the telemetry client (the user's Run error) BEFORE Abort. Two identical culverts
+        share exchange-region triangles, which is only known on the built mesh."""
+        twin = dict(SMALL_TEST_CULVERT, id=102, properties=dict(SMALL_TEST_CULVERT["properties"], name="Twin"))
+        _add_culvert_layer(small_test_copy, collection(SMALL_TEST_CULVERT, twin))
+        _set_scenario(small_test_copy, duration=60)
+        record = tmp_path / "terminal_errors.json"
+        code = f"""
+            import json
+            from run_anuga.run import run_sim
+
+            class Client:
+                errors = []
+                def error(self, message):
+                    self.errors.append(message)
+                    open({str(record)!r}, "w").write(json.dumps(self.errors))
+                    return True
+                def __getattr__(self, name):
+                    return lambda *a, **k: True
+            try:
+                run_sim({str(small_test_copy)!r}, telemetry_client=Client())
+            except BaseException:
+                pass
+        """
+        subprocess.run([sys.executable, "-c", textwrap.dedent(code)], capture_output=True, text=True, timeout=900)
+        [message] = json.loads(record.read_text())
+        assert message.startswith("Cannot build the culverts:")
+        assert "Small test box" in message and "Twin" in message and "share" in message
+        assert "Traceback" not in message
