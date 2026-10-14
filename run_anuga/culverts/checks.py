@@ -7,7 +7,7 @@ Two stages:
 * :func:`analyse_culverts` — once a mesh exists: the local cell edge at each
   end, the D15 exchange regions (>= 4 triangles each), the short-culvert and
   coarse-mesh warnings. It FAILS the build for a culvert that cannot be coupled
-  (end off the mesh, < 4 triangles), and WARNS (never fails) when the culvert
+  (end off the mesh, < 4 triangles, exchange regions shared with another culvert), and WARNS (never fails) when the culvert
   is short for the mesh or the mesh is coarse.
 
 Every failure is collected and raised once, naming each culvert, so the user
@@ -149,6 +149,34 @@ class CulvertMeshResult:
         return self.regions["outlet"]
 
 
+def overlap_failures(results) -> list:
+    """One plain message per pair of different culvert ends whose exchange regions share a triangle.
+
+    Two operators drawing from or depositing into the same cells would double-count
+    that water, so the build refuses (TASK-3656).
+    """
+    owners = {}  # triangle id -> [(result index, end)]
+    for index, result in enumerate(results):
+        for end in ENDS:
+            for triangle in result.regions[end].triangle_ids:
+                owners.setdefault(triangle, []).append((index, end))
+    shared = {}  # ((index, end), (index, end)) -> triangle count
+    for owner_list in owners.values():
+        for position, first in enumerate(owner_list):
+            for second in owner_list[position + 1:]:
+                if first[0] != second[0]:
+                    shared[(first, second)] = shared.get((first, second), 0) + 1
+    messages = []
+    for (first, second), count in sorted(shared.items()):
+        first_culvert, second_culvert = results[first[0]].culvert, results[second[0]].culvert
+        messages.append(
+            f"{first_culvert.label} (its {_end_word(first[1])}) and {second_culvert.label} (its "
+            f"{_end_word(second[1])}) share {count} mesh triangle(s) in their exchange regions, so both "
+            "would move water through the same cells. Move one of the culverts further apart."
+        )
+    return messages
+
+
 def analyse_culverts(culverts, mesh, log=None) -> list:
     """Place each culvert on ``mesh`` (a MeshView); raise CulvertBuildError on any failure."""
     log = log or logger
@@ -205,6 +233,7 @@ def analyse_culverts(culverts, mesh, log=None) -> list:
             result.coarseness_ratio,
         )
         results.append(result)
+    failures.extend(overlap_failures(results))
     if failures:
         raise CulvertBuildError("Cannot build the culverts:\n  " + "\n  ".join(failures))
     return results

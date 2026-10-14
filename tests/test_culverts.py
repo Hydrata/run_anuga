@@ -312,6 +312,36 @@ class TestExchangeRegions:
         with pytest.raises(CulvertBuildError, match="exchange region holds 0 triangle"):
             analyse_culverts(culverts, mesh)
 
+    def test_overlapping_exchange_regions_of_two_culverts_are_refused(self):
+        """TASK-3656 AC1: side-by-side culverts share cells; the message names both culverts and ends."""
+        mesh = grid_mesh(321000.0, 5812000.0, 20, 20, 5.0)
+        culverts = load_culverts(collection(
+            culvert_feature(fid=1, coords=((321030.0, 5812050.0), (321070.0, 5812050.0))),
+            culvert_feature(fid=2, coords=((321030.0, 5812052.0), (321070.0, 5812052.0))),
+        ))
+        with pytest.raises(CulvertBuildError) as raised:
+            analyse_culverts(culverts, mesh)
+        text = str(raised.value)
+        assert "C1" in text and "C2" in text and "its Inlet" in text and "its Outlet" in text
+        assert "share" in text and "triangle(s)" in text
+
+    def test_overlap_when_one_outlet_covers_another_inlet(self):
+        mesh = grid_mesh(321000.0, 5812000.0, 20, 20, 5.0)
+        culverts = load_culverts(collection(
+            culvert_feature(fid=1, coords=((321020.0, 5812050.0), (321060.0, 5812050.0))),
+            culvert_feature(fid=2, coords=((321062.0, 5812050.0), (321090.0, 5812050.0))),
+        ))
+        with pytest.raises(CulvertBuildError, match=r"'C1'.*\(its Outlet\) and .*'C2'.*\(its Inlet\)"):
+            analyse_culverts(culverts, mesh)
+
+    def test_well_separated_culverts_do_not_overlap(self):
+        mesh = grid_mesh(321000.0, 5812000.0, 20, 20, 5.0)
+        culverts = load_culverts(collection(
+            culvert_feature(fid=1, coords=((321020.0, 5812020.0), (321060.0, 5812020.0))),
+            culvert_feature(fid=2, coords=((321020.0, 5812080.0), (321060.0, 5812080.0))),
+        ))
+        assert len(analyse_culverts(culverts, mesh)) == 2
+
     def test_end_off_the_mesh_fails_the_build(self):
         mesh = grid_mesh(321000.0, 5812000.0, 10, 20, 5.0)  # x only to 321050
         culverts = load_culverts(collection(culvert_feature()))
