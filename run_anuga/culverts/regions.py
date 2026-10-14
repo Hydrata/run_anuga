@@ -207,7 +207,9 @@ class CarveResult:
 
 
 def carve_to_invert(domain, indices, invert_m, end="") -> CarveResult:
-    """D34 (TASK-3700): lower every triangle in ``indices`` whose ground is above ``invert_m`` to it.
+    """D34 (TASK-3700): lower every triangle in ``indices`` whose ground is above ``invert_m`` to it,
+    when the invert sits more than CARVE_MIN_BURIAL_M below the region's area-weighted mean
+    ground (otherwise a dry region already reads zero head and nothing is touched).
 
     TUFLOW SX-style: the exchange region becomes a pit whose floor is the culvert invert, so a
     dry region reads stage = invert (zero head) and water must reach the invert before the
@@ -225,7 +227,11 @@ def carve_to_invert(domain, indices, invert_m, end="") -> CarveResult:
     areas = numpy.asarray(domain.areas, dtype=float)[indices]
     region_area = float(numpy.sum(areas))
     before = numpy.array(elevation.centroid_values[indices], dtype=float)
-    cut = numpy.maximum(before - float(invert_m), 0.0)
+    bed_before = float(numpy.sum(before * areas) / region_area)
+    if float(invert_m) >= bed_before - constants.CARVE_MIN_BURIAL_M:
+        cut = numpy.zeros_like(before)
+    else:
+        cut = numpy.maximum(before - float(invert_m), 0.0)
     lowered = cut > 0.0
     if lowered.any():
         cells = indices[lowered]
@@ -239,7 +245,7 @@ def carve_to_invert(domain, indices, invert_m, end="") -> CarveResult:
     return CarveResult(
         end=end,
         invert_m=float(invert_m),
-        bed_before_m=float(numpy.sum(before * areas) / region_area),
+        bed_before_m=bed_before,
         bed_after_m=float(numpy.sum(after * areas) / region_area),
         region_area_m2=region_area,
         cells_lowered=int(numpy.count_nonzero(lowered)),

@@ -36,6 +36,11 @@ MIN_LENGTH_CELL_EDGES = 3.0
 #: and a build WARNING is given when the invert sits more than this far below the region's
 #: area-weighted mean ground. It never fails the build.
 BURIED_INVERT_WARN_M = 0.05
+#: The carve runs only when the invert is more than this below the region's mean ground: at
+#: or above it a dry region already reads zero head, so nothing moves (an invert set to the
+#: region's mean ground, the spike convention, leaves the terrain bit-identical). 1 mm is
+#: the rounding of a 3-decimal invert; a false head smaller than that moves no water.
+CARVE_MIN_BURIAL_M = 0.001
 
 #: D10 per-feature defaults filled in when the package omits them.
 DEFAULT_WALL_THICKNESS_M = 0.20

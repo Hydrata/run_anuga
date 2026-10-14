@@ -667,11 +667,16 @@ class TestCarveToInvert:
         domain = fake_domain(self.GROUND, self.VERTICES)
         before = {name: getattr(domain.quantities["elevation"], name).copy()
                   for name in ("centroid_values", "edge_values", "vertex_values")}
-        carve = carve_to_invert(domain, [0, 1, 2], 6.1, "outlet")  # >= every region value
-        for name, values in before.items():
-            assert (getattr(domain.quantities["elevation"], name) == values).all()
-        assert carve.cells_lowered == 0 and carve.max_cut_m == 0.0 and carve.carved_volume_m3 == 0.0
-        assert carve.bed_after_m == carve.bed_before_m
+        # region mean ground = 15.5 / 3 = 5.1667 m: an invert at (or within 1 mm below) the mean, or
+        # above it, is not buried, even though one cell (6.0 m, vertices to 6.1) stands above it
+        for invert in (6.1, 5.5, 15.5 / 3, 15.5 / 3 - 0.0009):
+            carve = carve_to_invert(domain, [0, 1, 2], invert, "outlet")
+            for name, values in before.items():
+                assert (getattr(domain.quantities["elevation"], name) == values).all()
+                assert (getattr(domain.quantities["stage"], name) == values).all()
+            assert carve.cells_lowered == 0 and carve.max_cut_m == 0.0 and carve.carved_volume_m3 == 0.0
+            assert carve.bed_after_m == carve.bed_before_m
+        assert carve_to_invert(domain, [0, 1, 2], 15.5 / 3 - 0.0011, "outlet").cells_lowered == 2
 
 
 class TestBuriedInvertWarning:
