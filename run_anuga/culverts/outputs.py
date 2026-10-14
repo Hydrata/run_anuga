@@ -4,9 +4,15 @@ After the evolve loop :func:`write_culvert_outputs` turns the coupler's recorded
 series into
 
 * ``<output>/culverts/timeseries_<feature_id>.csv`` — columns
-  ``time_s,q_m3s,hw_level_m,tw_level_m,control`` (hydrata reads the first four), and
+  ``time_s,q_m3s,hw_level_m,tw_level_m,control,q_requested_m3s`` (hydrata reads the first
+  four BY NAME), and
 * the hydraulic keys of ``<output>/culverts/metrics.json`` (schema_version 1),
   replacing the nulls the build step wrote.
+
+``q_m3s`` is the flow the coupler ACTUALLY MOVED between the exchange regions (TASK-3700), so
+every D16 key (peak Q, velocity, regime at peak) describes water that moved; SWMM's request
+is kept only as the diagnostic ``q_requested_m3s`` column (it exceeds ``q_m3s`` when the
+losing end held less water than SWMM asked for).
 
 Sign convention: Q > 0 flows Inlet -> Outlet. ``hw_level_m`` / ``tw_level_m`` are
 water-surface levels at the Inlet / Outlet exchange regions (m, model datum).
@@ -91,14 +97,19 @@ def write_timeseries_csv(output_directory, feature_id, series, control_names) ->
     path = os.path.join(output_directory, relative)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     columns = [series[name] for name in constants.TIMESERIES_HEADER]
+    requested = series.get(constants.TIMESERIES_DIAGNOSTIC_COLUMN)
     count = len(columns[0])
     limit = constants.TIMESERIES_MAX_ROWS
     rows = range(count) if count <= limit else [round(i * (count - 1) / (limit - 1)) for i in range(limit)]
     with open(path, "w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(constants.TIMESERIES_HEADER + ("control",))
+        writer.writerow(constants.TIMESERIES_HEADER + ("control",)
+                        + ((constants.TIMESERIES_DIAGNOSTIC_COLUMN,) if requested is not None else ()))
         for i in rows:
-            writer.writerow([f"{column[i]:.6g}" for column in columns] + [control_names[int(series["control"][i])]])
+            row = [f"{column[i]:.6g}" for column in columns] + [control_names[int(series["control"][i])]]
+            if requested is not None:
+                row.append(f"{requested[i]:.6g}")
+            writer.writerow(row)
     return relative
 
 

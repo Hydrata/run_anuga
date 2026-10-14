@@ -128,6 +128,22 @@ def short_culvert_warning(culvert, largest_edge_m) -> Optional[str]:
     )
 
 
+def buried_invert_warning(culvert, carve) -> Optional[str]:
+    """D34 (TASK-3700): the warning when an invert sits more than BURIED_INVERT_WARN_M below the
+    mean ground of its exchange region (``carve`` is that end's regions.CarveResult), else None."""
+    if carve.buried_by_m <= constants.BURIED_INVERT_WARN_M:
+        return None
+    return (
+        f"{culvert.label}: the {_end_word(carve.end)} invert ({carve.invert_m:.2f} m) is "
+        f"{carve.buried_by_m:.2f} m below the average ground of its exchange region "
+        f"({carve.bed_before_m:.2f} m), so the terrain does not contain the channel the culvert sits in. "
+        f"To keep your invert, the ground there was carved down to it before the run: by up to "
+        f"{carve.max_cut_m:.2f} m over {carve.carved_area_m2:.0f} m2 ({carve.carved_volume_m3:.0f} m3 removed), "
+        "and water has to fill that hollow before the culvert flows. Burning the channel into the "
+        "terrain (lowering the elevation along the watercourse) is better than relying on this carve."
+    )
+
+
 @dataclass
 class CulvertMeshResult:
     culvert: object

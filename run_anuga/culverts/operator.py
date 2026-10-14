@@ -3,8 +3,8 @@
 operator moving water between the two D15 exchange regions).
 
 ``attach_culvert_coupler`` is called once, after distribute() and the inflow
-operators. ``anuga`` and ``anuga_drainage`` load lazily, so importing this module
-needs neither.
+operators; it first carves each exchange region down to its invert (D34, TASK-3700).
+``anuga`` and ``anuga_drainage`` load lazily, so importing this module needs neither.
 """
 
 from __future__ import annotations
@@ -14,8 +14,10 @@ import os
 
 from run_anuga._imports import import_optional
 from run_anuga.culverts import constants
-from run_anuga.culverts.checks import ENDS
+from run_anuga.culverts.checks import ENDS, buried_invert_warning
 from run_anuga.culverts.features import CulvertBuildError
+from run_anuga.culverts.metrics import write_culvert_metrics
+from run_anuga.culverts.regions import carve_to_invert
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +78,41 @@ def headwall_culvert_dict(anuga, domain, result) -> dict:
     return spec
 
 
+def carve_exchange_regions(anuga, domain, results, log=None) -> list:
+    """D34 (TASK-3700): carve each end's exchange region down to the user's invert.
+
+    Ends whose invert the package omits are skipped (that invert IS the region's mean
+    ground). Uses the SAME triangles the coupler exchanges through (anuga.Region on the
+    D15 polygon). Logs every end's carve; an invert more than BURIED_INVERT_WARN_M below
+    the region's mean ground adds a plain-English warning to the culvert's
+    ``result.warnings`` (metrics.json). Returns [(result, CarveResult), ...].
+    """
+    log = log or logger
+    carves = []
+    for result in results:
+        culvert = result.culvert
+        for end in ENDS:
+            invert = culvert.upstream_invert_m if end == "inlet" else culvert.downstream_invert_m
+            if invert is None:
+                continue
+            indices = anuga.Region(domain, polygon=_open_ring(result.regions[end].polygon)).indices
+            if len(indices) == 0:
+                continue  # headwall_culvert_dict names this failure plainly
+            carve = carve_to_invert(domain, indices, float(invert), end)
+            carves.append((result, carve))
+            log.info(
+                "culvert carve: %s %s, invert %.3f m, region mean ground %.3f -> %.3f m: %d of %d cell(s) "
+                "lowered, max cut %.3f m, %.1f m3 of ground carved over %.1f m2",
+                culvert.label, end, carve.invert_m, carve.bed_before_m, carve.bed_after_m,
+                carve.cells_lowered, len(indices), carve.max_cut_m, carve.carved_volume_m3, carve.carved_area_m2,
+            )
+            warning = buried_invert_warning(culvert, carve)
+            if warning:
+                result.warnings.append(warning)
+                log.warning(warning)
+    return carves
+
+
 def attach_culvert_coupler(domain, results, output_directory, duration_s, log=None):
     """Build the SWMM coupler for ``results`` (CulvertMeshResult list) and attach it to ``domain``.
 
@@ -89,6 +126,10 @@ def attach_culvert_coupler(domain, results, output_directory, duration_s, log=No
         raise CulvertBuildError(
             "Culverts are not supported in multi-process (MPI) runs yet; run this scenario on a single process."
         )
+    # D34: carve BEFORE the coupler is built (it measures each region's mean ground once).
+    carves = carve_exchange_regions(anuga, domain, results, log=log)
+    if any(carve.buried_by_m > constants.BURIED_INVERT_WARN_M for _, carve in carves):
+        write_culvert_metrics(output_directory, results)  # the build-time document gains the warning
     specs = [headwall_culvert_dict(anuga, domain, result) for result in results]
     try:
         culverts = [drainage.HeadwallCulvert.from_dict(spec) for spec in specs]

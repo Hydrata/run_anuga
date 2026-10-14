@@ -30,6 +30,13 @@ MAX_REGION_EXPANSIONS = 8
 #: same few cells. It never fails the build.
 MIN_LENGTH_CELL_EDGES = 3.0
 
+#: D34 (operator 14-10-26, TASK-3700): an invert below its exchange region's ground is a
+#: channel the terrain does not contain. Before the run the region is CARVED down to the
+#: invert (ground is only ever lowered; the water depth there is kept, so no water is made),
+#: and a build WARNING is given when the invert sits more than this far below the region's
+#: area-weighted mean ground. It never fails the build.
+BURIED_INVERT_WARN_M = 0.05
+
 #: D10 per-feature defaults filled in when the package omits them.
 DEFAULT_WALL_THICKNESS_M = 0.20
 DEFAULT_BARRELS = 1
@@ -50,6 +57,9 @@ METRICS_SCHEMA_VERSION = 1
 METRICS_DIRNAME = "culverts"
 METRICS_FILENAME = "metrics.json"
 TIMESERIES_HEADER = ("time_s", "q_m3s", "hw_level_m", "tw_level_m")
+#: q_m3s is the flow actually moved (TASK-3700); the coupler's request is written after
+#: ``control`` as this diagnostic column (hydrata reads the CSV by column name and ignores it).
+TIMESERIES_DIAGNOSTIC_COLUMN = "q_requested_m3s"
 
 #: The SWMM coupler (TASK-3642, design 1): the fractional-step operator eases the
 #: exchanged discharge toward SWMM's value over this timescale, and each outflow is

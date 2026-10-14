@@ -186,6 +186,69 @@ def build_exchange_region(mesh, end, point, outward, footprint_width, cell_edge)
     )
 
 
+@dataclass
+class CarveResult:
+    """What D34's carve did to one exchange region (TASK-3700)."""
+
+    end: str
+    invert_m: float
+    bed_before_m: float  # area-weighted mean ground of the region before the carve
+    bed_after_m: float
+    region_area_m2: float
+    cells_lowered: int
+    carved_area_m2: float  # plan area of the triangles that were lowered
+    max_cut_m: float
+    carved_volume_m3: float  # ground removed (sum of cut x triangle area)
+
+    @property
+    def buried_by_m(self) -> float:
+        """How far the invert sits below the region's mean ground (<= 0 when not buried)."""
+        return self.bed_before_m - self.invert_m
+
+
+def carve_to_invert(domain, indices, invert_m, end="") -> CarveResult:
+    """D34 (TASK-3700): lower every triangle in ``indices`` whose ground is above ``invert_m`` to it.
+
+    TUFLOW SX-style: the exchange region becomes a pit whose floor is the culvert invert, so a
+    dry region reads stage = invert (zero head) and water must reach the invert before the
+    culvert flows. Ground is never raised and nothing outside ``indices`` changes: the
+    centroid, edge and vertex elevations of the lowered triangles are each set to
+    min(value, invert) in place. ``Quantity.set_values(location='centroids', indices=...)``
+    is NOT used: it re-extrapolates EVERY triangle to first order, which drags (and on a
+    vertex-set DEM raises) the ground outside the region (measured: up to 0.025 m on a 1 %
+    slope). Stage moves down with the ground (depth kept), so the carve neither makes nor
+    removes water whether or not the initial stage is already set.
+    """
+    numpy = import_optional("numpy")
+    indices = numpy.asarray(indices, dtype=int)
+    elevation, stage = domain.quantities["elevation"], domain.quantities["stage"]
+    areas = numpy.asarray(domain.areas, dtype=float)[indices]
+    region_area = float(numpy.sum(areas))
+    before = numpy.array(elevation.centroid_values[indices], dtype=float)
+    cut = numpy.maximum(before - float(invert_m), 0.0)
+    lowered = cut > 0.0
+    if lowered.any():
+        cells = indices[lowered]
+        for name in ("centroid_values", "edge_values", "vertex_values"):
+            ground, water = getattr(elevation, name), getattr(stage, name)
+            old = numpy.array(ground[cells], dtype=float)
+            new = numpy.minimum(old, float(invert_m))
+            ground[cells] = new
+            water[cells] = water[cells] - (old - new)
+    after = numpy.array(elevation.centroid_values[indices], dtype=float)
+    return CarveResult(
+        end=end,
+        invert_m=float(invert_m),
+        bed_before_m=float(numpy.sum(before * areas) / region_area),
+        bed_after_m=float(numpy.sum(after * areas) / region_area),
+        region_area_m2=region_area,
+        cells_lowered=int(numpy.count_nonzero(lowered)),
+        carved_area_m2=float(numpy.sum(areas[lowered])),
+        max_cut_m=float(cut.max()) if cut.size else 0.0,
+        carved_volume_m3=float(numpy.sum(cut * areas)),
+    )
+
+
 #: Written beside culverts/metrics.json (TASK-3646): the D15 regions, for the map.
 EXCHANGE_REGIONS_FILENAME = "exchange_regions.geojson"
 

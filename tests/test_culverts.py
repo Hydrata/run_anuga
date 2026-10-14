@@ -565,6 +565,16 @@ class TestCulvertHydraulics:
         assert lines[0] == "time_s,q_m3s,hw_level_m,tw_level_m,control"
         assert len(lines) == 5 and lines[3].endswith(",inlet")
 
+    def test_requested_flow_is_a_trailing_diagnostic_column(self, tmp_path):
+        """TASK-3700: q_m3s is the moved flow; the coupler's request follows ``control``."""
+        from run_anuga.culverts.outputs import write_timeseries_csv
+
+        series = dict(self.series(), q_requested_m3s=[0.0, 4.2, 4.2, -0.5])
+        relative = write_timeseries_csv(str(tmp_path), 7, series, self.CONTROLS)
+        lines = (tmp_path / relative).read_text().splitlines()
+        assert lines[0] == "time_s,q_m3s,hw_level_m,tw_level_m,control,q_requested_m3s"
+        assert lines[2] == "10,1,100.5,99.2,barrel,4.2"
+
     def test_long_series_is_thinned_keeping_first_and_last(self, tmp_path, monkeypatch):
         from run_anuga.culverts.outputs import write_timeseries_csv
 
@@ -589,3 +599,193 @@ class TestCouplerGuards:
         monkeypatch.setattr(anuga, "numprocs", 2, raising=False)
         with pytest.raises(CulvertBuildError, match="multi-process"):
             attach_culvert_coupler(types.SimpleNamespace(numproc=2), [], "/nonexistent", 60)
+
+
+# ── D34 buried inverts: carve to the invert + warning (TASK-3700) ──────
+
+
+class _Quantity:
+    def __init__(self, centroids, vertices):
+        import numpy
+
+        self.centroid_values = numpy.array(centroids, dtype=float)
+        self.vertex_values = numpy.array(vertices, dtype=float)
+        self.edge_values = self.vertex_values.copy()
+
+
+def fake_domain(ground, vertex_ground, depth=0.0):
+    """Four 10 m2 triangles; ``depth`` of water everywhere."""
+    import types
+
+    import numpy
+
+    elevation = _Quantity(ground, vertex_ground)
+    stage = _Quantity(numpy.asarray(ground) + depth, numpy.asarray(vertex_ground) + depth)
+    return types.SimpleNamespace(areas=numpy.full(len(ground), 10.0),
+                                 quantities={"elevation": elevation, "stage": stage})
+
+
+class TestCarveToInvert:
+
+    GROUND = [6.0, 5.5, 4.0, 7.0]
+    VERTICES = [[6.1, 5.9, 6.0], [5.4, 5.6, 5.5], [3.9, 4.1, 4.0], [7.0, 7.0, 7.0]]
+
+    def test_lowers_only_region_cells_above_the_invert_and_never_raises(self):
+        import numpy
+
+        from run_anuga.culverts.regions import carve_to_invert
+
+        domain = fake_domain(self.GROUND, self.VERTICES)
+        carve = carve_to_invert(domain, [0, 1, 2], 5.0, "inlet")
+        elevation = domain.quantities["elevation"]
+        assert elevation.centroid_values.tolist() == [5.0, 5.0, 4.0, 7.0]  # cell 3 is outside the region
+        assert elevation.vertex_values[3].tolist() == [7.0, 7.0, 7.0]
+        assert elevation.vertex_values[2].tolist() == [3.9, 4.1, 4.0]      # below the invert: untouched
+        for name in ("centroid_values", "edge_values", "vertex_values"):
+            before = numpy.array(self.GROUND if name == "centroid_values" else self.VERTICES)
+            assert numpy.all(getattr(elevation, name) <= before)          # never raised
+        assert carve.cells_lowered == 2 and carve.carved_area_m2 == 20.0
+        assert carve.max_cut_m == pytest.approx(1.0)
+        assert carve.carved_volume_m3 == pytest.approx(10.0 * 1.0 + 10.0 * 0.5)
+        assert carve.bed_before_m == pytest.approx(15.5 / 3) and carve.bed_after_m == pytest.approx(14.0 / 3)
+
+    def test_no_water_is_made_dry_cells_stay_dry_and_wet_cells_keep_their_depth(self):
+        import numpy
+
+        from run_anuga.culverts.regions import carve_to_invert
+
+        for depth in (0.0, 0.3):
+            domain = fake_domain(self.GROUND, self.VERTICES, depth)
+            carve_to_invert(domain, [0, 1, 2], 5.0, "inlet")
+            for name in ("centroid_values", "edge_values", "vertex_values"):
+                h = getattr(domain.quantities["stage"], name) - getattr(domain.quantities["elevation"], name)
+                assert numpy.allclose(h, depth, atol=1e-12)
+
+    def test_is_a_no_op_when_the_invert_is_at_or_above_the_ground(self):
+        from run_anuga.culverts.regions import carve_to_invert
+
+        domain = fake_domain(self.GROUND, self.VERTICES)
+        before = {name: getattr(domain.quantities["elevation"], name).copy()
+                  for name in ("centroid_values", "edge_values", "vertex_values")}
+        carve = carve_to_invert(domain, [0, 1, 2], 6.1, "outlet")  # >= every region value
+        for name, values in before.items():
+            assert (getattr(domain.quantities["elevation"], name) == values).all()
+        assert carve.cells_lowered == 0 and carve.max_cut_m == 0.0 and carve.carved_volume_m3 == 0.0
+        assert carve.bed_after_m == carve.bed_before_m
+
+
+class TestBuriedInvertWarning:
+
+    @staticmethod
+    def carve(buried_by):
+        from run_anuga.culverts.regions import CarveResult
+
+        return CarveResult(end="inlet", invert_m=5.28, bed_before_m=5.28 + buried_by, bed_after_m=5.28,
+                           region_area_m2=200.0, cells_lowered=16, carved_area_m2=200.0,
+                           max_cut_m=buried_by, carved_volume_m3=200.0 * buried_by)
+
+    def test_plain_english_warning_names_the_cut_area_and_the_better_fix(self):
+        from run_anuga.culverts.checks import buried_invert_warning
+
+        [culvert] = load_culverts(collection(culvert_feature(name="Box x3")))
+        text = buried_invert_warning(culvert, self.carve(0.75))
+        assert text.startswith(f"{culvert.label}: the Inlet invert (5.28 m) is 0.75 m below the average ground")
+        assert "carved down to it before the run: by up to 0.75 m over 200 m2 (150 m3 removed)" in text
+        assert "Burning the channel into the terrain" in text and "is better" in text
+
+    def test_no_warning_within_five_centimetres_or_above_the_ground(self):
+        from run_anuga.culverts.checks import buried_invert_warning
+
+        [culvert] = load_culverts(collection(culvert_feature()))
+        assert constants.BURIED_INVERT_WARN_M == 0.05
+        for buried_by in (0.05, 0.01, 0.0, -0.4):
+            assert buried_invert_warning(culvert, self.carve(buried_by)) is None
+        assert buried_invert_warning(culvert, self.carve(0.051))
+
+
+#: The TASK-3699 localhost defect, reduced: Box x3 with inverts 5.28 -> 4.382 m under ground
+#: 6.0275 / 4.7703 m (a channel the 5 m DEM does not contain), in a closed 200 x 100 m box.
+BURIED_SCRIPT = """
+    import json, logging, os, sys, tempfile
+    import numpy as np, anuga
+    from run_anuga.culverts import MeshView, analyse_culverts, load_culverts
+    from run_anuga.culverts.operator import attach_culvert_coupler
+    logging.basicConfig(level=logging.INFO, stream=sys.stderr)
+    inflow_q, finaltime = {inflow_q!r}, {finaltime!r}
+    work = tempfile.mkdtemp(prefix="buried_")
+    os.chdir(work)
+    d = anuga.rectangular_cross_domain(40, 20, len1=200.0, len2=100.0)
+    d.set_name("buried"); d.set_datadir(work); d.set_store(False)
+    bed = lambda x, y: np.where(x < 95.0, 6.0275, 4.7703)
+    d.set_quantity("elevation", bed, location="centroids")
+    d.set_quantity("friction", 0.04)
+    d.set_quantity("stage", 0.0)
+    d.quantities["stage"].maximum(d.quantities["elevation"])  # dry start, as run.py's protection
+    d.set_boundary({{k: anuga.Reflective_boundary(d) for k in d.get_boundary_tags()}})
+    feature = {{"type": "Feature", "id": 1, "geometry": {{"type": "LineString",
+               "coordinates": [[70.0, 50.0], [120.0, 50.0]]}},
+               "properties": {{"name": "Box x3", "shape": "box", "width_m": 1.5, "height_m": 1.2, "barrels": 3,
+                              "upstream_invert_m": 5.28, "downstream_invert_m": 4.382}}}}
+    culverts = load_culverts({{"type": "FeatureCollection", "features": [feature]}})
+    results = analyse_culverts(culverts, MeshView.from_domain(d))
+    e0 = d.quantities["elevation"].centroid_values.copy()
+    v_before = float(d.get_water_volume())
+    cs = attach_culvert_coupler(d, results, work, finaltime)
+    v0 = float(d.get_water_volume())
+    lowered = d.quantities["elevation"].centroid_values < e0
+    inflow = None
+    if inflow_q:
+        inflow = anuga.Inlet_operator(d, anuga.Region(d, polygon=[[5, 40], [15, 40], [15, 60], [5, 60]]), Q=inflow_q)
+    for _ in d.evolve(yieldstep=30.0, finaltime=finaltime):
+        pass
+    s = cs.timeseries(0)
+    print(json.dumps(dict(
+        v_before=v_before, v0=v0, v1=float(d.get_water_volume()),
+        inflow=float(inflow.total_applied_volume) if inflow else 0.0,
+        raised=bool((d.quantities["elevation"].centroid_values > e0).any()),
+        lowered=int(lowered.sum()), lowered_x=d.centroid_coordinates[lowered][:, 0].tolist(),
+        warnings=results[0].warnings, bed_in=float(cs.bed_in[0]), bed_out=float(cs.bed_out[0]),
+        t=s["time_s"].tolist(), q=s["q_m3s"].tolist(), q_req=s["q_requested_m3s"].tolist(),
+        hw=s["hw_level_m"].tolist(), tw=s["tw_level_m"].tolist(),
+        applied=float(cs.applied_volume[0]), requested=float(cs.requested_volume[0]))))
+    cs.finalize()
+"""
+
+
+def _buried(inflow_q, finaltime):
+    result = _run_python(BURIED_SCRIPT.format(inflow_q=inflow_q, finaltime=finaltime))
+    assert result.returncode == 0, (result.stdout + result.stderr)[-3000:]
+    return json.loads(result.stdout.strip().splitlines()[-1]), result.stderr
+
+
+@pytest.mark.requires_anuga
+class TestBuriedInvertCarve:
+    """AC2/AC3 on the real coupler (subprocess: an ANUGA/MPI abort kills pytest)."""
+
+    def test_dry_carved_regions_read_zero_head_and_carry_zero_flow(self):
+        r, log = _buried(0.0, 120.0)
+        assert r["v_before"] == r["v0"] == r["v1"] == 0.0           # the carve made no water
+        assert not r["raised"] and r["lowered"] > 0
+        # only the two exchange regions moved: inlet x < 70, outlet x > 120
+        assert all(x < 70.0 or x > 120.0 for x in r["lowered_x"])
+        assert r["bed_in"] == pytest.approx(5.28, abs=1e-9) and r["bed_out"] == pytest.approx(4.382, abs=1e-9)
+        assert max(abs(h - 5.28) for h in r["hw"]) < 1e-9             # zero headwater depth
+        assert max(map(abs, r["q"])) == 0.0 and r["applied"] == 0.0   # zero moved flow ...
+        assert max(map(abs, r["q_req"])) < 1e-3                       # ... and SWMM asks ~nothing
+        # AC3: both ends logged; the 0.75 m / 0.39 m burials warn in plain English
+        assert log.count("culvert carve: ") == 2 and "8 of 8 cell(s) lowered, max cut 0.747 m" in log
+        assert len(r["warnings"]) == 2 and all("Burning the channel" in w for w in r["warnings"])
+
+    def test_the_carved_pool_fills_before_the_culvert_flows(self):
+        r, _ = _buried(0.5, 900.0)
+        flowing = [i for i, q in enumerate(r["q"]) if q != 0.0]
+        assert flowing, "the culvert never flowed"
+        first = flowing[0]
+        assert r["t"][first] > 300.0      # the inflow (60 m upstream) had to reach and fill the pool first
+        # it starts as the pool stage passes the INVERT (not the old ground, 0.75 m higher), from ~zero head
+        assert 5.28 < r["hw"][first] < 5.28 + 0.05 and 0.0 < r["q"][first] < 0.01
+        for q, q_req, hw in zip(r["q"], r["q_req"], r["hw"]):
+            if hw <= 5.28 + 1e-9:
+                assert q == 0.0 and abs(q_req) < 1e-3                  # no head, no flow
+        assert max(r["q"]) > 0.05 and min(r["q"]) >= -1e-6            # then it carries flow, forward
+        assert r["v1"] - r["v0"] == pytest.approx(r["inflow"], rel=1e-6)

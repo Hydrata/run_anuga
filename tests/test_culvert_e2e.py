@@ -64,7 +64,9 @@ class TestCulvertE2E:
         with open(series_path, newline="") as f:
             rows = list(csv.DictReader(f))
         assert len(rows) >= 2
-        assert list(rows[0]) == ["time_s", "q_m3s", "hw_level_m", "tw_level_m", "control"]
+        assert list(rows[0]) == ["time_s", "q_m3s", "hw_level_m", "tw_level_m", "control", "q_requested_m3s"]
+        # TASK-3700: q_m3s is what moved, never more than the coupler asked for
+        assert all(abs(float(row["q_m3s"])) <= abs(float(row["q_requested_m3s"])) + 1e-9 for row in rows)
         assert float(rows[-1]["time_s"]) > float(rows[0]["time_s"])
         assert any(float(row["q_m3s"]) != 0.0 for row in rows)
         run_log = "\n".join(p.read_text() for p in output_dir.glob("run_anuga_*.log")) + output
