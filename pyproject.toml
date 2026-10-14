@@ -32,6 +32,36 @@ sim = [
     "GDAL",
     "rasterio>=1.3",
     "geopandas>=0.13",
+    # TASK-2758: fiona is LOAD-BEARING FOR THE ENGINE, not for run_anuga's own
+    # imports — which is exactly why it went undeclared for so long.
+    # anuga/utilities/spatialInputUtil.py gates its entire geodata surface
+    # behind `try: import fiona, rasterio, shapely` (the `spatial_available`
+    # flag); with it False, getRasterExtent raises and every
+    # set_quantity('elevation', <raster>) dies MID-RUN — deep inside a paid
+    # Batch job, not at startup.
+    #
+    # Nothing pulls it transitively any more: geopandas 1.x moved to pyogrio,
+    # and anuga declares `fiona; extra == "data"` (3.3.7 and 4.0.0 alike), so
+    # a plain `anuga` resolve has no fiona at all. It used to be hand-installed
+    # on three separate surfaces with three different specs, and absent on a
+    # fourth — CI — which is how the TASK-2758 pin bump surfaced it: bumping
+    # past the upstream commits that removed spatialInputUtil's gdal/ogr
+    # fallback tier turned a silent degrade into 14 failures + 29 errors.
+    #
+    # Declared HERE because [sim] is the one thing all four surfaces install:
+    #   ansible install-anuga.yml:243   run_anuga[sim,viz,platform,playback]
+    #   batch/Dockerfile:202 (cpu)      run_anuga_src[sim,platform,playback]
+    #   batch/Dockerfile:339 (gpu)      run_anuga_src[sim,platform,playback]
+    #   .github/workflows/ci.yml:109    -e ".[full,dev]"  ([full] -> [sim])
+    #
+    # Range matches ansible's TASK-1279 task deliberately: that task runs
+    # BEFORE the editable install and builds fiona `--no-binary` against the
+    # system GDAL, so an identical range means this declaration is already
+    # satisfied there and does NOT replace that source build with a
+    # bundled-GDAL wheel. Bounded, not bare — an unbounded dependency floating
+    # onto a breaking release is the TASK-2863 shape.
+    # Guarded by test_fiona_present_when_sim_extra_is_installed.
+    "fiona>=1.9,<1.11",
 ]
 viz = [
     "matplotlib>=3.6",

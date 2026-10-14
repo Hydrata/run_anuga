@@ -141,10 +141,28 @@ WORKDIR /app
 # Install GDAL Python bindings matching system GDAL. meson/ninja/meson-python
 # join the build toolchain here because anuga_core builds via the mesonpy
 # backend with --no-build-isolation (mirrors the gpu-dev base).
-# TASK-2863: cython pinned <3.3 — 3.3.0 rejects the fork's pyx dict-view
-# assignments (sparse_matrix_ext.pyx:73-74); unpin when the fork-side fix
-# lands and the engine pin moves past it.
-RUN pip install --no-cache-dir "numpy>=2.0" setuptools wheel "cython<3.3" pybind11 \
+# TASK-2863: cython was pinned <3.3 here (3.3.0 rejected the fork's pyx
+# dict-view assignments, sparse_matrix_ext.pyx:73-74) until the engine pin
+# moved past the fork-side fix. ANUGA_CORE_SHA above is now 93368189
+# (TASK-2758's sync of upstream tag 4.0.0 into the fork's main, baked in
+# PR #19), which carries the fix — upstream ea00a180, "Fix the build under
+# Cython 3.3.0 (dict views are not lists)" — so the <3.3 cap goes (AC4).
+#
+# It is REPLACED, not deleted, and this is the line that matters: the engine
+# build below is --no-build-isolation, so pip never reads anuga_core's
+# [build-system] requires. Bounding Cython in the fork's pyproject.toml
+# (TASK-2863 AC3) governs build-ISOLATED installs only and has no effect
+# here — THIS pip install is what picks the compiler for the .pyx in the cpu
+# stage. An image build is a ship path: it must not be the thing that
+# discovers the next Cython break. run_anuga's ci.yml deliberately leaves
+# cython unbounded to be that canary instead.
+#
+# SCOPE: cpu stage only. The gpu stage is FROM ${GPU_BASE} and gets its
+# toolchain from the base image, where cython is still unbounded —
+# deploy/scripts/gpu-dev/Dockerfile.gpu-dev:74. That base is built rarely and
+# by hand, so its Cython is frozen at whatever was current at base-build time
+# rather than re-resolved per bake; bound it there too when it is next rebuilt.
+RUN pip install --no-cache-dir "numpy>=2.0" setuptools wheel "cython<4" pybind11 \
         meson ninja meson-python && \
     pip install --no-cache-dir --no-binary GDAL --no-build-isolation \
     "GDAL==$(gdal-config --version).*"
@@ -159,6 +177,14 @@ RUN pip install --no-cache-dir "numpy>=2.0" setuptools wheel "cython<3.3" pybind
 # gpu-dev base installs the trio explicitly; rasterio/shapely arrive via
 # run_anuga[sim] below, fiona must be explicit (TASK-2671 unification: the
 # cpu image must run riverwall scenarios identically to the gpu image).
+#
+# TASK-2758: fiona is now also DECLARED in run_anuga[sim] (pyproject.toml),
+# which the `run_anuga_src[sim,...]` install below would satisfy on its own —
+# this line is belt-and-braces, kept because it puts fiona in place BEFORE the
+# engine build rather than after it. Do NOT read it as "the Dockerfile covers
+# fiona": it covers only this stage. The declaration is what covers the gpu
+# stage, the ansible web-box venv and CI, and it is guarded by
+# tests/test_run_utils.py::test_fiona_present_when_sim_extra_is_installed.
 RUN pip install --no-cache-dir \
     scipy matplotlib "meshpy==2025.1.1" "pymetis==2025.2.2" netcdf4 dill utm pyproj affine \
     mpi4py requests boto3 awscli fiona "zarr>=3.0"

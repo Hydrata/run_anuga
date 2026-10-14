@@ -43,6 +43,49 @@ def test_rasterio_present_when_ci_expects_it():
     )
 
 
+_HAS_GEOPANDAS = importlib.util.find_spec("geopandas") is not None
+_HAS_FIONA = importlib.util.find_spec("fiona") is not None
+
+
+@pytest.mark.requires_geo
+def test_fiona_present_when_sim_extra_is_installed():
+    """Canary for TASK-2758: fiona is load-bearing for the ENGINE, not for us.
+
+    anuga's spatialInputUtil gates its whole geodata surface behind
+    ``try: import fiona, rasterio, shapely`` (the ``spatial_available`` flag).
+    With that flag False, ``getRasterExtent`` raises and every
+    ``set_quantity('elevation', <raster>)`` dies MID-RUN — deep inside a paid
+    Batch job, not at startup. Nothing pulls fiona transitively any more
+    (geopandas 1.x moved to pyogrio; anuga declares ``fiona; extra == "data"``),
+    so it went undeclared and was hand-installed on three surfaces with three
+    different specs — and absent on a fourth, CI, which is how the TASK-2758
+    engine-pin bump surfaced it as 14 failures + 29 errors.
+
+    It is now declared ONCE, in ``run_anuga[sim]``. This is the test that keeps
+    it there: delete the declaration and this reds, instead of the loss showing
+    up as a mid-run ImportError on a real simulation.
+
+    SELF-ARMING, deliberately — no env var to forget or silently unset (unlike
+    the RUN_ANUGA_EXPECT_RASTERIO canary above). geopandas is a ``[sim]``-only
+    dependency, so its presence IS the signal that ``[sim]`` was installed and
+    therefore that fiona must be present too.
+
+    Written as ONE implication rather than a guard + assert so that it never
+    skips: on a ``pip install -e ".[dev]"`` (no ``[sim]``) it passes vacuously
+    instead of adding another entry to the marker-lint conditional-skip budget,
+    which is capped at an exact count.
+    """
+    assert not _HAS_GEOPANDAS or _HAS_FIONA, (
+        "geopandas is importable, so run_anuga[sim] is installed — but fiona is "
+        "not. [sim] declares `fiona>=1.9,<1.11` (pyproject.toml, TASK-2758). "
+        "Either that declaration was dropped, or this environment predates it "
+        "and needs reinstalling: with the deployed engine (anuga_core 93368189 "
+        "or later) anuga.utilities.spatialInputUtil.spatial_available is False "
+        "without fiona, and every simulation that reads an elevation raster "
+        "fails mid-run."
+    )
+
+
 OUTER_RING = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0], [0.0, 0.0]]
 OUTER_RING_2 = [[10.0, 10.0], [11.0, 10.0], [11.0, 11.0], [10.0, 11.0], [10.0, 10.0]]
 
