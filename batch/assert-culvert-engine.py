@@ -10,7 +10,8 @@ on an image without the engine must never reach a customer (TASK-3643, epic 3585
 Proves, from installed metadata and a real import, that:
 * pyswmm 2.2.0 and swmm-toolkit 0.17.0 are installed (exact pins);
 * anuga_drainage was built from the pinned commit (PEP 610 direct_url.json
-  vcs_info.commit_id, the same provenance idea as assert-anuga-provenance.py);
+  vcs_info.commit_id for a VCS install; for the Dockerfile's local-dir install from the
+  src stage, the HYDRATA_SOURCE_SHA stamp written at checkout);
 * ``from anuga_drainage.culverts import HeadwallCulvert, attach_culverts`` works
   (this imports pyswmm and the bundled SWMM 5.2 library).
 """
@@ -20,6 +21,8 @@ from __future__ import annotations
 import json
 import sys
 from importlib import metadata
+from pathlib import Path
+from urllib.parse import unquote, urlparse
 
 EXPECTED_VERSIONS = {"pyswmm": "2.2.0", "swmm-toolkit": "0.17.0"}
 
@@ -45,6 +48,9 @@ def main(argv) -> int:
         direct_url = None
     if direct_url is not None:
         commit = (direct_url.get("vcs_info") or {}).get("commit_id", "")
+        if not commit and "dir_info" in direct_url:  # the Dockerfile's src-stage clone, stamped at checkout
+            stamp = Path(unquote(urlparse(direct_url.get("url", "")).path)) / "HYDRATA_SOURCE_SHA"
+            commit = stamp.read_text().strip() if stamp.is_file() else ""
         if not commit or not (commit.lower().startswith(sha) or sha.startswith(commit.lower())):
             problems.append(f"anuga_drainage was not built from commit {sha} (direct_url commit_id={commit!r})")
     try:
