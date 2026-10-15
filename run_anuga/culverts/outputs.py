@@ -79,8 +79,9 @@ def culvert_hydraulics(culvert, upstream_invert_m, series, control_names, downst
     upstream_invert_m = float(upstream_invert_m)
     downstream_invert_m = upstream_invert_m if downstream_invert_m is None else float(downstream_invert_m)
 
-    i_hw, i_tw, i_q = (int(numpy.nanargmax(hw)), int(numpy.nanargmax(tw)),
-                       int(numpy.nanargmax(numpy.abs(q))))
+    # peak_tw_level_m was a nanmax (an all-NaN Outlet series gave null); keep that, never raise.
+    i_tw = 0 if numpy.all(numpy.isnan(tw)) else int(numpy.nanargmax(tw))
+    i_hw, i_q = int(numpy.nanargmax(hw)), int(numpy.nanargmax(numpy.abs(q)))
     reverse = bool(q[i_q] < 0)
     gov_level, gov_invert, i_gov = (tw, downstream_invert_m, i_tw) if reverse else (hw, upstream_invert_m, i_hw)
     inlet_depth = max(0.0, float(hw[i_hw]) - upstream_invert_m)
