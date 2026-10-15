@@ -39,6 +39,9 @@ CONTRACT_KEYS = {
     "blockage_pct", "blockage_method", "peak_hw_level_m", "peak_hw_depth_m", "peak_hw_time_s",
     "hw_over_d", "peak_tw_level_m", "peak_q_m3s", "peak_q_time_s", "barrel_velocity_ms",
     "regime_at_peak", "regime_fractions", "surcharge_s", "timeseries_path", "warnings",
+    # TASK-3695 (additive, schema_version 1): both-end peaks + the governing-direction headwater
+    "peak_hw_inlet_m", "peak_hw_outlet_m", "hw_end", "peak_hw_governing_level_m",
+    "peak_hw_governing_depth_m", "peak_hw_governing_time_s",
 }
 HYDRAULIC_KEYS = CONTRACT_KEYS - {
     "feature_id", "name", "triangles_inlet", "triangles_outlet", "coarseness_ratio",
@@ -464,6 +467,33 @@ def _run_python(code, timeout=600):
                           capture_output=True, text=True, timeout=timeout)
 
 
+def _run_sim_recording_terminal_errors(package, tmp_path, **run_kwargs):
+    """run_sim in a subprocess (a failure ends in MPI Abort, which would kill pytest) with a
+    telemetry client that records every terminal ``error`` event to a JSON list; returns that
+    file's path (asserted to exist, i.e. at least one error was posted)."""
+    record = tmp_path / "terminal_errors.json"
+    extra = "".join(f", {key}={value!r}" for key, value in run_kwargs.items())
+    result = _run_python(f"""
+        import json
+        from run_anuga.run import run_sim
+
+        class Client:
+            errors = []
+            def error(self, message):
+                self.errors.append(message)
+                open({str(record)!r}, "w").write(json.dumps(self.errors))
+                return True
+            def __getattr__(self, name):
+                return lambda *a, **k: True
+        try:
+            run_sim({str(package)!r}, telemetry_client=Client(){extra})
+        except BaseException:
+            pass
+    """, timeout=900)
+    assert record.exists(), result.stdout + result.stderr
+    return record
+
+
 @pytest.mark.requires_anuga
 class TestRealMesh:
 
@@ -537,6 +567,46 @@ class TestCulvertHydraulics:
         h = culvert_hydraulics(culvert, 100.0, series, self.CONTROLS)
         assert h["peak_q_m3s"] == -4.0 and h["peak_q_time_s"] == 10.0
 
+    def test_reverse_dominant_culvert_reports_the_outlet_end_headwater(self):
+        """TASK-3695: peak |Q| flows Outlet -> Inlet, so the headwater is at the Outlet end.
+        hw_over_d and surcharge_s follow the governing (upstream-of-peak-flow) end, measured
+        over THAT end's invert; the existing per-end keys keep their meaning (peak_hw_* = the
+        Inlet end, peak_tw_level_m = the Outlet end) and both-end keys are added."""
+        from run_anuga.culverts.outputs import culvert_hydraulics
+
+        [culvert] = load_culverts(collection(culvert_feature(width_m=2.0, height_m=1.0)))
+        series = {
+            "time_s": [0.0, 10.0, 20.0, 30.0],
+            "q_m3s": [0.0, -1.0, -3.0, 0.5],
+            "hw_level_m": [100.0, 100.05, 100.1, 100.05],  # Inlet end: barely wet
+            "tw_level_m": [99.5, 100.6, 101.3, 100.2],  # Outlet end: surcharged
+            "control": [0, 2, 2, 0],
+        }
+        h = culvert_hydraulics(culvert, 100.0, series, self.CONTROLS, downstream_invert_m=99.5)
+        assert set(h) == HYDRAULIC_KEYS
+        assert h["hw_end"] == "outlet"
+        assert h["peak_hw_governing_level_m"] == 101.3
+        assert h["peak_hw_governing_depth_m"] == pytest.approx(1.8)  # over the OUTLET invert 99.5
+        assert h["peak_hw_governing_time_s"] == 20.0
+        assert h["hw_over_d"] == pytest.approx(1.8)  # governing end, not the near-dry Inlet (0.1)
+        assert h["surcharge_s"] == 20.0  # Outlet depths 1.1 and 1.8 > rise 1.0: two 10 s samples
+        assert h["peak_hw_inlet_m"] == 100.1 and h["peak_hw_outlet_m"] == 101.3
+        # unchanged per-end meanings, which the gmc Profile draws at each end
+        assert h["peak_hw_level_m"] == 100.1 and h["peak_hw_depth_m"] == pytest.approx(0.1)
+        assert h["peak_tw_level_m"] == 101.3
+
+    def test_reverse_dominant_keys_on_a_forward_series_match_the_inlet_headwater(self):
+        from run_anuga.culverts.outputs import culvert_hydraulics
+
+        [culvert] = load_culverts(collection(culvert_feature(width_m=2.0, height_m=1.0)))
+        h = culvert_hydraulics(culvert, 100.0, self.series(), self.CONTROLS, downstream_invert_m=99.0)
+        assert h["hw_end"] == "inlet"
+        assert h["peak_hw_governing_level_m"] == h["peak_hw_level_m"] == 101.4
+        assert h["peak_hw_governing_depth_m"] == h["peak_hw_depth_m"] == 1.4
+        assert h["peak_hw_governing_time_s"] == h["peak_hw_time_s"] == 20.0
+        assert h["hw_over_d"] == pytest.approx(1.4) and h["surcharge_s"] == 10.0
+        assert h["peak_hw_inlet_m"] == 101.4 and h["peak_hw_outlet_m"] == 100.1
+
     def test_empty_series_gives_no_values(self):
         from run_anuga.culverts.outputs import culvert_hydraulics
 
@@ -587,6 +657,117 @@ class TestCulvertHydraulics:
         assert len(rows) == 5 and rows[0].startswith("0,") and rows[-1].startswith("99,")
 
 
+#: The Flow Routing Continuity block of prod run 1590's culverts.rpt (TASK-3717), verbatim.
+RPT_1590_CONTINUITY = """
+  **************************        Volume        Volume
+  Flow Routing Continuity        hectare-m      10^6 ltr
+  **************************     ---------     ---------
+  Dry Weather Inflow .......         0.000         0.000
+  Wet Weather Inflow .......         0.000         0.000
+  Groundwater Inflow .......         0.000         0.000
+  RDII Inflow ..............         0.000         0.000
+  External Inflow ..........         0.076         0.762
+  External Outflow .........         0.074         0.740
+  Flooding Loss ............         0.000         0.000
+  Evaporation Loss .........         0.000         0.000
+  Exfiltration Loss ........         0.000         0.000
+  Initial Stored Volume ....         0.000         0.000
+  Final Stored Volume ......         0.019         0.191
+  Continuity Error (%) .....       -22.166
+"""
+
+
+class TestSwmmContinuity:
+    """TASK-3717: SWMM's barrel continuity reaches metrics.json as numbers + a plain-English
+    note (additive top-level key ``swmm_continuity``, schema_version 1), never as a bare
+    percentage on its own. Run 1590's -22.2 % is SWMM booking the water standing in the outlet
+    end of the barrel (filled from the imposed outlet stage) as storage no inflow delivered."""
+
+    def write_rpt(self, tmp_path, block=RPT_1590_CONTINUITY):
+        path = tmp_path / "culverts.rpt"
+        path.write_text("  EPA STORM WATER MANAGEMENT MODEL - VERSION 5.2\n" + block)
+        return str(path)
+
+    def test_continuity_numbers_and_stored_share_from_the_run_1590_rpt(self, tmp_path):
+        from run_anuga.culverts.outputs import swmm_continuity
+
+        c = swmm_continuity(self.write_rpt(tmp_path))
+        assert c["error_pct"] == -22.166
+        assert c["inflow_m3"] == 762.0 and c["outflow_m3"] == 740.0
+        assert c["initial_stored_m3"] == 0.0 and c["final_stored_m3"] == 191.0
+        assert c["stored_share_pct"] == pytest.approx(25.1, abs=0.05)
+
+    def test_continuity_note_explains_the_figure_in_plain_english(self, tmp_path):
+        from run_anuga.culverts.outputs import swmm_continuity
+
+        note = swmm_continuity(self.write_rpt(tmp_path))["note"]
+        assert "-22.2%" in note and "191 m3" in note and "25.1%" in note and "762 m3" in note
+        assert "not water lost or created" in note and "outlet" in note
+        assert "SWMM" in note and "continuity" in note
+
+    def test_continuity_within_one_percent_says_so_without_the_storage_story(self, tmp_path):
+        from run_anuga.culverts.outputs import swmm_continuity
+
+        block = RPT_1590_CONTINUITY.replace("0.740", "0.571").replace("-22.166", "0.000")
+        c = swmm_continuity(self.write_rpt(tmp_path, block))
+        assert c["error_pct"] == 0.0
+        assert "within 1%" in c["note"] and "outlet" not in c["note"]
+
+    def test_continuity_unexplained_by_storage_does_not_claim_bookkeeping(self, tmp_path):
+        """A positive error (outflow exceeds inflow + storage) is not the stored-water effect:
+        the note reports it as SWMM's own barrel check and still says ANUGA's exchange is exact,
+        but never blames the barrel storage."""
+        from run_anuga.culverts.outputs import swmm_continuity
+
+        block = RPT_1590_CONTINUITY.replace("-22.166", "4.000")
+        note = swmm_continuity(self.write_rpt(tmp_path, block))["note"]
+        assert "4.0%" in note and "outlet end" not in note
+        assert "ANUGA moved exactly" in note
+
+    def test_continuity_missing_rpt_or_block_gives_none(self, tmp_path):
+        from run_anuga.culverts.outputs import swmm_continuity
+
+        assert swmm_continuity(str(tmp_path / "absent.rpt")) is None
+        assert swmm_continuity(self.write_rpt(tmp_path, "\n  no routing block here\n")) is None
+        assert swmm_continuity(None) is None
+        garbled = RPT_1590_CONTINUITY.replace("0.762", "*****")
+        assert swmm_continuity(self.write_rpt(tmp_path, garbled)) is None
+
+    @pytest.mark.requires_anuga  # write_culvert_outputs imports anuga_drainage ([sim], not [dev])
+    def test_continuity_reaches_metrics_json_beside_the_bare_error(self, tmp_path):
+        """write_culvert_outputs adds ``swmm_continuity`` (top level, additive) next to the
+        unchanged ``swmm_routing_error_pct``; the per-culvert entries (what hydrata ingests into
+        StructureResult, the Structures table) stay on the contract keys."""
+        from run_anuga.culverts.outputs import write_culvert_outputs
+
+        rpt = self.write_rpt(tmp_path)
+        mesh = grid_mesh(321000.0, 5812000.0, 20, 20, 5.0)
+        results = analyse_culverts(load_culverts(collection(culvert_feature())), mesh)
+        series = TestCulvertHydraulics.series()
+
+        class Engine:
+            rpt_path = rpt
+
+        class Coupler:
+            engine_swmm = Engine()
+            culverts = [type("Built", (), {"upstream_invert_m": 100.0, "downstream_invert_m": 99.0})()]
+
+            def finalize(self):
+                return {"swmm_routing_error_pct": -22.166}
+
+            def timeseries(self, index):
+                return series
+
+        out = tmp_path / "out"
+        path = write_culvert_outputs(str(out), results, Coupler())
+        document = json.loads(open(path).read())
+        assert document["swmm_routing_error_pct"] == -22.166
+        assert document["swmm_continuity"]["final_stored_m3"] == 191.0
+        assert "not water lost or created" in document["swmm_continuity"]["note"]
+        [entry] = document["culverts"]
+        assert set(entry) == CONTRACT_KEYS
+
+
 @pytest.mark.requires_anuga
 class TestCouplerGuards:
 
@@ -599,6 +780,21 @@ class TestCouplerGuards:
         monkeypatch.setattr(anuga, "numprocs", 2, raising=False)
         with pytest.raises(CulvertBuildError, match="multi-process"):
             attach_culvert_coupler(types.SimpleNamespace(numproc=2), [], "/nonexistent", 60)
+
+    def test_culvert_package_refused_on_checkpoint_resume(self, small_test_copy, tmp_path):
+        """TASK-3693 (operator AC0 15-10-26 = REFUSE): the coupler and SWMM state are not in
+        the ANUGA checkpoint, so a resume (batch_number > 1) of a culvert package is refused
+        with a plain CulvertBuildError BEFORE the checkpoint pickle is read (no pickle exists
+        here: a load attempt would retry for ~50 s, then fail with 'Unable to open checkpoint
+        file') and before any evolve. run_sim ends in MPI Abort, so it runs in a subprocess and
+        the error is read from the telemetry client it posts to."""
+        _add_culvert_layer(small_test_copy, collection(SMALL_TEST_CULVERT))
+        record = _run_sim_recording_terminal_errors(small_test_copy, tmp_path, batch_number=2, checkpoint_time=30)
+        [message] = json.loads(record.read_text())
+        assert message.startswith("Cannot build the culverts:")
+        assert "checkpoint resume" in message and "rerun" in message
+        [output_dir] = small_test_copy.glob("outputs_*")
+        assert not list(output_dir.glob("*.sww"))
 
 
 # ── D34 buried inverts: carve to the invert + warning (TASK-3700) ──────

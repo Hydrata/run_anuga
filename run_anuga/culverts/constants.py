@@ -78,3 +78,6 @@ COUPLER_DURATION_MARGIN_S = 60.0
 TIMESERIES_MAX_ROWS = 10000
 #: Subdirectory of <output>/culverts/ for the SWMM work files (.inp/.rpt/.out).
 SWMM_WORKDIR_NAME = "swmm"
+#: TASK-3717 (epic 3585 D9): a SWMM flow-routing continuity error inside this band (%) gets the
+#: short "within 1%" note in metrics.json ``swmm_continuity``; outside it, the note explains it.
+SWMM_CONTINUITY_OK_PCT = 1.0

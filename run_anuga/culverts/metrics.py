@@ -19,6 +19,11 @@ HYDRAULIC_KEYS = (
     "peak_hw_level_m", "peak_hw_depth_m", "peak_hw_time_s", "hw_over_d", "peak_tw_level_m",
     "peak_q_m3s", "peak_q_time_s", "barrel_velocity_ms", "regime_at_peak", "regime_fractions",
     "surcharge_s",
+    # TASK-3695 (additive; schema_version stays 1): both-end peak levels and the
+    # governing-direction headwater (the end upstream of the peak-|Q| direction), which
+    # hw_over_d and surcharge_s now follow. Definitions: outputs.culvert_hydraulics.
+    "peak_hw_inlet_m", "peak_hw_outlet_m", "hw_end", "peak_hw_governing_level_m",
+    "peak_hw_governing_depth_m", "peak_hw_governing_time_s",
 )
 
 

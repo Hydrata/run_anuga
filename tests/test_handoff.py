@@ -360,6 +360,27 @@ class TestRunAndReportOrchestration:
         errors = _captured_client(mock_run_sim).of("error")
         assert len(errors) == 1 and "sim boom" in errors[0][1]
 
+    def test_sim_failure_run_sim_already_reported_is_not_posted_twice(self, package: Path, events_env):
+        """TASK-3698: run_sim posts the terminal error itself before MPI Abort. When Abort
+        cannot kill the process (no mpi4py) the exception reaches run_and_report, which must
+        not post a second terminal error for the same failure."""
+        from run_anuga import _handoff
+
+        def fake_run_sim(*args, telemetry_client=None, **kwargs):
+            exc = ValueError("elevation raster 'dem.tif' has 3 nodata cells inside the model boundary")
+            _handoff._report_terminal_error_once(telemetry_client, exc, str(exc))
+            raise exc
+
+        mock_run_sim = mock.MagicMock(side_effect=fake_run_sim)
+        with mock.patch("run_anuga.run.run_sim", mock_run_sim), \
+             mock.patch.object(_handoff, "upload_result_to_s3") as mock_upload:
+            with pytest.raises(ValueError, match="nodata cells"):
+                run_and_report(package, result_bucket="bucket")
+
+        mock_upload.assert_not_called()
+        errors = _captured_client(mock_run_sim).of("error")
+        assert len(errors) == 1 and errors[0][1].startswith("elevation raster")
+
     def test_undeliverable_result_event_raises(self, package: Path, events_env):
         """TASK-2692 replaces the old "non-2xx /process-result/ -> POST /error/
         -> raise" branch: the route is gone, so an undeliverable terminal

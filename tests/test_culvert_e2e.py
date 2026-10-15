@@ -11,7 +11,6 @@ import json
 import math
 import subprocess
 import sys
-import textwrap
 
 import pytest
 
@@ -20,6 +19,7 @@ from tests.test_culverts import (
     HYDRAULIC_KEYS,
     SMALL_TEST_CULVERT,
     _add_culvert_layer,
+    _run_sim_recording_terminal_errors,
     _set_scenario,
     building,
     collection,
@@ -59,6 +59,9 @@ class TestCulvertE2E:
         assert math.isclose(sum(entry["regime_fractions"].values()), 1.0, abs_tol=1e-3)
         assert any("coarse at the" in w for w in entry["warnings"])
         assert "swmm_routing_error_pct" in document
+        # TASK-3717: the real coupler's .rpt reaches the plain-English continuity note
+        assert document["swmm_continuity"]["error_pct"] == document["swmm_routing_error_pct"]
+        assert "SWMM's own continuity check" in document["swmm_continuity"]["note"]
 
         series_path = output_dir / entry["timeseries_path"]
         with open(series_path, newline="") as f:
@@ -104,26 +107,26 @@ class TestCulvertE2E:
         twin = dict(SMALL_TEST_CULVERT, id=102, properties=dict(SMALL_TEST_CULVERT["properties"], name="Twin"))
         _add_culvert_layer(small_test_copy, collection(SMALL_TEST_CULVERT, twin))
         _set_scenario(small_test_copy, duration=60)
-        record = tmp_path / "terminal_errors.json"
-        code = f"""
-            import json
-            from run_anuga.run import run_sim
-
-            class Client:
-                errors = []
-                def error(self, message):
-                    self.errors.append(message)
-                    open({str(record)!r}, "w").write(json.dumps(self.errors))
-                    return True
-                def __getattr__(self, name):
-                    return lambda *a, **k: True
-            try:
-                run_sim({str(small_test_copy)!r}, telemetry_client=Client())
-            except BaseException:
-                pass
-        """
-        subprocess.run([sys.executable, "-c", textwrap.dedent(code)], capture_output=True, text=True, timeout=900)
+        record = _run_sim_recording_terminal_errors(small_test_copy, tmp_path)
         [message] = json.loads(record.read_text())
         assert message.startswith("Cannot build the culverts:")
         assert "Small test box" in message and "Twin" in message and "share" in message
         assert "Traceback" not in message
+
+    def test_preflight_error_before_abort(self, small_test_copy, tmp_path):
+        """TASK-3698: EVERY run_sim failure (not only a CulvertBuildError) reaches the telemetry
+        client before MPI Abort kills the process, exactly once. Here the TASK-1138 nodata
+        pre-flight refuses a DEM with a gap inside the model boundary (no culverts at all)."""
+        import numpy
+        import rasterio
+
+        dem = small_test_copy / "inputs" / "dem.tif"
+        with rasterio.open(dem, "r+") as raster:
+            band = raster.read(1)
+            band[95:105, 95:105] = raster.nodata  # a 10 x 10 gap in the middle of the domain
+            raster.write(band.astype(numpy.float32), 1)
+        _set_scenario(small_test_copy, duration=60)
+        record = _run_sim_recording_terminal_errors(small_test_copy, tmp_path)
+        [message] = json.loads(record.read_text())
+        assert message.startswith("elevation raster")
+        assert "nodata cells inside the model boundary" in message
