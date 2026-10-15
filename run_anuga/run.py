@@ -807,12 +807,16 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
     except Exception as exc:
         callback.on_status('error')
         logger.error(f"{traceback.format_exc()}")
-        # TASK-3657: MPI Abort below kills this process before run_and_report's
-        # own except can post the terminal error event, so a culvert build error
-        # (written in plain words for the user) is reported HERE, first.
-        if isinstance(exc, CulvertBuildError) and telemetry_client is not None and anuga.myid == 0:
-            from run_anuga._handoff import _report_terminal_error
-            _report_terminal_error(telemetry_client, str(exc))
+        # TASK-3657 / TASK-3698: MPI Abort below kills this process before
+        # run_and_report's own except can post the terminal error event, so EVERY
+        # failure is reported HERE, first, once, on rank 0. A CulvertBuildError is
+        # written in plain words for the user and is posted as is; any other
+        # failure carries its traceback, in the shape run_and_report would post
+        # (hydrata's Run.user_message never echoes raw exception text).
+        if telemetry_client is not None and anuga.myid == 0:
+            from run_anuga._handoff import _report_terminal_error_once
+            message = str(exc) if isinstance(exc, CulvertBuildError) else f"{exc}\n{traceback.format_exc()}"
+            _report_terminal_error_once(telemetry_client, exc, message)
         # Belt-and-braces in case a caller clobbered logger.handlers.
         print(traceback.format_exc(), file=sys.stderr)
         sys.stderr.flush()

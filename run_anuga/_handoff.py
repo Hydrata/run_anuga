@@ -701,6 +701,28 @@ def _report_terminal_error(telemetry_client, message: str) -> bool:
         return False
 
 
+#: TASK-3698: set on an exception whose terminal ``error`` event has already been posted.
+_TERMINAL_ERROR_REPORTED_ATTR = "_run_anuga_terminal_error_reported"
+
+
+def _report_terminal_error_once(telemetry_client, exc, message: str) -> bool:
+    """Post the terminal ``error`` event for ``exc`` unless it was already posted (TASK-3698).
+
+    run_sim reports every failure itself, on rank 0, because the MPI Abort that
+    follows kills the process before :func:`run_and_report`'s own except runs.
+    When Abort cannot kill it (no mpi4py) the same exception reaches
+    run_and_report, and this marker keeps the failure to ONE terminal event.
+    Returns ``False`` without posting for an already-reported exception.
+    """
+    if getattr(exc, _TERMINAL_ERROR_REPORTED_ATTR, False):
+        return False
+    try:
+        setattr(exc, _TERMINAL_ERROR_REPORTED_ATTR, True)
+    except Exception:  # pragma: no cover — an exception type that refuses attributes
+        pass
+    return _report_terminal_error(telemetry_client, message)
+
+
 def _make_resource_sampler(scratch_dir, *, control_server, ids):
     """Construct a Django-free ``ResourceSampler`` for the ANUGA run, or ``None``.
 
@@ -1196,7 +1218,8 @@ def run_and_report(
                 # replacement is TelemetryClient's bounded terminal retry
                 # (spec §2.4), with the W3.3 reaper as the outer net.
                 message = f"{exc}\n{traceback.format_exc()}"
-                _report_terminal_error(telemetry_client, message)
+                # TASK-3698: run_sim normally posted this failure before MPI Abort.
+                _report_terminal_error_once(telemetry_client, exc, message)
             raise
 
         # Sim succeeded — rank-0 post-sim handoff: archive + zip + upload.

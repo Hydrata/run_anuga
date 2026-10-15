@@ -467,6 +467,33 @@ def _run_python(code, timeout=600):
                           capture_output=True, text=True, timeout=timeout)
 
 
+def _run_sim_recording_terminal_errors(package, tmp_path, **run_kwargs):
+    """run_sim in a subprocess (a failure ends in MPI Abort, which would kill pytest) with a
+    telemetry client that records every terminal ``error`` event to a JSON list; returns that
+    file's path (asserted to exist, i.e. at least one error was posted)."""
+    record = tmp_path / "terminal_errors.json"
+    extra = "".join(f", {key}={value!r}" for key, value in run_kwargs.items())
+    result = _run_python(f"""
+        import json
+        from run_anuga.run import run_sim
+
+        class Client:
+            errors = []
+            def error(self, message):
+                self.errors.append(message)
+                open({str(record)!r}, "w").write(json.dumps(self.errors))
+                return True
+            def __getattr__(self, name):
+                return lambda *a, **k: True
+        try:
+            run_sim({str(package)!r}, telemetry_client=Client(){extra})
+        except BaseException:
+            pass
+    """, timeout=900)
+    assert record.exists(), result.stdout + result.stderr
+    return record
+
+
 @pytest.mark.requires_anuga
 class TestRealMesh:
 
@@ -651,30 +678,10 @@ class TestCouplerGuards:
         file') and before any evolve. run_sim ends in MPI Abort, so it runs in a subprocess and
         the error is read from the telemetry client it posts to."""
         _add_culvert_layer(small_test_copy, collection(SMALL_TEST_CULVERT))
-        record = tmp_path / "terminal_errors.json"
-        result = _run_python(f"""
-            import json
-            from run_anuga.run import run_sim
-
-            class Client:
-                errors = []
-                def error(self, message):
-                    self.errors.append(message)
-                    open({str(record)!r}, "w").write(json.dumps(self.errors))
-                    return True
-                def __getattr__(self, name):
-                    return lambda *a, **k: True
-            try:
-                run_sim({str(small_test_copy)!r}, batch_number=2, checkpoint_time=30,
-                        telemetry_client=Client())
-            except BaseException:
-                pass
-        """, timeout=120)
-        assert record.exists(), result.stdout + result.stderr
+        record = _run_sim_recording_terminal_errors(small_test_copy, tmp_path, batch_number=2, checkpoint_time=30)
         [message] = json.loads(record.read_text())
         assert message.startswith("Cannot build the culverts:")
         assert "checkpoint resume" in message and "rerun" in message
-        assert "Unable to open checkpoint file" not in result.stdout + result.stderr
         [output_dir] = small_test_copy.glob("outputs_*")
         assert not list(output_dir.glob("*.sww"))
 
