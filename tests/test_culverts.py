@@ -600,6 +600,41 @@ class TestCouplerGuards:
         with pytest.raises(CulvertBuildError, match="multi-process"):
             attach_culvert_coupler(types.SimpleNamespace(numproc=2), [], "/nonexistent", 60)
 
+    def test_culvert_package_refused_on_checkpoint_resume(self, small_test_copy, tmp_path):
+        """TASK-3693 (operator AC0 15-10-26 = REFUSE): the coupler and SWMM state are not in
+        the ANUGA checkpoint, so a resume (batch_number > 1) of a culvert package is refused
+        with a plain CulvertBuildError BEFORE the checkpoint pickle is read (no pickle exists
+        here: a load attempt would retry for ~50 s, then fail with 'Unable to open checkpoint
+        file') and before any evolve. run_sim ends in MPI Abort, so it runs in a subprocess and
+        the error is read from the telemetry client it posts to."""
+        _add_culvert_layer(small_test_copy, collection(SMALL_TEST_CULVERT))
+        record = tmp_path / "terminal_errors.json"
+        result = _run_python(f"""
+            import json
+            from run_anuga.run import run_sim
+
+            class Client:
+                errors = []
+                def error(self, message):
+                    self.errors.append(message)
+                    open({str(record)!r}, "w").write(json.dumps(self.errors))
+                    return True
+                def __getattr__(self, name):
+                    return lambda *a, **k: True
+            try:
+                run_sim({str(small_test_copy)!r}, batch_number=2, checkpoint_time=30,
+                        telemetry_client=Client())
+            except BaseException:
+                pass
+        """, timeout=120)
+        assert record.exists(), result.stdout + result.stderr
+        [message] = json.loads(record.read_text())
+        assert message.startswith("Cannot build the culverts:")
+        assert "checkpoint resume" in message and "rerun" in message
+        assert "Unable to open checkpoint file" not in result.stdout + result.stderr
+        [output_dir] = small_test_copy.glob("outputs_*")
+        assert not list(output_dir.glob("*.sww"))
+
 
 # ── D34 buried inverts: carve to the invert + warning (TASK-3700) ──────
 

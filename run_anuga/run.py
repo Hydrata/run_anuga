@@ -352,6 +352,15 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
         domain_name = input_data['run_label']
         checkpoint_directory = input_data['checkpoint_directory']
         if batch_number > 1:
+            # TASK-3693 (operator AC0 15-10-26 = REFUSE): the culvert coupler and its
+            # SWMM state are not in the ANUGA checkpoint, so a resumed batch would run
+            # with no coupler and leave batch 1's culverts/metrics.json stale. Refuse
+            # before the checkpoint is read or any evolve step runs.
+            if input_data.get('culverts'):
+                raise CulvertBuildError(
+                    "Cannot build the culverts: culverts are not supported on checkpoint "
+                    "resume; rerun this scenario from the start."
+                )
             logger.info("Building domain...")
             sub_domain_name = None
             if anuga.numprocs > 1:
