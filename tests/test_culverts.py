@@ -733,6 +733,91 @@ class TestSwmmContinuity:
         garbled = RPT_1590_CONTINUITY.replace("0.762", "*****")
         assert swmm_continuity(self.write_rpt(tmp_path, garbled)) is None
 
+    #: run 1590's ledger as the fork engine reports it (SWMM-only replay, TASK-3741 AC2), m3
+    MASS_1590 = dict(inflow_m3=761.742, outflow_m3=739.762, losses_m3=0.0, initial_stored_m3=0.059,
+                     final_stored_m3=190.843, initial_outfall_end_m3=0.0, final_outfall_end_m3=168.914,
+                     denominator_m3=761.801, swmm_error_pct=-22.159, mass_error_pct=0.0143,
+                     storage_units="ft3")
+
+    def test_mass_figure_is_carried_and_named_as_the_one_the_check_uses(self, tmp_path):
+        """TASK-3741 (D36, gate 637): the block carries the engine's mass-based figure, the
+        outlet-end water it counted, and ``gate_figure`` naming it; the note says in plain
+        English which figure the 1% check reads. The raw SWMM numbers stay as they were."""
+        from run_anuga.culverts.outputs import swmm_continuity
+
+        c = swmm_continuity(self.write_rpt(tmp_path), self.MASS_1590)
+        assert c["error_pct"] == -22.166 and c["final_stored_m3"] == 191.0   # raw: unchanged
+        assert c["mass_error_pct"] == pytest.approx(0.014, abs=1e-3)
+        assert c["outlet_end_stored_m3"] == pytest.approx(168.9, abs=0.05)
+        assert c["gate_figure"] == "mass_error_pct"
+        note = c["note"]
+        assert note.startswith("By mass the culvert barrels balance to within 1% (0.01%)")
+        assert "the continuity check uses this figure" in note
+        assert "-22.2%" in note and "not water lost or created" in note   # the raw story stays
+
+    def test_mass_figure_outside_one_percent_is_reported_as_not_balancing(self, tmp_path):
+        """Negative control: a real loss reads as the barrels NOT balancing by mass, whatever
+        SWMM's own % says (here it is booked seepage, so SWMM's % alone looks fine)."""
+        from run_anuga.culverts.outputs import swmm_continuity
+
+        block = RPT_1590_CONTINUITY.replace("0.740", "0.571").replace("-22.166", "0.000")
+        leak = dict(self.MASS_1590, losses_m3=34.1, mass_error_pct=8.84)
+        c = swmm_continuity(self.write_rpt(tmp_path, block), leak)
+        assert c["error_pct"] == 0.0 and c["mass_error_pct"] == 8.84
+        assert c["note"].startswith("By mass the culvert barrels do not balance: 8.8%")
+        assert "outside the 1% continuity check" in c["note"] and "34 m3" in c["note"]
+        # the m3 behind the %: 8.84 % of the 761.8 m3 that entered
+        assert c["mass_residual_m3"] == pytest.approx(67.34, abs=0.01)
+        assert "The imbalance is 67.3 m3 of the 762 m3 that entered." in c["note"]
+
+    def test_without_a_mass_figure_the_gate_figure_is_null(self, tmp_path):
+        """An engine without ``mass_balance`` (fork before TASK-3741): the block's new keys are
+        null and the note is SWMM's own figure only (no gate claim)."""
+        from run_anuga.culverts.outputs import swmm_continuity
+
+        c = swmm_continuity(self.write_rpt(tmp_path))
+        assert c["mass_error_pct"] is None and c["outlet_end_stored_m3"] is None
+        assert c["mass_residual_m3"] is None
+        assert c["gate_figure"] == "mass_error_pct"
+        assert not c["note"].startswith("By mass")
+
+    @pytest.mark.requires_anuga  # write_culvert_outputs imports anuga_drainage ([sim], not [dev])
+    def test_mass_figure_reaches_metrics_json_top_level_and_ledger_stays_out(self, tmp_path):
+        """write_culvert_outputs: top-level ``swmm_mass_error_pct`` (the gate figure, additive,
+        schema_version 1) beside the unchanged ``swmm_routing_error_pct``; the fork's raw ledger
+        dict is folded into ``swmm_continuity``, not dumped as its own key."""
+        from run_anuga.culverts.outputs import write_culvert_outputs
+
+        rpt = self.write_rpt(tmp_path)
+        mesh = grid_mesh(321000.0, 5812000.0, 20, 20, 5.0)
+        results = analyse_culverts(load_culverts(collection(culvert_feature())), mesh)
+        series = TestCulvertHydraulics.series()
+        mass = self.MASS_1590
+
+        class Engine:
+            rpt_path = rpt
+
+        class Coupler:
+            engine_swmm = Engine()
+            culverts = [type("Built", (), {"upstream_invert_m": 100.0, "downstream_invert_m": 99.0})()]
+
+            def finalize(self):
+                return {"swmm_routing_error_pct": -22.166, "swmm_mass_error_pct": mass["mass_error_pct"],
+                        "swmm_mass_balance": dict(mass)}
+
+            def timeseries(self, index):
+                return series
+
+        path = write_culvert_outputs(str(tmp_path / "out"), results, Coupler())
+        document = json.loads(open(path).read())
+        assert document["schema_version"] == 1
+        assert document["swmm_routing_error_pct"] == -22.166
+        assert document["swmm_mass_error_pct"] == pytest.approx(0.014, abs=1e-3)
+        assert "swmm_mass_balance" not in document
+        assert document["swmm_continuity"]["mass_error_pct"] == document["swmm_mass_error_pct"]
+        [entry] = document["culverts"]
+        assert set(entry) == CONTRACT_KEYS
+
     @pytest.mark.requires_anuga  # write_culvert_outputs imports anuga_drainage ([sim], not [dev])
     def test_continuity_reaches_metrics_json_beside_the_bare_error(self, tmp_path):
         """write_culvert_outputs adds ``swmm_continuity`` (top level, additive) next to the

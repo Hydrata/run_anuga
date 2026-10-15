@@ -149,32 +149,68 @@ _EXACT = ("ANUGA moved exactly the water a culvert took in at one end out at its
           "flood model's water balance does not depend on this figure.")
 
 
-def _continuity_note(error, inflow, stored, share):
-    """The plain-English ``swmm_continuity.note`` (TASK-3717)."""
-    figure = "SWMM's own continuity check on the culvert barrels"
+#: The ``swmm_continuity`` key the D9 "< 1 %" continuity check reads (TASK-3741, operator ruling
+#: D36 on gate 637: continuity is judged by mass, never by SWMM's raw %).
+GATE_FIGURE = "mass_error_pct"
+
+
+def _continuity_note(error, inflow, stored, share, mass=None, losses=None, residual=None, entered=None):
+    """The plain-English ``swmm_continuity.note`` (TASK-3717; TASK-3741 leads with the mass figure)."""
+    figure = "SWMM's own continuity report on the culvert barrels"
     if abs(error) < constants.SWMM_CONTINUITY_OK_PCT:
-        return f"{figure} is within 1% ({error:.1f}%). {_EXACT}"
-    if error < 0 and share is not None and share >= -error:
-        return (
+        raw = f"{figure} is within 1% ({error:.1f}%). {_EXACT}"
+    elif error < 0 and share is not None and share >= -error:
+        raw = (
             f"{figure} reads {error:.1f}%. This is not water lost or created in the flood model: {_EXACT} "
             f"When the run stopped the barrels still held {stored:.0f} m3 of water, {share:.1f}% of the "
             f"{inflow:.0f} m3 that entered them, most of it standing in the outlet end of a barrel at the "
             f"outlet's water level. SWMM counts that water as stored without an inflow that delivered it, "
             f"so it shows as a continuity error; it leaves again the same way as the outlet water level falls."
         )
-    return f"{figure} reads {error:.1f}%. It checks SWMM's barrel model only: {_EXACT}"
+    else:
+        raw = f"{figure} reads {error:.1f}%. It checks SWMM's barrel model only: {_EXACT}"
+    if mass is None:
+        return raw
+    if abs(mass) < constants.SWMM_CONTINUITY_OK_PCT:
+        lead = (
+            f"By mass the culvert barrels balance to within 1% ({mass:.2f}%), and the continuity check uses "
+            f"this figure: water in, less water out, less the change in the water the barrels hold, counting "
+            f"the water standing in a barrel's outlet end as water that came in through the outlet."
+        )
+    else:
+        way = "more water entered them than left or stayed in them" if mass > 0 else (
+            "more water left or stayed in them than entered")
+        size = f" The imbalance is {abs(residual):.3g} m3 of the {entered:.3g} m3 that entered." if (
+            residual is not None and entered) else ""
+        lost = f" SWMM recorded {losses:.0f} m3 leaving the barrels other than through their ends." if losses else ""
+        lead = (
+            f"By mass the culvert barrels do not balance: {mass:.1f}% ({way}), outside the 1% continuity "
+            f"check, which uses this figure.{size}{lost}"
+        )
+    return f"{lead} {raw}"
 
 
-def swmm_continuity(rpt_path):
-    """SWMM's flow-routing continuity for the culvert barrels, from the run's .rpt (TASK-3717).
+def swmm_continuity(rpt_path, mass_balance=None):
+    """SWMM's flow-routing continuity for the culvert barrels, from the run's .rpt (TASK-3717),
+    with the engine's mass-based figure (TASK-3741).
 
     Returns ``{error_pct, inflow_m3, outflow_m3, initial_stored_m3, final_stored_m3,
-    stored_share_pct, note}`` or None (no .rpt or no "Flow Routing Continuity" block). The volumes
-    are None when the block's units are unknown. ``stored_share_pct`` is the barrels' storage gain
-    over the run as a share of the inflow. The engine imposes the 2D stages on two fixed-stage
-    outfalls per culvert, and SWMM books the water the imposed outlet stage stands in the barrel's
-    outlet end as storage with no inflow, so a run that stops with a risen outlet pond reads a
-    negative error about that size (run 1590: -22.2 %, 25.1 % stored); the note says so plainly.
+    stored_share_pct, mass_error_pct, outlet_end_stored_m3, gate_figure, note}`` or None (no .rpt
+    or no "Flow Routing Continuity" block). The volumes are None when the block's units are
+    unknown. ``stored_share_pct`` is the barrels' storage gain over the run as a share of the
+    inflow. The engine imposes the 2D stages on two fixed-stage outfalls per culvert, and SWMM
+    books the water the imposed outlet stage stands in the barrel's outlet end as storage with no
+    inflow, so a run that stops with a risen outlet pond reads a negative error about that size
+    (run 1590: -22.2 %, 25.1 % stored).
+
+    ``mass_balance``: the fork engine's ledger (anuga_drainage ``SwmmHeadwallEngine.mass_balance``,
+    ``swmm_engine.mass_continuity``): ``mass_error_pct`` = 100 (V_in + (W_1 - W_0) - V_out -
+    (S_1 - S_0)) / (V_in + S_0), i.e. SWMM's own volumes with the water standing in the conduits'
+    outfall ends (W, geometry at SWMM's node depths) counted as having come in through the outfall,
+    and every loss SWMM books (flooding, evaporation, seepage) counted as an error. That is the
+    figure the D9 "< 1 %" check reads (``gate_figure``); run 1590 replayed: +0.01 % against SWMM's
+    -22.2 %. ``outlet_end_stored_m3`` is the outfall-end water gained over the run (W_1 - W_0).
+    Without a ledger (an engine before TASK-3741) both are None.
     """
     if not rpt_path:
         return None
@@ -205,6 +241,7 @@ def swmm_continuity(rpt_path):
     inflow, outflow = volume(*_RPT_INFLOWS), volume(*_RPT_OUTFLOWS)
     initial, final = volume("Initial Stored Volume"), volume("Final Stored Volume")
     share = 100.0 * (final - initial) / inflow if scale and inflow > 0 else None
+    mass, outlet_end, losses, residual, entered = _mass_fields(mass_balance)
     return {
         "error_pct": error,
         "inflow_m3": _number(inflow, 1) if scale else None,
@@ -212,8 +249,31 @@ def swmm_continuity(rpt_path):
         "initial_stored_m3": _number(initial, 1) if scale else None,
         "final_stored_m3": _number(final, 1) if scale else None,
         "stored_share_pct": _number(share, 1) if share is not None else None,
-        "note": _continuity_note(error, inflow, final - initial if scale else None, share),
+        "mass_error_pct": mass,
+        "mass_residual_m3": residual,
+        "outlet_end_stored_m3": outlet_end,
+        "gate_figure": GATE_FIGURE,
+        "note": _continuity_note(error, inflow, final - initial if scale else None, share, mass, losses,
+                                 residual, entered),
     }
+
+
+def _mass_fields(mass_balance):
+    """(mass_error_pct, outlet-end gain m3, booked losses m3, mass residual m3, denominator m3)
+    from the engine's ledger, rounded; Nones when there is no ledger or no figure (nothing
+    entered the barrels). The residual is mass_error_pct x denominator / 100, i.e. the m3
+    behind the %, so a large % of a tiny inflow reads as the small volume it is."""
+    nothing = (None,) * 5
+    try:
+        mass = mass_balance["mass_error_pct"]
+        if mass is None:
+            return nothing
+        gain = mass_balance["final_outfall_end_m3"] - mass_balance["initial_outfall_end_m3"]
+        den = float(mass_balance["denominator_m3"])
+        return (_number(mass, 3), _number(gain, 1), _number(mass_balance.get("losses_m3", 0.0), 1),
+                _number(mass * den / 100.0, 3), _number(den, 3))
+    except (TypeError, KeyError, ValueError):  # no ledger / an unexpected shape: no figure, no claim
+        return nothing
 
 
 def write_culvert_outputs(output_directory, results, coupler, log=None) -> str:
@@ -226,7 +286,12 @@ def write_culvert_outputs(output_directory, results, coupler, log=None) -> str:
     engine_summary = dict(coupler.finalize() or {})
     # TASK-3717: the bare swmm_routing_error_pct stays (unchanged key); swmm_continuity carries
     # the numbers behind it and the plain-English note. Read after finalize (SWMM writes the .rpt).
-    continuity = swmm_continuity(getattr(getattr(coupler, "engine_swmm", None), "rpt_path", None))
+    # TASK-3741: the fork's mass ledger folds into swmm_continuity; its figure is ALSO top level
+    # (swmm_mass_error_pct, the D9 gate figure), never the raw ledger dict.
+    mass_balance = engine_summary.pop("swmm_mass_balance", None)
+    continuity = swmm_continuity(getattr(getattr(coupler, "engine_swmm", None), "rpt_path", None), mass_balance)
+    if "swmm_mass_error_pct" in engine_summary or continuity is not None:
+        engine_summary["swmm_mass_error_pct"] = _mass_fields(mass_balance)[0]
     if continuity is not None:
         engine_summary["swmm_continuity"] = continuity
     hydraulics, paths = [], []

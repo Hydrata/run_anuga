@@ -91,7 +91,7 @@ ARG RUN_ANUGA_SHA=unknown
 ARG HYDRATA_SHA=unknown
 # Culvert engine (TASK-3643, epic 3585): the Hydrata fork of anuga_drainage at ONE
 # pinned commit, cloned in the src stage and installed with pyswmm + swmm-toolkit in BOTH targets.
-ARG ANUGA_DRAINAGE_SHA=7a483643b6100957ae63076418e5524ba871e4e8
+ARG ANUGA_DRAINAGE_SHA=87878dc92d3d0a7b3c520d9997cb65c1c40c60bd
 
 # GPU toolchain base (pre-built locally by deploy scripts/gpu-dev/
 # build-gpu-dev-image.sh --multi-arch; supplies nvhpc + CUDA + venv +
