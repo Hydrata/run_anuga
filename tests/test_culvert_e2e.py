@@ -61,7 +61,11 @@ class TestCulvertE2E:
         assert "swmm_routing_error_pct" in document
         # TASK-3717: the real coupler's .rpt reaches the plain-English continuity note
         assert document["swmm_continuity"]["error_pct"] == document["swmm_routing_error_pct"]
-        assert "SWMM's own continuity check" in document["swmm_continuity"]["note"]
+        assert "SWMM's own continuity report" in document["swmm_continuity"]["note"]
+        # TASK-3741: the real engine's mass-based figure is the gate figure, top level and in the block
+        assert document["swmm_continuity"]["gate_figure"] == "mass_error_pct"
+        assert document["swmm_mass_error_pct"] == document["swmm_continuity"]["mass_error_pct"]
+        assert math.isfinite(document["swmm_mass_error_pct"])
 
         series_path = output_dir / entry["timeseries_path"]
         with open(series_path, newline="") as f:
