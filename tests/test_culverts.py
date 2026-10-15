@@ -39,6 +39,9 @@ CONTRACT_KEYS = {
     "blockage_pct", "blockage_method", "peak_hw_level_m", "peak_hw_depth_m", "peak_hw_time_s",
     "hw_over_d", "peak_tw_level_m", "peak_q_m3s", "peak_q_time_s", "barrel_velocity_ms",
     "regime_at_peak", "regime_fractions", "surcharge_s", "timeseries_path", "warnings",
+    # TASK-3695 (additive, schema_version 1): both-end peaks + the governing-direction headwater
+    "peak_hw_inlet_m", "peak_hw_outlet_m", "hw_end", "peak_hw_governing_level_m",
+    "peak_hw_governing_depth_m", "peak_hw_governing_time_s",
 }
 HYDRAULIC_KEYS = CONTRACT_KEYS - {
     "feature_id", "name", "triangles_inlet", "triangles_outlet", "coarseness_ratio",
@@ -536,6 +539,46 @@ class TestCulvertHydraulics:
         series["q_m3s"] = [0.0, -4.0, 1.0, 0.0]
         h = culvert_hydraulics(culvert, 100.0, series, self.CONTROLS)
         assert h["peak_q_m3s"] == -4.0 and h["peak_q_time_s"] == 10.0
+
+    def test_reverse_dominant_culvert_reports_the_outlet_end_headwater(self):
+        """TASK-3695: peak |Q| flows Outlet -> Inlet, so the headwater is at the Outlet end.
+        hw_over_d and surcharge_s follow the governing (upstream-of-peak-flow) end, measured
+        over THAT end's invert; the existing per-end keys keep their meaning (peak_hw_* = the
+        Inlet end, peak_tw_level_m = the Outlet end) and both-end keys are added."""
+        from run_anuga.culverts.outputs import culvert_hydraulics
+
+        [culvert] = load_culverts(collection(culvert_feature(width_m=2.0, height_m=1.0)))
+        series = {
+            "time_s": [0.0, 10.0, 20.0, 30.0],
+            "q_m3s": [0.0, -1.0, -3.0, 0.5],
+            "hw_level_m": [100.0, 100.05, 100.1, 100.05],  # Inlet end: barely wet
+            "tw_level_m": [99.5, 100.6, 101.3, 100.2],  # Outlet end: surcharged
+            "control": [0, 2, 2, 0],
+        }
+        h = culvert_hydraulics(culvert, 100.0, series, self.CONTROLS, downstream_invert_m=99.5)
+        assert set(h) == HYDRAULIC_KEYS
+        assert h["hw_end"] == "outlet"
+        assert h["peak_hw_governing_level_m"] == 101.3
+        assert h["peak_hw_governing_depth_m"] == pytest.approx(1.8)  # over the OUTLET invert 99.5
+        assert h["peak_hw_governing_time_s"] == 20.0
+        assert h["hw_over_d"] == pytest.approx(1.8)  # governing end, not the near-dry Inlet (0.1)
+        assert h["surcharge_s"] == 20.0  # Outlet depths 1.1 and 1.8 > rise 1.0: two 10 s samples
+        assert h["peak_hw_inlet_m"] == 100.1 and h["peak_hw_outlet_m"] == 101.3
+        # unchanged per-end meanings, which the gmc Profile draws at each end
+        assert h["peak_hw_level_m"] == 100.1 and h["peak_hw_depth_m"] == pytest.approx(0.1)
+        assert h["peak_tw_level_m"] == 101.3
+
+    def test_reverse_dominant_keys_on_a_forward_series_match_the_inlet_headwater(self):
+        from run_anuga.culverts.outputs import culvert_hydraulics
+
+        [culvert] = load_culverts(collection(culvert_feature(width_m=2.0, height_m=1.0)))
+        h = culvert_hydraulics(culvert, 100.0, self.series(), self.CONTROLS, downstream_invert_m=99.0)
+        assert h["hw_end"] == "inlet"
+        assert h["peak_hw_governing_level_m"] == h["peak_hw_level_m"] == 101.4
+        assert h["peak_hw_governing_depth_m"] == h["peak_hw_depth_m"] == 1.4
+        assert h["peak_hw_governing_time_s"] == h["peak_hw_time_s"] == 20.0
+        assert h["hw_over_d"] == pytest.approx(1.4) and h["surcharge_s"] == 10.0
+        assert h["peak_hw_inlet_m"] == 101.4 and h["peak_hw_outlet_m"] == 100.1
 
     def test_empty_series_gives_no_values(self):
         from run_anuga.culverts.outputs import culvert_hydraulics
