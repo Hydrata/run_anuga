@@ -59,6 +59,9 @@ class TestCulvertE2E:
         assert math.isclose(sum(entry["regime_fractions"].values()), 1.0, abs_tol=1e-3)
         assert any("coarse at the" in w for w in entry["warnings"])
         assert "swmm_routing_error_pct" in document
+        # TASK-3717: the real coupler's .rpt reaches the plain-English continuity note
+        assert document["swmm_continuity"]["error_pct"] == document["swmm_routing_error_pct"]
+        assert "SWMM's own continuity check" in document["swmm_continuity"]["note"]
 
         series_path = output_dir / entry["timeseries_path"]
         with open(series_path, newline="") as f:

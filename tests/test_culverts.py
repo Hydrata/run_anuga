@@ -657,6 +657,117 @@ class TestCulvertHydraulics:
         assert len(rows) == 5 and rows[0].startswith("0,") and rows[-1].startswith("99,")
 
 
+#: The Flow Routing Continuity block of prod run 1590's culverts.rpt (TASK-3717), verbatim.
+RPT_1590_CONTINUITY = """
+  **************************        Volume        Volume
+  Flow Routing Continuity        hectare-m      10^6 ltr
+  **************************     ---------     ---------
+  Dry Weather Inflow .......         0.000         0.000
+  Wet Weather Inflow .......         0.000         0.000
+  Groundwater Inflow .......         0.000         0.000
+  RDII Inflow ..............         0.000         0.000
+  External Inflow ..........         0.076         0.762
+  External Outflow .........         0.074         0.740
+  Flooding Loss ............         0.000         0.000
+  Evaporation Loss .........         0.000         0.000
+  Exfiltration Loss ........         0.000         0.000
+  Initial Stored Volume ....         0.000         0.000
+  Final Stored Volume ......         0.019         0.191
+  Continuity Error (%) .....       -22.166
+"""
+
+
+class TestSwmmContinuity:
+    """TASK-3717: SWMM's barrel continuity reaches metrics.json as numbers + a plain-English
+    note (additive top-level key ``swmm_continuity``, schema_version 1), never as a bare
+    percentage on its own. Run 1590's -22.2 % is SWMM booking the water standing in the outlet
+    end of the barrel (filled from the imposed outlet stage) as storage no inflow delivered."""
+
+    def write_rpt(self, tmp_path, block=RPT_1590_CONTINUITY):
+        path = tmp_path / "culverts.rpt"
+        path.write_text("  EPA STORM WATER MANAGEMENT MODEL - VERSION 5.2\n" + block)
+        return str(path)
+
+    def test_continuity_numbers_and_stored_share_from_the_run_1590_rpt(self, tmp_path):
+        from run_anuga.culverts.outputs import swmm_continuity
+
+        c = swmm_continuity(self.write_rpt(tmp_path))
+        assert c["error_pct"] == -22.166
+        assert c["inflow_m3"] == 762.0 and c["outflow_m3"] == 740.0
+        assert c["initial_stored_m3"] == 0.0 and c["final_stored_m3"] == 191.0
+        assert c["stored_share_pct"] == pytest.approx(25.1, abs=0.05)
+
+    def test_continuity_note_explains_the_figure_in_plain_english(self, tmp_path):
+        from run_anuga.culverts.outputs import swmm_continuity
+
+        note = swmm_continuity(self.write_rpt(tmp_path))["note"]
+        assert "-22.2%" in note and "191 m3" in note and "25.1%" in note and "762 m3" in note
+        assert "not water lost or created" in note and "outlet" in note
+        assert "SWMM" in note and "continuity" in note
+
+    def test_continuity_within_one_percent_says_so_without_the_storage_story(self, tmp_path):
+        from run_anuga.culverts.outputs import swmm_continuity
+
+        block = RPT_1590_CONTINUITY.replace("0.740", "0.571").replace("-22.166", "0.000")
+        c = swmm_continuity(self.write_rpt(tmp_path, block))
+        assert c["error_pct"] == 0.0
+        assert "within 1%" in c["note"] and "outlet" not in c["note"]
+
+    def test_continuity_unexplained_by_storage_does_not_claim_bookkeeping(self, tmp_path):
+        """A positive error (outflow exceeds inflow + storage) is not the stored-water effect:
+        the note reports it as SWMM's own barrel check and still says ANUGA's exchange is exact,
+        but never blames the barrel storage."""
+        from run_anuga.culverts.outputs import swmm_continuity
+
+        block = RPT_1590_CONTINUITY.replace("-22.166", "4.000")
+        note = swmm_continuity(self.write_rpt(tmp_path, block))["note"]
+        assert "4.0%" in note and "outlet end" not in note
+        assert "ANUGA moved exactly" in note
+
+    def test_continuity_missing_rpt_or_block_gives_none(self, tmp_path):
+        from run_anuga.culverts.outputs import swmm_continuity
+
+        assert swmm_continuity(str(tmp_path / "absent.rpt")) is None
+        assert swmm_continuity(self.write_rpt(tmp_path, "\n  no routing block here\n")) is None
+        assert swmm_continuity(None) is None
+        garbled = RPT_1590_CONTINUITY.replace("0.762", "*****")
+        assert swmm_continuity(self.write_rpt(tmp_path, garbled)) is None
+
+    @pytest.mark.requires_anuga  # write_culvert_outputs imports anuga_drainage ([sim], not [dev])
+    def test_continuity_reaches_metrics_json_beside_the_bare_error(self, tmp_path):
+        """write_culvert_outputs adds ``swmm_continuity`` (top level, additive) next to the
+        unchanged ``swmm_routing_error_pct``; the per-culvert entries (what hydrata ingests into
+        StructureResult, the Structures table) stay on the contract keys."""
+        from run_anuga.culverts.outputs import write_culvert_outputs
+
+        rpt = self.write_rpt(tmp_path)
+        mesh = grid_mesh(321000.0, 5812000.0, 20, 20, 5.0)
+        results = analyse_culverts(load_culverts(collection(culvert_feature())), mesh)
+        series = TestCulvertHydraulics.series()
+
+        class Engine:
+            rpt_path = rpt
+
+        class Coupler:
+            engine_swmm = Engine()
+            culverts = [type("Built", (), {"upstream_invert_m": 100.0, "downstream_invert_m": 99.0})()]
+
+            def finalize(self):
+                return {"swmm_routing_error_pct": -22.166}
+
+            def timeseries(self, index):
+                return series
+
+        out = tmp_path / "out"
+        path = write_culvert_outputs(str(out), results, Coupler())
+        document = json.loads(open(path).read())
+        assert document["swmm_routing_error_pct"] == -22.166
+        assert document["swmm_continuity"]["final_stored_m3"] == 191.0
+        assert "not water lost or created" in document["swmm_continuity"]["note"]
+        [entry] = document["culverts"]
+        assert set(entry) == CONTRACT_KEYS
+
+
 @pytest.mark.requires_anuga
 class TestCouplerGuards:
 

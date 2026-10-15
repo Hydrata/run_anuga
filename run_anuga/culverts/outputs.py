@@ -138,6 +138,84 @@ def write_timeseries_csv(output_directory, feature_id, series, control_names) ->
     return relative
 
 
+#: The .rpt "Flow Routing Continuity" lines (label prefix) that add to the inflow / outflow.
+_RPT_INFLOWS = ("Dry Weather Inflow", "Wet Weather Inflow", "Groundwater Inflow", "RDII Inflow", "External Inflow")
+_RPT_OUTFLOWS = ("External Outflow", "Flooding Loss", "Evaporation Loss", "Exfiltration Loss")
+#: m3 per unit of the block's second volume column (CMS models write 10^6 ltr).
+_RPT_VOLUME_UNITS = {"10^6 ltr": 1000.0, "10^6 gal": 3785.411784}
+#: Shared by every note: the coupler moves exactly what the losing exchange region gives up
+#: (anuga_drainage coupler ``_exchange``), so SWMM's barrel storage never enters ANUGA's water.
+_EXACT = ("ANUGA moved exactly the water a culvert took in at one end out at its other end, so the "
+          "flood model's water balance does not depend on this figure.")
+
+
+def _continuity_note(error, inflow, stored, share):
+    """The plain-English ``swmm_continuity.note`` (TASK-3717)."""
+    figure = "SWMM's own continuity check on the culvert barrels"
+    if abs(error) < constants.SWMM_CONTINUITY_OK_PCT:
+        return f"{figure} is within 1% ({error:.1f}%). {_EXACT}"
+    if error < 0 and share is not None and share >= -error:
+        return (
+            f"{figure} reads {error:.1f}%. This is not water lost or created in the flood model: {_EXACT} "
+            f"When the run stopped the barrels still held {stored:.0f} m3 of water, {share:.1f}% of the "
+            f"{inflow:.0f} m3 that entered them, most of it standing in the outlet end of a barrel at the "
+            f"outlet's water level. SWMM counts that water as stored without an inflow that delivered it, "
+            f"so it shows as a continuity error; it leaves again the same way as the outlet water level falls."
+        )
+    return f"{figure} reads {error:.1f}%. It checks SWMM's barrel model only: {_EXACT}"
+
+
+def swmm_continuity(rpt_path):
+    """SWMM's flow-routing continuity for the culvert barrels, from the run's .rpt (TASK-3717).
+
+    Returns ``{error_pct, inflow_m3, outflow_m3, initial_stored_m3, final_stored_m3,
+    stored_share_pct, note}`` or None (no .rpt or no "Flow Routing Continuity" block). The volumes
+    are None when the block's units are unknown. ``stored_share_pct`` is the barrels' storage gain
+    over the run as a share of the inflow. The engine imposes the 2D stages on two fixed-stage
+    outfalls per culvert, and SWMM books the water the imposed outlet stage stands in the barrel's
+    outlet end as storage with no inflow, so a run that stops with a risen outlet pond reads a
+    negative error about that size (run 1590: -22.2 %, 25.1 % stored); the note says so plainly.
+    """
+    if not rpt_path:
+        return None
+    try:
+        with open(rpt_path) as f:
+            text = f.read()
+    except OSError:
+        return None
+    parts = text.split("Flow Routing Continuity", 1)
+    if len(parts) < 2:
+        return None
+    header, _, body = parts[1].partition("\n")
+    scale = next((m3 for unit, m3 in _RPT_VOLUME_UNITS.items() if unit in header), None)
+    values, error = {}, None
+    try:  # a garbled .rpt must not fail a finished run's outputs: no figure, no note
+        for line in body.splitlines():
+            label = line.strip().split(" ..", 1)[0].strip()
+            if label == "Continuity Error (%)":
+                error = float(line.split()[-1])
+                break
+            if " .." in line:
+                values[label] = float(line.split()[-1])
+    except (ValueError, IndexError):
+        return None
+    if error is None:
+        return None
+    volume = (lambda *labels: sum(values.get(k, 0.0) for k in labels) * scale) if scale else (lambda *labels: None)
+    inflow, outflow = volume(*_RPT_INFLOWS), volume(*_RPT_OUTFLOWS)
+    initial, final = volume("Initial Stored Volume"), volume("Final Stored Volume")
+    share = 100.0 * (final - initial) / inflow if scale and inflow > 0 else None
+    return {
+        "error_pct": error,
+        "inflow_m3": _number(inflow, 1) if scale else None,
+        "outflow_m3": _number(outflow, 1) if scale else None,
+        "initial_stored_m3": _number(initial, 1) if scale else None,
+        "final_stored_m3": _number(final, 1) if scale else None,
+        "stored_share_pct": _number(share, 1) if share is not None else None,
+        "note": _continuity_note(error, inflow, final - initial if scale else None, share),
+    }
+
+
 def write_culvert_outputs(output_directory, results, coupler, log=None) -> str:
     """Finalise the coupler, write the time series and rewrite metrics.json with the hydraulic keys.
 
@@ -145,7 +223,12 @@ def write_culvert_outputs(output_directory, results, coupler, log=None) -> str:
     """
     from anuga_drainage.culverts.inlet_control import CONTROL_NAMES
 
-    engine_summary = coupler.finalize() or {}
+    engine_summary = dict(coupler.finalize() or {})
+    # TASK-3717: the bare swmm_routing_error_pct stays (unchanged key); swmm_continuity carries
+    # the numbers behind it and the plain-English note. Read after finalize (SWMM writes the .rpt).
+    continuity = swmm_continuity(getattr(getattr(coupler, "engine_swmm", None), "rpt_path", None))
+    if continuity is not None:
+        engine_summary["swmm_continuity"] = continuity
     hydraulics, paths = [], []
     for index, result in enumerate(results):
         series = coupler.timeseries(index)
@@ -157,5 +240,8 @@ def write_culvert_outputs(output_directory, results, coupler, log=None) -> str:
     path = write_culvert_metrics(
         output_directory, results, hydraulics=hydraulics, timeseries_paths=paths, run_fields=engine_summary)
     if log is not None:
-        log.info("culvert results written: %s (%s)", path, ", ".join(f"{k}={v}" for k, v in engine_summary.items()))
+        scalars = ", ".join(f"{k}={v}" for k, v in engine_summary.items() if not isinstance(v, dict))
+        log.info("culvert results written: %s (%s)", path, scalars)
+        if continuity is not None:
+            log.info("culvert SWMM continuity: %s", continuity["note"])
     return path
