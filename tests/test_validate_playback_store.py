@@ -62,3 +62,29 @@ def test_invalid_store_returns_one(tmp_path, capsys):
     rc = main([str(store_path)])
     assert rc == 1
     assert "INVALID" in capsys.readouterr().out
+
+
+@requires_zarr
+@pytest.mark.requires_anuga
+def test_envelope_source_is_accepted_and_an_unknown_value_is_caught(tmp_path, fixture_sww):
+    """TASK-3772 — envelope_source is optional; when present it must be one of
+    engine_per_step / saved_frames."""
+    import zarr
+
+    from run_anuga import playback_store as ps
+    from run_anuga.validate_playback_store import validate_store
+
+    result = ps.export_playback_store(
+        input_data={
+            "run_label": "run_1_1_1",
+            "scenario_config": {"project": 1, "id": 1, "run_id": 1, "epsg": "EPSG:28355"},
+        },
+        sww_path=str(fixture_sww), output_dir=str(tmp_path), upload=False,
+    )
+    store = result["local_path"]
+    assert validate_store(store) == []
+    root = zarr.open_group(store, mode="r+")
+    del root.attrs["envelope_source"]
+    assert validate_store(store) == []  # a pre-TASK-3772 store
+    root.attrs["envelope_source"] = "guesswork"
+    assert any("envelope_source" in v for v in validate_store(store))

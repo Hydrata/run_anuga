@@ -273,6 +273,8 @@ def _read_sww_arrays(sww_path) -> dict[str, Any]:
     """
     import netCDF4
 
+    from run_anuga.peaks import engine_peaks_from_dataset
+
     with netCDF4.Dataset(str(sww_path)) as ds:
         smoothing = getattr(ds, "smoothing", None)
         if smoothing != "Yes":
@@ -298,7 +300,37 @@ def _read_sww_arrays(sww_path) -> dict[str, Any]:
             anuga_version=str(getattr(ds, "anuga_version", "0.0.0+unknown")),
             revision_number=str(getattr(ds, "revision_number", "")),
             revision_date=str(getattr(ds, "revision_date", "")),
+            # TASK-3772: the engine's per-step max centroid arrays, or None
+            # for an SWW written without them (max over saved frames only).
+            engine_peaks=engine_peaks_from_dataset(ds),
         )
+
+
+def apply_engine_envelopes(envelopes, engine_peaks, volumes, n_node):
+    """TASK-3772 (epic 3585): fold the engine's per-step maxima into the
+    frame envelopes from :func:`compute_envelopes`.
+
+    ``engine_peaks`` is ``_read_sww_arrays(...)['engine_peaks']``. When the
+    SWW carries ``max_depth_c``/``max_speed_c``/``max_uh_c``, each is
+    averaged centroid -> node over the triangles sharing the node and the
+    envelope becomes the node-wise ``max(frame envelope, engine)`` — so it is
+    never below a saved frame and also catches a peak between two yields.
+    Returns ``(envelopes, envelope_source)`` with ``envelope_source`` one of
+    ``engine_per_step`` / ``saved_frames`` (SWW without the arrays: the
+    envelopes come back unchanged).
+    """
+    from run_anuga import peaks
+
+    engine = engine_peaks
+    if engine is None:
+        return envelopes, peaks.ENVELOPE_SOURCE_FRAMES
+    out = dict(envelopes)
+    for name, var in peaks.ENVELOPE_TO_ENGINE.items():
+        if name not in out:
+            continue
+        node_vals = peaks.centroid_to_node(np.maximum(engine[var], 0.0), volumes, n_node)
+        out[name] = np.maximum(out[name], node_vals).astype(np.float32)
+    return out, peaks.ENVELOPE_SOURCE_ENGINE
 
 
 def _load_dt_ms_series(output_dir, run_label, n_time: int):
@@ -594,6 +626,10 @@ def _export_playback_store_impl(
     # consume below. Must run before those names are shadowed by their
     # quantized (uint16) counterparts a few lines down.
     envelopes = compute_envelopes(depth, x_velocity, y_velocity)
+    # TASK-3772 — true per-step peaks from the engine, when the SWW has them.
+    envelopes, envelope_source = apply_engine_envelopes(
+        envelopes, sww.get("engine_peaks"), sww["volumes"], n_node
+    )
 
     max_depth = float(np.max(depth)) if depth.size else 0.0
     depth_scale, depth_offset = quantize_range(0.0, max_depth)
@@ -673,6 +709,11 @@ def _export_playback_store_impl(
         # relay + validator both treat that as "declares none" — no backfill,
         # no 404, no throw; TASK-2752 AC4).
         envelope_quantities=list(ENVELOPE_QUANTITIES),
+        # TASK-3772 (epic 3585) — what the *_max envelopes are a max over:
+        # 'engine_per_step' (the solver's per-step maxima folded in) or
+        # 'saved_frames' (an SWW without the engine arrays: max over saved
+        # frames only). Optional; a store without it is a saved_frames store.
+        envelope_source=envelope_source,
     )
 
     t_chunks = (chunk_length_t, n_node)

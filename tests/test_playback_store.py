@@ -981,3 +981,89 @@ class TestLiveS3Upload:
 
         # Deliberately does NOT delete the uploaded objects — never delete
         # any S3 object from a test (wave brief hard rule).
+
+
+# ---------------------------------------------------------------------------
+# TASK-3772 (epic 3585) — envelopes from the engine's true per-step peaks
+# ---------------------------------------------------------------------------
+
+def _frame_envelopes(sww_path):
+    sww = ps._read_sww_arrays(sww_path)
+    depth = np.clip(sww["stage"] - sww["elevation"][np.newaxis, :], 0, None).astype(np.float32)
+    xv = ps.compute_velocity(sww["xmomentum"], depth, 1e-6).astype(np.float32)
+    yv = ps.compute_velocity(sww["ymomentum"], depth, 1e-6).astype(np.float32)
+    return sww, depth, xv, yv, ps.compute_envelopes(depth, xv, yv)
+
+
+@pytest.mark.requires_anuga
+class TestEngineEnvelopes:
+    def test_engine_envelope_is_at_or_above_every_saved_frame(self, fixture_sww):
+        sww, depth, xv, yv, frames = _frame_envelopes(fixture_sww)
+        n_node = sww["x"].shape[0]
+        env, source = ps.apply_engine_envelopes(frames, sww["engine_peaks"], sww["volumes"], n_node)
+        assert source == "engine_per_step"
+        speed = np.sqrt(xv ** 2 + yv ** 2)
+        for name in ps.ENVELOPE_QUANTITIES:
+            assert env[name].shape == (n_node,)
+            assert env[name].dtype == np.float32
+            assert np.all(env[name] >= frames[name])
+        # every individual saved frame lies under the envelope
+        assert np.all(env["depth"][np.newaxis, :] >= depth * (1 - 1e-6))
+        assert np.all(env["velocity"][np.newaxis, :] >= speed.astype(np.float32) * (1 - 1e-6))
+
+    def test_engine_values_fold_in_through_centroid_to_node(self, fixture_sww, tmp_path):
+        """Stamp a known engine peak on ONE triangle: its three nodes rise to
+        at least the triangle's share of the node average; nodes off that
+        triangle keep the frame envelope."""
+        import shutil
+
+        import netCDF4
+
+        from run_anuga import peaks
+
+        sww_copy = tmp_path / "stamped.sww"
+        shutil.copy(fixture_sww, sww_copy)
+        with netCDF4.Dataset(sww_copy, "a") as ds:
+            volumes = np.asarray(ds.variables["volumes"][:])
+            md = np.zeros(volumes.shape[0], dtype=np.float32)
+            md[0] = 50.0
+            ds.variables["max_depth_c"][:] = md
+        sww, _, _, _, frames = _frame_envelopes(sww_copy)
+        n_node = sww["x"].shape[0]
+        env, _ = ps.apply_engine_envelopes(frames, sww["engine_peaks"], sww["volumes"], n_node)
+        expected = peaks.centroid_to_node(md, volumes, n_node)
+        np.testing.assert_allclose(env["depth"], np.maximum(frames["depth"], expected), rtol=1e-6)
+        assert env["depth"][volumes[0]].min() > 1.0
+        untouched = np.setdiff1d(np.arange(n_node), volumes[0])
+        np.testing.assert_array_equal(env["depth"][untouched], frames["depth"][untouched])
+
+    def test_old_sww_keeps_frame_envelopes(self, fixture_sww_frames_only):
+        sww, _, _, _, frames = _frame_envelopes(fixture_sww_frames_only)
+        env, source = ps.apply_engine_envelopes(
+            frames, sww["engine_peaks"], sww["volumes"], sww["x"].shape[0])
+        assert source == "saved_frames"
+        for name in ps.ENVELOPE_QUANTITIES:
+            np.testing.assert_array_equal(env[name], frames[name])
+
+    @requires_zarr
+    @pytest.mark.parametrize("which,expected", [
+        ("fixture_sww", "engine_per_step"),
+        ("fixture_sww_frames_only", "saved_frames"),
+    ])
+    def test_store_declares_envelope_source_and_validates(self, request, tmp_path, which, expected):
+        import zarr
+
+        from run_anuga.validate_playback_store import validate_store
+
+        sww_path = request.getfixturevalue(which)
+        result = ps.export_playback_store(
+            input_data={
+                "run_label": "run_1_1_1",
+                "scenario_config": {"project": 1, "id": 1, "run_id": 1, "epsg": "EPSG:28355"},
+            },
+            sww_path=str(sww_path), output_dir=str(tmp_path), upload=False,
+        )
+        assert result["status"] == "ok"
+        root = zarr.open_group(result["local_path"], mode="r")
+        assert root.attrs["envelope_source"] == expected
+        assert validate_store(result["local_path"]) == []
