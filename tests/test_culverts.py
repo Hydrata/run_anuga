@@ -1094,3 +1094,53 @@ class TestBuriedInvertCarve:
                 assert q == 0.0 and abs(q_req) < 1e-3                  # no head, no flow
         assert max(r["q"]) > 0.05 and min(r["q"]) >= -1e-6            # then it carries flow, forward
         assert r["v1"] - r["v0"] == pytest.approx(r["inflow"], rel=1e-6)
+
+
+class TestCouplerSmoothingOverride:
+    """TASK-3771: RUN_ANUGA_CULVERT_SMOOTHING_S overrides the coupler smoothing for A/B runs."""
+
+    def test_default_is_the_constant(self, monkeypatch):
+        from run_anuga.culverts.operator import coupler_smoothing_timescale
+        monkeypatch.delenv(constants.COUPLER_SMOOTHING_ENV, raising=False)
+        assert coupler_smoothing_timescale() == constants.COUPLER_SMOOTHING_TIMESCALE_S == 30.0
+
+    @pytest.mark.parametrize("raw, want", [("0", 0.0), ("5", 5.0), (" 12.5 ", 12.5)])
+    def test_override(self, monkeypatch, raw, want):
+        from run_anuga.culverts.operator import coupler_smoothing_timescale
+        monkeypatch.setenv(constants.COUPLER_SMOOTHING_ENV, raw)
+        assert coupler_smoothing_timescale() == want
+
+    @pytest.mark.parametrize("raw", ["-1", "abc", "nan"])
+    def test_bad_override_is_refused(self, monkeypatch, raw):
+        from run_anuga.culverts.features import CulvertBuildError
+        from run_anuga.culverts.operator import coupler_smoothing_timescale
+        monkeypatch.setenv(constants.COUPLER_SMOOTHING_ENV, raw)
+        with pytest.raises(CulvertBuildError):
+            coupler_smoothing_timescale()
+
+
+class TestCouplerEqualisationOverride:
+    """TASK-3771: RUN_ANUGA_CULVERT_EQUALISATION picks the coupler's cap for A/B runs."""
+
+    @pytest.mark.parametrize("raw, want", [(None, {}), ("default", {}), ("off", {"equalisation_factor": None}),
+                                           (" STRICT ", {"equalisation_strict": True})])
+    def test_modes(self, monkeypatch, raw, want):
+        from run_anuga.culverts.operator import coupler_equalisation_kwargs
+        if raw is None:
+            monkeypatch.delenv(constants.COUPLER_EQUALISATION_ENV, raising=False)
+        else:
+            monkeypatch.setenv(constants.COUPLER_EQUALISATION_ENV, raw)
+        assert coupler_equalisation_kwargs() == want
+
+    def test_unknown_mode_is_refused(self, monkeypatch):
+        from run_anuga.culverts.features import CulvertBuildError
+        from run_anuga.culverts.operator import coupler_equalisation_kwargs
+        monkeypatch.setenv(constants.COUPLER_EQUALISATION_ENV, "loose")
+        with pytest.raises(CulvertBuildError):
+            coupler_equalisation_kwargs()
+
+    def test_the_kwargs_are_accepted_by_the_fork(self):
+        import inspect
+        drainage = pytest.importorskip("anuga_drainage.culverts.coupler")
+        params = inspect.signature(drainage.HeadwallCulvertCoupler.__init__).parameters
+        assert {"equalisation_factor", "equalisation_strict"} <= set(params)

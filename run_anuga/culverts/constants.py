@@ -72,6 +72,14 @@ TIMESERIES_DIAGNOSTIC_COLUMN = "q_requested_m3s"
 #: injected with a momentum jet along the barrel direction (both as validated in the
 #: Towradgi spike, TASK-3634).
 COUPLER_SMOOTHING_TIMESCALE_S = 30.0
+#: TASK-3771: the environment variable that overrides COUPLER_SMOOTHING_TIMESCALE_S for a
+#: run (seconds, >= 0; 0 = no smoothing). For the anti-oscillation A/B proofs only.
+COUPLER_SMOOTHING_ENV = "RUN_ANUGA_CULVERT_SMOOTHING_S"
+#: TASK-3771: the environment variable that picks the coupler's equalisation cap for a run:
+#: "default" (the fork's default: SWMM's own barrel flow is a floor), "strict" (no step
+#: overshoots the level, nothing moves against the head) or "off" (pre-3771). A/B proofs only.
+COUPLER_EQUALISATION_ENV = "RUN_ANUGA_CULVERT_EQUALISATION"
+COUPLER_EQUALISATION_MODES = ("default", "strict", "off")
 COUPLER_USE_MOMENTUM_JET = True
 #: SWMM is opened for the run duration plus this margin (it must outlast the last ANUGA step).
 COUPLER_DURATION_MARGIN_S = 60.0

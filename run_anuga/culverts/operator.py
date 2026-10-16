@@ -23,6 +23,38 @@ from run_anuga.culverts.regions import carve_to_invert
 logger = logging.getLogger(__name__)
 
 
+def coupler_smoothing_timescale(log=None):
+    """COUPLER_SMOOTHING_TIMESCALE_S, or the RUN_ANUGA_CULVERT_SMOOTHING_S override (TASK-3771)."""
+    raw = os.environ.get(constants.COUPLER_SMOOTHING_ENV, "").strip()
+    if not raw:
+        return constants.COUPLER_SMOOTHING_TIMESCALE_S
+    try:
+        value = float(raw)
+    except ValueError as error:
+        raise CulvertBuildError(f"{constants.COUPLER_SMOOTHING_ENV} must be seconds, got {raw!r}") from error
+    if not value >= 0.0:
+        raise CulvertBuildError(f"{constants.COUPLER_SMOOTHING_ENV} must be >= 0, got {raw!r}")
+    (log or logger).info("culvert coupler: smoothing timescale %.3g s (%s override)", value,
+                         constants.COUPLER_SMOOTHING_ENV)
+    return value
+
+
+def coupler_equalisation_kwargs(log=None):
+    """attach_culverts kwargs for the RUN_ANUGA_CULVERT_EQUALISATION override (TASK-3771);
+    {} (the fork's default cap) when unset."""
+    raw = os.environ.get(constants.COUPLER_EQUALISATION_ENV, "").strip().lower()
+    if not raw or raw == "default":
+        return {}
+    if raw not in constants.COUPLER_EQUALISATION_MODES:
+        raise CulvertBuildError(
+            f"{constants.COUPLER_EQUALISATION_ENV} must be one of {constants.COUPLER_EQUALISATION_MODES}, got {raw!r}"
+        )
+    (log or logger).info("culvert coupler: equalisation cap %s (%s override)", raw, constants.COUPLER_EQUALISATION_ENV)
+    if raw == "off":
+        return {"equalisation_factor": None}
+    return {"equalisation_strict": True}
+
+
 def swmm_workdir(output_directory) -> str:
     return os.path.join(output_directory, constants.METRICS_DIRNAME, constants.SWMM_WORKDIR_NAME)
 
@@ -149,7 +181,8 @@ def attach_culvert_coupler(domain, results, output_directory, duration_s, log=No
         engine="swmm",
         workdir=swmm_workdir(output_directory),
         duration_s=float(duration_s) + constants.COUPLER_DURATION_MARGIN_S,
-        smoothing_timescale=constants.COUPLER_SMOOTHING_TIMESCALE_S,
+        smoothing_timescale=coupler_smoothing_timescale(log),
+        **coupler_equalisation_kwargs(log),
         use_momentum_jet=constants.COUPLER_USE_MOMENTUM_JET,
     )
     for culvert in culverts:
