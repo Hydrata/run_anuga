@@ -14,6 +14,7 @@ from run_anuga.run_utils import setup_input_data, create_anuga_mesh, \
     compute_mesh_qa, extract_boundary_condition_types, compute_yieldstep  # W3 (TASK-1923)
 from run_anuga import defaults
 from run_anuga import phase_tracker
+from run_anuga.peaks import attach_peak_operator
 from run_anuga.culverts import CulvertBuildError, MeshView, prepare_culverts
 from run_anuga.callbacks import NullCallback
 from run_anuga.diagnostics import (
@@ -617,6 +618,14 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
         domain.set_boundary(
             bind_boundary_tags(domain.boundary.values(), default_boundary_maps)
         )
+        _multiprocessor_mode = _resolve_multiprocessor_mode(input_data)
+
+        # TASK-3772 (epic 3585, D38/D39): the engine's per-step max operator,
+        # on every rank, fresh or resumed (an operator restored from a
+        # checkpoint is re-used). Its max_*_c centroid arrays ride the SWW and
+        # sww_merge; post_process_sww builds the *_max.tif rasters and the
+        # playback envelopes from them. RUN_ANUGA_TRUE_PEAKS=0 switches it off.
+        attach_peak_operator(domain, _multiprocessor_mode, log=logger)
 
         # TASK-1954 (epic 1952): GPU-mode flag — read multiprocessor_mode from
         # scenario.json (default 1 = OpenMP, preserves today's behaviour exactly).
@@ -627,7 +636,6 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
         # multiprocessor_mode passes through unvalidated when absent.
         # TASK-2197 (epic 2190 W4.1): env now beats scenario.json (see
         # _resolve_multiprocessor_mode) — the package stays immutable.
-        _multiprocessor_mode = _resolve_multiprocessor_mode(input_data)
         try:
             domain.set_multiprocessor_mode(_multiprocessor_mode)
             logger.info("run_sim: multiprocessor_mode=%s", _multiprocessor_mode)

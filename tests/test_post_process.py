@@ -165,3 +165,110 @@ class TestPostProcessRealPlaybackExport:
         stores = list((package_with_sww / "outputs_1_1_1").glob("*_playback.zarr"))
         assert len(stores) == 1
         assert validate_store(stores[0]) == []
+
+
+@pytest.mark.requires_anuga
+class TestPostProcessTruePeaks:
+    """TASK-3772 (epic 3585) — when the SWW carries the engine's per-step
+    max arrays, post_process_sww grids them through Make_Geotif's xyz path
+    and folds them into the same-named *_max.tif rasters. Make_Geotif is
+    mocked (or faked with tiny real rasters) so this stays fast."""
+
+    QUANTITIES = ("depth", "velocity", "depthIntegratedVelocity", "stage")
+
+    def _package(self, scenario_package, sww):
+        output_dir = scenario_package / "outputs_1_1_1"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy(sww, output_dir / "run_1_1_1.sww")
+        return scenario_package
+
+    def _run(self, package_dir, side_effect=None):
+        from run_anuga.run_utils import post_process_sww
+
+        with mock.patch("anuga.utilities.plot_utils.Make_Geotif", side_effect=side_effect) as mock_geotif, \
+             mock.patch("run_anuga.playback_store.export_playback_store") as mock_playback:
+            mock_playback.return_value = {"status": "ok"}
+            post_process_sww(str(package_dir))
+        return mock_geotif
+
+    def test_xyz_path_used_once_per_quantity_when_engine_arrays_exist(self, scenario_package, fixture_sww):
+        import numpy as np
+
+        from run_anuga import peaks
+
+        pkg = self._package(scenario_package, fixture_sww)
+        mock_geotif = self._run(pkg)
+        calls = mock_geotif.call_args_list
+        max_calls = [c for c in calls if c.kwargs.get("myTimeStep") == "max"]
+        xyz_calls = [c for c in calls if isinstance(c.kwargs.get("swwFile"), np.ndarray)]
+        assert len(max_calls) == 1
+        assert [c.kwargs["output_quantities"] for c in xyz_calls] == [[q] for q in self.QUANTITIES]
+        engine = peaks.read_engine_peaks(fixture_sww)
+        n_tri = engine["max_depth_c"].shape[0]
+        base = max_calls[0].kwargs
+        for c, q in zip(xyz_calls, self.QUANTITIES):
+            xyz = c.kwargs["swwFile"]
+            assert xyz.shape == (n_tri, 3)
+            np.testing.assert_allclose(xyz[:, 2], engine[peaks.RASTER_QUANTITY_TO_ENGINE[q]])
+            for key in ("CellSize", "EPSG_CODE", "bounding_polygon", "internal_holes",
+                        "k_nearest_neighbours", "min_allowed_height"):
+                assert c.kwargs[key] == base[key], key
+
+    def test_old_sww_keeps_only_the_frame_max_pass(self, scenario_package, fixture_sww_frames_only):
+        pkg = self._package(scenario_package, fixture_sww_frames_only)
+        mock_geotif = self._run(pkg)
+        assert [c.kwargs.get("myTimeStep") for c in mock_geotif.call_args_list] == ["max"]
+
+    @staticmethod
+    def _write_tif(path, value):
+        import numpy as np
+        import rasterio
+        from rasterio.transform import from_origin
+
+        data = np.full((3, 4), value, dtype=np.float32)
+        data[0, 0] = np.nan  # outside the bounding polygon
+        with rasterio.open(path, "w", driver="GTiff", height=3, width=4, count=1, dtype="float32",
+                           crs="EPSG:28355", transform=from_origin(0, 3, 1, 1), nodata=np.nan) as ds:
+            ds.write(data, 1)
+
+    def _fake_geotif(self, engine_values):
+        def fake(**kwargs):
+            out = kwargs["output_dir"]
+            if kwargs.get("myTimeStep") == "max":
+                for q in kwargs["output_quantities"]:
+                    self._write_tif(f"{out}/run_1_1_1_{q}_max.tif", 1.0)
+            else:
+                q = kwargs["output_quantities"][0]
+                self._write_tif(f"{out}/PointData_{q}.tif", engine_values[q])
+        return fake
+
+    def test_rasters_combine_never_below_frames_and_div_is_replaced(self, scenario_package, fixture_sww):
+        import math
+
+        import rasterio
+
+        engine_values = {"depth": 2.0, "velocity": 0.5, "stage": 0.5, "depthIntegratedVelocity": 0.25}
+        pkg = self._package(scenario_package, fixture_sww)
+        self._run(pkg, side_effect=self._fake_geotif(engine_values))
+        out = pkg / "outputs_1_1_1"
+        expected = {"depth": 2.0, "velocity": 1.0, "stage": 1.0, "depthIntegratedVelocity": 0.25}
+        for q, value in expected.items():
+            with rasterio.open(out / f"run_1_1_1_{q}_max.tif") as ds:
+                band = ds.read(1)
+                assert math.isnan(ds.nodata)
+                assert ds.tags()["peak_basis"] == "engine_per_step"
+            assert math.isnan(band[0, 0])
+            assert float(band[1, 1]) == value, q
+        assert not list(out.glob("true_peaks_*")), "temp dir left behind"
+        assert not list(out.glob("PointData_*")), "xyz rasters must not leak into outputs"
+
+    def test_frame_rasters_are_labelled_saved_frames(self, scenario_package, fixture_sww_frames_only):
+        import rasterio
+
+        pkg = self._package(scenario_package, fixture_sww_frames_only)
+        self._run(pkg, side_effect=self._fake_geotif({}))
+        for q in self.QUANTITIES:
+            with rasterio.open(pkg / "outputs_1_1_1" / f"run_1_1_1_{q}_max.tif") as ds:
+                assert ds.tags()["peak_basis"] == "saved_frames"
+                assert ds.tags()["peak_basis_label"] == "max over saved frames"
+                assert float(ds.read(1)[1, 1]) == 1.0

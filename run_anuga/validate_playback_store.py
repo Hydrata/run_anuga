@@ -23,6 +23,7 @@ from pathlib import Path
 # never drift apart. Safe: playback_store.py's only module-level import is
 # numpy, and it never imports this module (no cycle).
 from run_anuga.playback_store import ENVELOPE_QUANTITIES
+from run_anuga.peaks import ENVELOPE_SOURCES
 
 # name -> (expected dtype kind+itemsize via numpy dtype string, expected ndim)
 # Node-shaped static geometry — (nNode,). NOT inradius, which is per-FACE
@@ -240,6 +241,14 @@ def validate_store(store_path) -> list[str]:
                         violations.append(
                             f"{arr_name}: missing quantization attr '{qattr}' (TASK-2752, schema §3)"
                         )
+
+    # TASK-3772 (epic 3585) — optional: what the envelopes are a max over. A
+    # store exported before it never declares the key (= saved frames).
+    envelope_source = root.attrs.get("envelope_source")
+    if envelope_source is not None and envelope_source not in ENVELOPE_SOURCES:
+        violations.append(
+            f"envelope_source={envelope_source!r}, expected one of {ENVELOPE_SOURCES} (TASK-3772)"
+        )
 
     if _INRADIUS_ARRAY not in names:
         violations.append(f"missing required array '{_INRADIUS_ARRAY}' (schema §2)")

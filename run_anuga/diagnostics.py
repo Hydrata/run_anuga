@@ -729,6 +729,9 @@ class SimulationMonitor:
                 "max_speed_ms": round(max_speed_ms, 3),
                 "peak_speed_x": peak_speed_rec.get("peak_speed_x", 0.0),
                 "peak_speed_y": peak_speed_rec.get("peak_speed_y", 0.0),
+                # TASK-3772: these flow maxima are sampled once per yieldstep;
+                # the per-step peaks live in the *_max.tif / playback envelopes.
+                "max_basis": "max over saved frames",
             },
             "stability": {
                 "stable": stable,

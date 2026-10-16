@@ -1741,6 +1741,84 @@ def apply_inflows_to_domain(
     return inflow_functions
 
 
+def apply_engine_peaks_to_max_rasters(util, *, sww_path, run_label, output_quantities,
+                                      make_geotif_base_kwargs):
+    """TASK-3772 (epic 3585): rebuild the ``*_max.tif`` rasters from the
+    engine's per-step maxima (``max_*_c`` in the SWW), when present.
+
+    Each engine centroid array is gridded through Make_Geotif's 3-column xyz
+    path (the same CellSize, bounding polygon, holes, IDW k and NaN nodata as
+    the frame-max pass; the centroid set, hence the grid, is identical).
+    depth / velocity / stage take the cell-wise max with the frame-max raster,
+    so a true-peak raster is never below a saved frame; depthIntegratedVelocity
+    is replaced (see peaks.RASTER_COMBINE_WITH_FRAMES). Filenames unchanged.
+    Every ``*_max.tif`` is tagged ``peak_basis`` = engine_per_step or
+    saved_frames ("max over saved frames").
+
+    Returns the basis string. Never raises for a missing raster (Make_Geotif
+    mocked, or a quantity it did not write): that quantity is skipped.
+    """
+    import tempfile
+
+    import numpy as np
+
+    from run_anuga import peaks
+
+    output_dir = make_geotif_base_kwargs['output_dir']
+    engine = peaks.read_engine_peaks(sww_path)
+    basis = peaks.ENVELOPE_SOURCE_FRAMES if engine is None else peaks.ENVELOPE_SOURCE_ENGINE
+    rasterio = import_optional("rasterio")
+    if engine is None:
+        logger.info("true peaks: SWW has no engine max arrays; *_max.tif = %s", peaks.FRAME_MAX_LABEL)
+    else:
+        cx, cy = peaks.read_centroid_xy(sww_path)
+        grid_kwargs = {
+            k: v for k, v in make_geotif_base_kwargs.items()
+            if k not in ('swwFile', 'output_quantities', 'output_dir')
+        }
+        with tempfile.TemporaryDirectory(prefix='true_peaks_', dir=output_dir) as tmp_dir:
+            for quantity in output_quantities:
+                var = peaks.RASTER_QUANTITY_TO_ENGINE.get(quantity)
+                if var is None:
+                    continue
+                values = np.nan_to_num(engine[var], nan=0.0)
+                xyz = np.column_stack([cx, cy, values])
+                util.Make_Geotif(swwFile=xyz, output_quantities=[quantity], output_dir=tmp_dir, **grid_kwargs)
+                engine_tif = os.path.join(tmp_dir, f'PointData_{quantity}.tif')
+                max_tif = os.path.join(output_dir, f'{run_label}_{quantity}_max.tif')
+                if not os.path.isfile(engine_tif):
+                    logger.warning("true peaks: Make_Geotif wrote no %s; %s left as is", engine_tif, max_tif)
+                    continue
+                if quantity in peaks.RASTER_COMBINE_WITH_FRAMES and os.path.isfile(max_tif):
+                    with rasterio.open(engine_tif) as eng_ds, rasterio.open(max_tif) as frame_ds:
+                        eng = eng_ds.read(1)
+                        frame = frame_ds.read(1)
+                        profile = frame_ds.profile
+                    if eng.shape != frame.shape:
+                        logger.warning(
+                            "true peaks: %s grid %s != frame grid %s; keeping the frame-max raster",
+                            quantity, eng.shape, frame.shape,
+                        )
+                        continue
+                    with rasterio.open(max_tif, 'w', **profile) as out_ds:
+                        out_ds.write(np.fmax(eng, frame), 1)
+                else:
+                    shutil.move(engine_tif, max_tif)
+        logger.info("true peaks: *_max.tif rebuilt from the engine per-step maxima")
+    for quantity in output_quantities:
+        max_tif = os.path.join(output_dir, f'{run_label}_{quantity}_max.tif')
+        if os.path.isfile(max_tif):
+            with rasterio.open(max_tif, 'r+') as ds:
+                ds.update_tags(
+                    peak_basis=basis,
+                    peak_basis_label=(
+                        'max over solver timesteps' if basis == peaks.ENVELOPE_SOURCE_ENGINE
+                        else peaks.FRAME_MAX_LABEL
+                    ),
+                )
+    return basis
+
+
 def post_process_sww(
     package_dir,
     run_args=None,
@@ -1820,6 +1898,15 @@ def post_process_sww(
         # consumer; kept for the deprecated cmd_viz/cmd_upload CLI path.
         util.Make_Geotif(myTimeStep='all', **make_geotif_base_kwargs)
     util.Make_Geotif(myTimeStep='max', **make_geotif_base_kwargs)
+    # TASK-3772: when the SWW carries the engine's per-step maxima, rebuild the
+    # *_max.tif rasters from them (same grid / IDW / NaN nodata, same names).
+    apply_engine_peaks_to_max_rasters(
+        util,
+        sww_path=make_geotif_base_kwargs['swwFile'],
+        run_label=input_data['run_label'],
+        output_quantities=output_quantities,
+        make_geotif_base_kwargs=make_geotif_base_kwargs,
+    )
 
     # TASK-1143: guard against a future anuga_core default flip away from NaN.
     # Re-open the *_max.tif outputs and assert band 1 nodata is NaN.
