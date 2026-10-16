@@ -17,6 +17,7 @@ from run_anuga import phase_tracker
 from run_anuga.peaks import attach_peak_operator
 from run_anuga.culverts import CulvertBuildError, MeshView, prepare_culverts
 from run_anuga.callbacks import NullCallback
+from run_anuga.rain_check import run_rain_check
 from run_anuga.diagnostics import (
     SimulationMonitor, collect_flow_scalars, finalize_monitor_safely,
 )
@@ -792,6 +793,16 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
         # Evolve done — clear the phase so post-processing (sww_merge / result
         # publish) isn't attributed to 'evolve' (TASK-1910).
         phase_tracker.set_phase(None)
+        # TASK-3775: rain mass check — expected (inputs) vs applied (rain
+        # operators' cumulative influx). COLLECTIVE: every rank reduces.
+        _rain = run_rain_check(
+            domain, input_data,
+            model_start=input_data['scenario_config'].get('model_start') or '1/1/1970',
+            duration_s=duration, factor=defaults.RAINFALL_FACTOR,
+            is_rank0=(anuga.myid == 0), log=logger,
+        )
+        if monitor is not None:
+            monitor.set_rain_check(_rain)
         if culvert_coupler is not None:
             # TASK-3642: close SWMM, write the per-culvert series + D16 metrics into <output>/culverts/.
             from run_anuga.culverts.outputs import write_culvert_outputs

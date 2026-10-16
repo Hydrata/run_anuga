@@ -19,6 +19,7 @@ from run_anuga import defaults
 from run_anuga.breakline_conditioner import condition_breaklines
 from run_anuga._logging import install_mname_filter
 from run_anuga.config import ScenarioConfig, check_required_capabilities
+from run_anuga.rain_check import tag_rain_operator
 from run_anuga.culverts import (
     CULVERT_CAPABILITY,
     CulvertBuildError,
@@ -1672,13 +1673,15 @@ def apply_inflows_to_domain(
         inflow_function = create_inflow_function(inflow_dataframe, polygon_name)
         inflow_functions[polygon_name] = inflow_function
         geometry = _extract_polygon_outer_ring(inflow_polygon.get('geometry'))
-        Polygonal_rate_operator(
+        # TASK-3775: tagged so the run summary's rain check can sum what the
+        # rain operators applied (catchment operators below stay untagged).
+        tag_rain_operator(Polygonal_rate_operator(
             domain,
             rate=inflow_function,
             factor=defaults_module.RAINFALL_FACTOR,
             polygon=geometry,
             default_rate=0.00,
-        )
+        ))
 
     if len(rainfall_inflow_polygons) > 1 and len(catchment_polygons) > 0:
         # Fail-fast BEFORE the catchment loop so no Polygonal_rate_operator
