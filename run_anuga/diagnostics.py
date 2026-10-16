@@ -95,6 +95,10 @@ def installed_anuga_core_sha():
 
 # --- run_anuga code version in the run summary (TASK-3775) ------------------
 _SHA40 = re.compile(r"^[0-9a-f]{40}$")
+#: The bake tooling (deploy scripts/rebuild-batch-image.sh and
+#: scripts/gpu-dev/build-gpu-batch-image.sh) stamps ``git rev-parse --short``,
+#: so the manifest normally carries a 7-char abbreviation. Accept 7-40 hex.
+_SHA_ABBREV = re.compile(r"^[0-9a-f]{7,40}$")
 
 
 def _git_head_sha(package_dir):
@@ -130,8 +134,18 @@ def resolve_run_anuga_sha(provenance_path=None, package_dir=None):
 
     Order: the baked BUILD_PROVENANCE.json (``run_anuga.sha``, via
     ``_handoff.load_build_provenance``) -> ``git`` HEAD of the checkout the
-    package was imported from -> ``("unknown", "unknown")``. Only a full
-    40-hex sha is reported. Never raises.
+    package was imported from -> ``("unknown", "unknown")``. Never raises.
+
+    The manifest sha is recorded AS GIVEN when it is 7-40 lowercase hex: the
+    bake tooling writes ``git rev-parse --short`` (e.g. ``a1374f2``), so a
+    prod run reports the abbreviation. Anything else in the manifest (empty,
+    ``nogit``, non-hex, shorter than 7) is ignored and the git fallback runs.
+    The git fallback always reports the full 40-hex HEAD.
+
+    CAVEAT: the manifest describes what was BAKED into the image. A dev run
+    that bind-mounts different run_anuga code over a baked image still reports
+    the image's baked sha, not the mounted code's. (The summary's
+    ``anuga_core_sha`` is read from the installed package and is unaffected.)
     """
     try:
         from run_anuga._handoff import load_build_provenance
@@ -139,7 +153,7 @@ def resolve_run_anuga_sha(provenance_path=None, package_dir=None):
         prov = load_build_provenance(provenance_path)
         sha = ((prov or {}).get("run_anuga") or {}).get("sha")
         sha = str(sha).strip().lower() if sha else ""
-        if _SHA40.match(sha):
+        if _SHA_ABBREV.match(sha):
             return sha, "build_provenance"
     except Exception:
         logger.debug("run_anuga sha: build provenance unreadable", exc_info=True)
