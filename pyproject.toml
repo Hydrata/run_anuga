@@ -37,7 +37,7 @@ sim = [
     # fork commit (87878dc, W4c) is not on GitHub until the top pushes the fork epic branch.
     "pyswmm==2.2.0",
     "swmm-toolkit==0.17.0",
-    "anuga_drainage @ git+https://github.com/Hydrata/anuga_drainage@87878dc92d3d0a7b3c520d9997cb65c1c40c60bd",
+    "anuga_drainage @ git+https://github.com/Hydrata/anuga_drainage@09ac2355e78ecafccf5bbafda670fb37abef661c",
 ]
 viz = [
     "matplotlib>=3.6",
