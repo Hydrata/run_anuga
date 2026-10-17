@@ -58,7 +58,7 @@
 # (TASK-2673 engine unification: cpu joins gpu on fork main; towradgi
 # parity gate on the cpu build is the acceptance evidence). Prev: 8abd3aef
 # (fork main @ upstream anuga-community/main 2d3696ea, epic 2147 W1.1).
-ARG ANUGA_CORE_SHA=93368189eb35eef847094dde027d6d6dcb2b0059
+ARG ANUGA_CORE_SHA=1a496176daad29ec32cb284ca2d45af2797f9a11
 
 # ---- BARE-TAG RULE: a `v`-prefixed anuga_core tag is a SILENT no-op --------
 # (TASK-2700. Recorded here and in deploy's install-anuga.yml pin comment —
