@@ -194,6 +194,33 @@ def fixture_sww(tmp_path_factory):
     return swws[0]
 
 
+def strip_engine_peaks(src, dst):
+    """Copy an SWW to ``dst`` WITHOUT the engine per-step max arrays
+    (max_*_c, TASK-3772) — i.e. an SWW as written before that change."""
+    import netCDF4
+
+    with netCDF4.Dataset(str(src)) as s, netCDF4.Dataset(str(dst), "w", format=s.data_model) as d:
+        d.setncatts({k: s.getncattr(k) for k in s.ncattrs()})
+        for name, dim in s.dimensions.items():
+            d.createDimension(name, None if dim.isunlimited() else len(dim))
+        for name, var in s.variables.items():
+            if name.startswith("max_") and name.endswith("_c"):
+                continue
+            fill = var.getncattr("_FillValue") if "_FillValue" in var.ncattrs() else None
+            out = d.createVariable(name, var.datatype, var.dimensions, fill_value=fill)
+            out.setncatts({k: var.getncattr(k) for k in var.ncattrs() if k != "_FillValue"})
+            out[:] = var[:]
+    return dst
+
+
+@pytest.fixture(scope="session")
+def fixture_sww_frames_only(fixture_sww, tmp_path_factory):
+    """The session fixture SWW minus the engine max arrays (TASK-3772): the
+    shape of every SWW written before true per-step peaks."""
+    dst = tmp_path_factory.mktemp("fixture-sww-frames-only") / fixture_sww.name
+    return strip_engine_peaks(fixture_sww, dst)
+
+
 @pytest.fixture
 def small_geotiff(tmp_path):
     """Create a tiny 10x10 GeoTIFF for testing raster operations."""

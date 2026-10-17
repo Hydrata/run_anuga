@@ -14,8 +14,10 @@ from run_anuga.run_utils import setup_input_data, create_anuga_mesh, \
     compute_mesh_qa, extract_boundary_condition_types, compute_yieldstep  # W3 (TASK-1923)
 from run_anuga import defaults
 from run_anuga import phase_tracker
+from run_anuga.peaks import attach_peak_operator
 from run_anuga.culverts import CulvertBuildError, MeshView, prepare_culverts
 from run_anuga.callbacks import NullCallback
+from run_anuga.rain_check import run_rain_check
 from run_anuga.diagnostics import (
     SimulationMonitor, collect_flow_scalars, finalize_monitor_safely,
 )
@@ -617,6 +619,14 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
         domain.set_boundary(
             bind_boundary_tags(domain.boundary.values(), default_boundary_maps)
         )
+        _multiprocessor_mode = _resolve_multiprocessor_mode(input_data)
+
+        # TASK-3772 (epic 3585, D38/D39): the engine's per-step max operator,
+        # on every rank, fresh or resumed (an operator restored from a
+        # checkpoint is re-used). Its max_*_c centroid arrays ride the SWW and
+        # sww_merge; post_process_sww builds the *_max.tif rasters and the
+        # playback envelopes from them. RUN_ANUGA_TRUE_PEAKS=0 switches it off.
+        attach_peak_operator(domain, _multiprocessor_mode, log=logger)
 
         # TASK-1954 (epic 1952): GPU-mode flag — read multiprocessor_mode from
         # scenario.json (default 1 = OpenMP, preserves today's behaviour exactly).
@@ -627,7 +637,6 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
         # multiprocessor_mode passes through unvalidated when absent.
         # TASK-2197 (epic 2190 W4.1): env now beats scenario.json (see
         # _resolve_multiprocessor_mode) — the package stays immutable.
-        _multiprocessor_mode = _resolve_multiprocessor_mode(input_data)
         try:
             domain.set_multiprocessor_mode(_multiprocessor_mode)
             logger.info("run_sim: multiprocessor_mode=%s", _multiprocessor_mode)
@@ -784,6 +793,16 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
         # Evolve done — clear the phase so post-processing (sww_merge / result
         # publish) isn't attributed to 'evolve' (TASK-1910).
         phase_tracker.set_phase(None)
+        # TASK-3775: rain mass check — expected (inputs) vs applied (rain
+        # operators' cumulative influx). COLLECTIVE: every rank reduces.
+        _rain = run_rain_check(
+            domain, input_data,
+            model_start=input_data['scenario_config'].get('model_start') or '1/1/1970',
+            duration_s=duration, factor=defaults.RAINFALL_FACTOR,
+            is_rank0=(anuga.myid == 0), log=logger,
+        )
+        if monitor is not None:
+            monitor.set_rain_check(_rain)
         if culvert_coupler is not None:
             # TASK-3642: close SWMM, write the per-culvert series + D16 metrics into <output>/culverts/.
             from run_anuga.culverts.outputs import write_culvert_outputs

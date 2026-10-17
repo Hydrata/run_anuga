@@ -30,16 +30,17 @@ MAX_REGION_EXPANSIONS = 8
 #: same few cells. It never fails the build.
 MIN_LENGTH_CELL_EDGES = 3.0
 
-#: D34 (operator 14-10-26, TASK-3700): an invert below its exchange region's ground is a
-#: channel the terrain does not contain. Before the run the region is CARVED down to the
-#: invert (ground is only ever lowered; the water depth there is kept, so no water is made),
-#: and a build WARNING is given when the invert sits more than this far below the region's
-#: area-weighted mean ground. It never fails the build.
+#: D34 (operator 14-10-26, TASK-3700; amended 16-10-26, TASK-3771): an invert below the LOWEST
+#: ground of its exchange region is a channel the terrain does not contain. Before the run the
+#: region is lowered by that sill, keeping its shape, so its lowest point meets the invert
+#: (ground is only ever lowered; the water depth there is kept, so no water is made), and a build
+#: WARNING is given when the sill is more than this. An invert below the region's mean but at or
+#: above its lowest ground (a creek bed beside an embankment) is carved nowhere. It never fails
+#: the build.
 BURIED_INVERT_WARN_M = 0.05
-#: The carve runs only when the invert is more than this below the region's mean ground: at
-#: or above it a dry region already reads zero head, so nothing moves (an invert set to the
-#: region's mean ground, the spike convention, leaves the terrain bit-identical). 1 mm is
-#: the rounding of a 3-decimal invert; a false head smaller than that moves no water.
+#: The carve runs only when the invert is more than this below the region's lowest ground: at or
+#: above it the coupler's level-fill stage of a dry region is already at or below the invert
+#: (zero head), so nothing moves. 1 mm is the rounding of a 3-decimal invert.
 CARVE_MIN_BURIAL_M = 0.001
 
 #: D10 per-feature defaults filled in when the package omits them.
@@ -71,6 +72,14 @@ TIMESERIES_DIAGNOSTIC_COLUMN = "q_requested_m3s"
 #: injected with a momentum jet along the barrel direction (both as validated in the
 #: Towradgi spike, TASK-3634).
 COUPLER_SMOOTHING_TIMESCALE_S = 30.0
+#: TASK-3771: the environment variable that overrides COUPLER_SMOOTHING_TIMESCALE_S for a
+#: run (seconds, >= 0; 0 = no smoothing). For the anti-oscillation A/B proofs only.
+COUPLER_SMOOTHING_ENV = "RUN_ANUGA_CULVERT_SMOOTHING_S"
+#: TASK-3771: the environment variable that picks the coupler's equalisation cap for a run:
+#: "default" (the fork's default: SWMM's own barrel flow is a floor), "strict" (no step
+#: overshoots the level, nothing moves against the head) or "off" (pre-3771). A/B proofs only.
+COUPLER_EQUALISATION_ENV = "RUN_ANUGA_CULVERT_EQUALISATION"
+COUPLER_EQUALISATION_MODES = ("default", "strict", "off")
 COUPLER_USE_MOMENTUM_JET = True
 #: SWMM is opened for the run duration plus this margin (it must outlast the last ANUGA step).
 COUPLER_DURATION_MARGIN_S = 60.0

@@ -93,6 +93,78 @@ def installed_anuga_core_sha():
         return None
 
 
+# --- run_anuga code version in the run summary (TASK-3775) ------------------
+_SHA40 = re.compile(r"^[0-9a-f]{40}$")
+#: The bake tooling (deploy scripts/rebuild-batch-image.sh and
+#: scripts/gpu-dev/build-gpu-batch-image.sh) stamps ``git rev-parse --short``,
+#: so the manifest normally carries a 7-char abbreviation. Accept 7-40 hex.
+_SHA_ABBREV = re.compile(r"^[0-9a-f]{7,40}$")
+
+
+def _git_head_sha(package_dir):
+    """HEAD sha of the git checkout that holds ``package_dir``, or ``None``.
+
+    Only trusted when the checkout's top level is the package's parent (the
+    run_anuga repo itself), so a run_anuga installed into site-packages that
+    happens to sit inside some other repo never reports that repo's sha.
+    """
+    import subprocess
+
+    try:
+        top = subprocess.run(
+            ["git", "-C", package_dir, "rev-parse", "--show-toplevel", "HEAD"],
+            capture_output=True, text=True, timeout=10,
+        )
+    except Exception:
+        return None
+    if top.returncode != 0:
+        return None
+    lines = top.stdout.split()
+    if len(lines) != 2:
+        return None
+    toplevel, sha = lines
+    if os.path.realpath(toplevel) != os.path.realpath(os.path.dirname(package_dir)):
+        return None
+    sha = sha.strip().lower()
+    return sha if _SHA40.match(sha) else None
+
+
+def resolve_run_anuga_sha(provenance_path=None, package_dir=None):
+    """``(sha, source)`` of the run_anuga code running this sim.
+
+    Order: the baked BUILD_PROVENANCE.json (``run_anuga.sha``, via
+    ``_handoff.load_build_provenance``) -> ``git`` HEAD of the checkout the
+    package was imported from -> ``("unknown", "unknown")``. Never raises.
+
+    The manifest sha is recorded AS GIVEN when it is 7-40 lowercase hex: the
+    bake tooling writes ``git rev-parse --short`` (e.g. ``a1374f2``), so a
+    prod run reports the abbreviation. Anything else in the manifest (empty,
+    ``nogit``, non-hex, shorter than 7) is ignored and the git fallback runs.
+    The git fallback always reports the full 40-hex HEAD.
+
+    CAVEAT: the manifest describes what was BAKED into the image. A dev run
+    that bind-mounts different run_anuga code over a baked image still reports
+    the image's baked sha, not the mounted code's. (The summary's
+    ``anuga_core_sha`` is read from the installed package and is unaffected.)
+    """
+    try:
+        from run_anuga._handoff import load_build_provenance
+
+        prov = load_build_provenance(provenance_path)
+        sha = ((prov or {}).get("run_anuga") or {}).get("sha")
+        sha = str(sha).strip().lower() if sha else ""
+        if _SHA_ABBREV.match(sha):
+            return sha, "build_provenance"
+    except Exception:
+        logger.debug("run_anuga sha: build provenance unreadable", exc_info=True)
+    if package_dir is None:
+        package_dir = os.path.dirname(os.path.abspath(__file__))
+    sha = _git_head_sha(package_dir)
+    if sha:
+        return sha, "git"
+    return "unknown", "unknown"
+
+
 #: Depth below which a cell is treated as dry for velocity/volume calculations.
 WET_THRESHOLD = 1e-3  # 1 mm
 
@@ -308,6 +380,7 @@ class SimulationMonitor:
         self._csv_path = os.path.join(output_dir, f"run_diagnostics_{batch_number}.csv")
         self._json_path = os.path.join(output_dir, f"run_summary_{batch_number}.json")
         self._records = []
+        self._rain = None  # TASK-3775: set_rain_check() after evolve
 
         self._start_wall_time = time.time()
         self._started_at = datetime.now(tz=timezone.utc)
@@ -541,6 +614,10 @@ class SimulationMonitor:
             "yieldstep_series": series,
         }
 
+    def set_rain_check(self, rain: dict | None) -> None:
+        """Attach the rain mass check (run_anuga.rain_check) to the summary."""
+        self._rain = rain
+
     def _publish_observed_stats(self) -> None:
         """Hand the aggregate to the phase tracker for the sampler; never raises."""
         try:
@@ -609,6 +686,9 @@ class SimulationMonitor:
         # code_provenance is corroborated against. None when the version has no
         # local segment (a plain release / 'unknown').
         env["anuga_core_sha"] = anuga_core_sha_from_version(env["anuga_version"])
+        # TASK-3775: run_anuga_version is the static package version ('1.1.0');
+        # the sha says which code actually ran.
+        env["run_anuga_sha"], env["run_anuga_sha_source"] = resolve_run_anuga_sha()
         return env
 
     def _build_summary(self, finished_at: datetime) -> dict:
@@ -673,7 +753,7 @@ class SimulationMonitor:
             or "DE0"
         )
 
-        return {
+        summary = {
             "schema_version": SUMMARY_SCHEMA_VERSION,
             "run": {
                 "run_label": self.run_label,
@@ -729,6 +809,9 @@ class SimulationMonitor:
                 "max_speed_ms": round(max_speed_ms, 3),
                 "peak_speed_x": peak_speed_rec.get("peak_speed_x", 0.0),
                 "peak_speed_y": peak_speed_rec.get("peak_speed_y", 0.0),
+                # TASK-3772: these flow maxima are sampled once per yieldstep;
+                # the per-step peaks live in the *_max.tif / playback envelopes.
+                "max_basis": "max over saved frames",
             },
             "stability": {
                 "stable": stable,
@@ -739,6 +822,9 @@ class SimulationMonitor:
             },
             "environment": self._collect_environment(),
         }
+        if self._rain is not None:
+            summary["rain"] = self._rain  # TASK-3775
+        return summary
 
     def _write_summary(self) -> None:
         """Build and write the JSON run summary."""

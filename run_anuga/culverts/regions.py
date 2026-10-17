@@ -193,6 +193,7 @@ class CarveResult:
     end: str
     invert_m: float
     bed_before_m: float  # area-weighted mean ground of the region before the carve
+    lowest_before_m: float  # lowest triangle ground in the region before the carve
     bed_after_m: float
     region_area_m2: float
     cells_lowered: int
@@ -202,21 +203,31 @@ class CarveResult:
 
     @property
     def buried_by_m(self) -> float:
-        """How far the invert sits below the region's mean ground (<= 0 when not buried)."""
-        return self.bed_before_m - self.invert_m
+        """How far the invert sits below the region's LOWEST ground (<= 0 when not buried).
+
+        TASK-3771: an invert below the mean but at or above the lowest ground is a channel the
+        terrain already holds (a creek bed beside an embankment), not a buried invert.
+        """
+        return self.lowest_before_m - self.invert_m
 
 
 def carve_to_invert(domain, indices, invert_m, end="") -> CarveResult:
-    """D34 (TASK-3700): lower every triangle in ``indices`` whose ground is above ``invert_m`` to it,
-    when the invert sits more than CARVE_MIN_BURIAL_M below the region's area-weighted mean
-    ground (otherwise a dry region already reads zero head and nothing is touched).
+    """D34 as amended by TASK-3771: when the invert sits more than CARVE_MIN_BURIAL_M below the
+    LOWEST ground of the region, lower the region by that sill (lowest ground - invert) so its
+    lowest cell meets the invert, keeping the ground's shape; otherwise touch nothing.
 
-    TUFLOW SX-style: the exchange region becomes a pit whose floor is the culvert invert, so a
-    dry region reads stage = invert (zero head) and water must reach the invert before the
-    culvert flows. Ground is never raised and nothing outside ``indices`` changes: the
-    centroid, edge and vertex elevations of the lowered triangles are each set to
-    min(value, invert) in place. ``Quantity.set_values(location='centroids', indices=...)``
-    is NOT used: it re-extrapolates EVERY triangle to first order, which drags (and on a
+    The pre-TASK-3771 rule cut every triangle above the invert down to it whenever the invert was
+    below the region's MEAN ground. On a wide bridge the region spans the creek bed and the road
+    or rail embankment beside it, so that rule dug the embankment into a pit (run 1591, Towradgi:
+    2,049 m3, 7.6 m deep at the Northern Distributor bridge) although the bed already reached the
+    invert. The coupler now reads each end's stage as the level its water fills on the region's
+    own ground (anuga_drainage LevelFill), so the region need not be flat to read zero head when
+    dry. On a flat region the sill is the burial and the result is the old carve, cell for cell.
+
+    Each centroid, edge and vertex value is lowered by min(sill, its height above the invert):
+    ground is never raised and never pushed below the invert or its own value, and nothing
+    outside ``indices`` changes. ``Quantity.set_values(location='centroids', indices=...)`` is
+    NOT used: it re-extrapolates EVERY triangle to first order, which drags (and on a
     vertex-set DEM raises) the ground outside the region (measured: up to 0.025 m on a 1 %
     slope). Stage moves down with the ground (depth kept), so the carve neither makes nor
     removes water whether or not the initial stage is already set.
@@ -228,17 +239,18 @@ def carve_to_invert(domain, indices, invert_m, end="") -> CarveResult:
     region_area = float(numpy.sum(areas))
     before = numpy.array(elevation.centroid_values[indices], dtype=float)
     bed_before = float(numpy.sum(before * areas) / region_area)
-    if float(invert_m) >= bed_before - constants.CARVE_MIN_BURIAL_M:
-        cut = numpy.zeros_like(before)
-    else:
-        cut = numpy.maximum(before - float(invert_m), 0.0)
+    lowest = float(before.min())
+    sill = lowest - float(invert_m)
+    if sill <= constants.CARVE_MIN_BURIAL_M:
+        sill = 0.0
+    cut = numpy.minimum(numpy.maximum(before - float(invert_m), 0.0), sill)
     lowered = cut > 0.0
     if lowered.any():
         cells = indices[lowered]
         for name in ("centroid_values", "edge_values", "vertex_values"):
             ground, water = getattr(elevation, name), getattr(stage, name)
             old = numpy.array(ground[cells], dtype=float)
-            new = numpy.minimum(old, float(invert_m))
+            new = old - numpy.minimum(numpy.maximum(old - float(invert_m), 0.0), sill)
             ground[cells] = new
             water[cells] = water[cells] - (old - new)
     after = numpy.array(elevation.centroid_values[indices], dtype=float)
@@ -246,6 +258,7 @@ def carve_to_invert(domain, indices, invert_m, end="") -> CarveResult:
         end=end,
         invert_m=float(invert_m),
         bed_before_m=bed_before,
+        lowest_before_m=lowest,
         bed_after_m=float(numpy.sum(after * areas) / region_area),
         region_area_m2=region_area,
         cells_lowered=int(numpy.count_nonzero(lowered)),

@@ -3,7 +3,8 @@
 operator moving water between the two D15 exchange regions).
 
 ``attach_culvert_coupler`` is called once, after distribute() and the inflow
-operators; it first carves each exchange region down to its invert (D34, TASK-3700).
+operators; it first lowers any exchange region whose lowest ground is above its invert
+(D34, TASK-3700; sill rule TASK-3771).
 ``anuga`` and ``anuga_drainage`` load lazily, so importing this module needs neither.
 """
 
@@ -22,19 +23,56 @@ from run_anuga.culverts.regions import carve_to_invert
 logger = logging.getLogger(__name__)
 
 
+def coupler_smoothing_timescale(log=None):
+    """COUPLER_SMOOTHING_TIMESCALE_S, or the RUN_ANUGA_CULVERT_SMOOTHING_S override (TASK-3771)."""
+    raw = os.environ.get(constants.COUPLER_SMOOTHING_ENV, "").strip()
+    if not raw:
+        return constants.COUPLER_SMOOTHING_TIMESCALE_S
+    try:
+        value = float(raw)
+    except ValueError as error:
+        raise CulvertBuildError(f"{constants.COUPLER_SMOOTHING_ENV} must be seconds, got {raw!r}") from error
+    if not value >= 0.0:
+        raise CulvertBuildError(f"{constants.COUPLER_SMOOTHING_ENV} must be >= 0, got {raw!r}")
+    (log or logger).info("culvert coupler: smoothing timescale %.3g s (%s override)", value,
+                         constants.COUPLER_SMOOTHING_ENV)
+    return value
+
+
+def coupler_equalisation_kwargs(log=None):
+    """attach_culverts kwargs for the RUN_ANUGA_CULVERT_EQUALISATION override (TASK-3771);
+    {} (the fork's default cap) when unset."""
+    raw = os.environ.get(constants.COUPLER_EQUALISATION_ENV, "").strip().lower()
+    if not raw or raw == "default":
+        return {}
+    if raw not in constants.COUPLER_EQUALISATION_MODES:
+        raise CulvertBuildError(
+            f"{constants.COUPLER_EQUALISATION_ENV} must be one of {constants.COUPLER_EQUALISATION_MODES}, got {raw!r}"
+        )
+    (log or logger).info("culvert coupler: equalisation cap %s (%s override)", raw, constants.COUPLER_EQUALISATION_ENV)
+    if raw == "off":
+        return {"equalisation_factor": None}
+    return {"equalisation_strict": True}
+
+
 def swmm_workdir(output_directory) -> str:
     return os.path.join(output_directory, constants.METRICS_DIRNAME, constants.SWMM_WORKDIR_NAME)
 
 
 def region_bed_m(anuga, domain, polygon):
-    """Area-weighted mean bed elevation of the triangles whose centroid is in ``polygon``, or None."""
-    numpy = import_optional("numpy")
+    """Lowest bed elevation of the triangles whose centroid is in ``polygon``, or None.
+
+    TASK-3771: the default for an omitted invert. The coupler reads each end's stage as the
+    level its water fills on the region's own ground (anuga_drainage LevelFill), so a dry
+    region reads its lowest ground: with the invert there it reads zero head, and the culvert
+    starts to flow as soon as water collects at the end. The area-weighted MEAN (the
+    pre-TASK-3771 default) would hold the water back until it covered the region's average
+    ground, which on a bed-plus-bank region is well above the channel.
+    """
     indices = anuga.Region(domain, polygon=polygon).indices
     if len(indices) == 0:
         return None
-    elevation = domain.quantities["elevation"].centroid_values[indices]
-    areas = domain.areas[indices]
-    return float(numpy.sum(elevation * areas) / numpy.sum(areas))
+    return float(min(domain.quantities["elevation"].centroid_values[indices]))
 
 
 def _open_ring(ring):
@@ -45,8 +83,9 @@ def _open_ring(ring):
 def headwall_culvert_dict(anuga, domain, result) -> dict:
     """The anuga_drainage D10 dict for one analysed culvert.
 
-    Inverts the package omits default to the area-weighted bed of the end's exchange
-    region (the Boyd convention). The exchange polygons are run_anuga's D15 regions.
+    Inverts the package omits default to the LOWEST bed of the end's exchange region
+    (TASK-3771; before it, the area-weighted mean). The exchange polygons are run_anuga's
+    D15 regions.
     """
     culvert = result.culvert
     polygons = {end: _open_ring(result.regions[end].polygon) for end in ENDS}
@@ -79,7 +118,8 @@ def headwall_culvert_dict(anuga, domain, result) -> dict:
 
 
 def carve_exchange_regions(anuga, domain, results, log=None) -> list:
-    """D34 (TASK-3700): carve each end's exchange region down to the user's invert.
+    """D34 (TASK-3700, amended TASK-3771): lower each end's exchange region by its sill so its
+    lowest ground meets the user's invert (nothing is cut where the ground already reaches it).
 
     Ends whose invert the package omits are skipped (that invert IS the region's mean
     ground). Uses the SAME triangles the coupler exchanges through (anuga.Region on the
@@ -101,9 +141,9 @@ def carve_exchange_regions(anuga, domain, results, log=None) -> list:
             carve = carve_to_invert(domain, indices, float(invert), end)
             carves.append((result, carve))
             log.info(
-                "culvert carve: %s %s, invert %.3f m, region mean ground %.3f -> %.3f m: %d of %d cell(s) "
-                "lowered, max cut %.3f m, %.1f m3 of ground carved over %.1f m2",
-                culvert.label, end, carve.invert_m, carve.bed_before_m, carve.bed_after_m,
+                "culvert carve: %s %s, invert %.3f m, region lowest ground %.3f m, mean ground %.3f -> %.3f m: "
+                "%d of %d cell(s) lowered, max cut %.3f m, %.1f m3 of ground carved over %.1f m2",
+                culvert.label, end, carve.invert_m, carve.lowest_before_m, carve.bed_before_m, carve.bed_after_m,
                 carve.cells_lowered, len(indices), carve.max_cut_m, carve.carved_volume_m3, carve.carved_area_m2,
             )
             warning = buried_invert_warning(culvert, carve)
@@ -141,7 +181,8 @@ def attach_culvert_coupler(domain, results, output_directory, duration_s, log=No
         engine="swmm",
         workdir=swmm_workdir(output_directory),
         duration_s=float(duration_s) + constants.COUPLER_DURATION_MARGIN_S,
-        smoothing_timescale=constants.COUPLER_SMOOTHING_TIMESCALE_S,
+        smoothing_timescale=coupler_smoothing_timescale(log),
+        **coupler_equalisation_kwargs(log),
         use_momentum_jet=constants.COUPLER_USE_MOMENTUM_JET,
     )
     for culvert in culverts:

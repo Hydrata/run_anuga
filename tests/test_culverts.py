@@ -911,24 +911,41 @@ class TestCarveToInvert:
     GROUND = [6.0, 5.5, 4.0, 7.0]
     VERTICES = [[6.1, 5.9, 6.0], [5.4, 5.6, 5.5], [3.9, 4.1, 4.0], [7.0, 7.0, 7.0]]
 
-    def test_lowers_only_region_cells_above_the_invert_and_never_raises(self):
+    def test_lowers_the_region_by_its_sill_keeping_its_shape_and_never_raises(self):
+        """TASK-3771: region cells 0-1 (ground 6.0 / 5.5 m, lowest 5.5) over an invert of 5.0 m:
+        the sill is 0.5 m, so both drop 0.5 m and the lowest cell meets the invert."""
         import numpy
 
         from run_anuga.culverts.regions import carve_to_invert
 
         domain = fake_domain(self.GROUND, self.VERTICES)
-        carve = carve_to_invert(domain, [0, 1, 2], 5.0, "inlet")
+        carve = carve_to_invert(domain, [0, 1], 5.0, "inlet")
         elevation = domain.quantities["elevation"]
-        assert elevation.centroid_values.tolist() == [5.0, 5.0, 4.0, 7.0]  # cell 3 is outside the region
+        assert elevation.centroid_values.tolist() == pytest.approx([5.5, 5.0, 4.0, 7.0])  # 2, 3 outside
+        assert elevation.vertex_values[0].tolist() == pytest.approx([5.6, 5.4, 5.5])        # shape kept
+        assert elevation.vertex_values[1].tolist() == pytest.approx([5.0, 5.1, 5.0])        # never below the invert
         assert elevation.vertex_values[3].tolist() == [7.0, 7.0, 7.0]
-        assert elevation.vertex_values[2].tolist() == [3.9, 4.1, 4.0]      # below the invert: untouched
         for name in ("centroid_values", "edge_values", "vertex_values"):
             before = numpy.array(self.GROUND if name == "centroid_values" else self.VERTICES)
             assert numpy.all(getattr(elevation, name) <= before)          # never raised
         assert carve.cells_lowered == 2 and carve.carved_area_m2 == 20.0
-        assert carve.max_cut_m == pytest.approx(1.0)
-        assert carve.carved_volume_m3 == pytest.approx(10.0 * 1.0 + 10.0 * 0.5)
-        assert carve.bed_before_m == pytest.approx(15.5 / 3) and carve.bed_after_m == pytest.approx(14.0 / 3)
+        assert carve.lowest_before_m == pytest.approx(5.5) and carve.buried_by_m == pytest.approx(0.5)
+        assert carve.max_cut_m == pytest.approx(0.5)
+        assert carve.carved_volume_m3 == pytest.approx(10.0 * 0.5 + 10.0 * 0.5)
+        assert carve.bed_before_m == pytest.approx(5.75) and carve.bed_after_m == pytest.approx(5.25)
+
+    def test_a_creek_bed_beside_an_embankment_is_not_carved(self):
+        """TASK-3771 / run 1591: a wide bridge's region spans the bed AND the embankment. The
+        invert at the bed is far below the region's MEAN ground but not below its lowest, so
+        nothing is cut (the old rule dug the embankment into a pit to the invert)."""
+        from run_anuga.culverts.regions import carve_to_invert
+
+        ground = [3.6, 3.7, 9.0, 11.4]
+        domain = fake_domain(ground, [[g] * 3 for g in ground])
+        carve = carve_to_invert(domain, [0, 1, 2, 3], 3.6, "inlet")
+        assert domain.quantities["elevation"].centroid_values.tolist() == ground
+        assert carve.cells_lowered == 0 and carve.carved_volume_m3 == 0.0
+        assert carve.bed_before_m - carve.invert_m > 3.0 and carve.buried_by_m == pytest.approx(0.0)
 
     def test_no_water_is_made_dry_cells_stay_dry_and_wet_cells_keep_their_depth(self):
         import numpy
@@ -937,27 +954,27 @@ class TestCarveToInvert:
 
         for depth in (0.0, 0.3):
             domain = fake_domain(self.GROUND, self.VERTICES, depth)
-            carve_to_invert(domain, [0, 1, 2], 5.0, "inlet")
+            carve_to_invert(domain, [0, 1], 5.0, "inlet")
             for name in ("centroid_values", "edge_values", "vertex_values"):
                 h = getattr(domain.quantities["stage"], name) - getattr(domain.quantities["elevation"], name)
                 assert numpy.allclose(h, depth, atol=1e-12)
 
-    def test_is_a_no_op_when_the_invert_is_at_or_above_the_ground(self):
+    def test_is_a_no_op_when_the_invert_is_at_or_above_the_lowest_ground(self):
         from run_anuga.culverts.regions import carve_to_invert
 
         domain = fake_domain(self.GROUND, self.VERTICES)
         before = {name: getattr(domain.quantities["elevation"], name).copy()
                   for name in ("centroid_values", "edge_values", "vertex_values")}
-        # region mean ground = 15.5 / 3 = 5.1667 m: an invert at (or within 1 mm below) the mean, or
-        # above it, is not buried, even though one cell (6.0 m, vertices to 6.1) stands above it
-        for invert in (6.1, 5.5, 15.5 / 3, 15.5 / 3 - 0.0009):
+        # region lowest ground = 4.0 m: an invert at (or within 1 mm below) it, or above it, is not
+        # buried, although it is below the region mean (5.17 m) and two cells stand above it
+        for invert in (6.1, 5.5, 15.5 / 3, 4.0, 4.0 - 0.0009):
             carve = carve_to_invert(domain, [0, 1, 2], invert, "outlet")
             for name, values in before.items():
                 assert (getattr(domain.quantities["elevation"], name) == values).all()
                 assert (getattr(domain.quantities["stage"], name) == values).all()
             assert carve.cells_lowered == 0 and carve.max_cut_m == 0.0 and carve.carved_volume_m3 == 0.0
             assert carve.bed_after_m == carve.bed_before_m
-        assert carve_to_invert(domain, [0, 1, 2], 15.5 / 3 - 0.0011, "outlet").cells_lowered == 2
+        assert carve_to_invert(domain, [0, 1, 2], 4.0 - 0.0011, "outlet").cells_lowered == 3
 
 
 class TestBuriedInvertWarning:
@@ -966,7 +983,8 @@ class TestBuriedInvertWarning:
     def carve(buried_by):
         from run_anuga.culverts.regions import CarveResult
 
-        return CarveResult(end="inlet", invert_m=5.28, bed_before_m=5.28 + buried_by, bed_after_m=5.28,
+        return CarveResult(end="inlet", invert_m=5.28, bed_before_m=5.28 + buried_by + 0.2,
+                           lowest_before_m=5.28 + buried_by, bed_after_m=5.28,
                            region_area_m2=200.0, cells_lowered=16, carved_area_m2=200.0,
                            max_cut_m=buried_by, carved_volume_m3=200.0 * buried_by)
 
@@ -975,8 +993,9 @@ class TestBuriedInvertWarning:
 
         [culvert] = load_culverts(collection(culvert_feature(name="Box x3")))
         text = buried_invert_warning(culvert, self.carve(0.75))
-        assert text.startswith(f"{culvert.label}: the Inlet invert (5.28 m) is 0.75 m below the average ground")
-        assert "carved down to it before the run: by up to 0.75 m over 200 m2 (150 m3 removed)" in text
+        assert text.startswith(f"{culvert.label}: the Inlet invert (5.28 m) is 0.75 m below the lowest ground")
+        assert "lowered before the run, keeping its shape" in text
+        assert "by up to 0.75 m over 200 m2 (150 m3 removed)" in text
         assert "Burning the channel into the terrain" in text and "is better" in text
 
     def test_no_warning_within_five_centimetres_or_above_the_ground(self):
@@ -1030,7 +1049,7 @@ BURIED_SCRIPT = """
         inflow=float(inflow.total_applied_volume) if inflow else 0.0,
         raised=bool((d.quantities["elevation"].centroid_values > e0).any()),
         lowered=int(lowered.sum()), lowered_x=d.centroid_coordinates[lowered][:, 0].tolist(),
-        warnings=results[0].warnings, bed_in=float(cs.bed_in[0]), bed_out=float(cs.bed_out[0]),
+        warnings=results[0].warnings, bed_in=float(cs.fill_in[0].mean_bed), bed_out=float(cs.fill_out[0].mean_bed),
         t=s["time_s"].tolist(), q=s["q_m3s"].tolist(), q_req=s["q_requested_m3s"].tolist(),
         hw=s["hw_level_m"].tolist(), tw=s["tw_level_m"].tolist(),
         applied=float(cs.applied_volume[0]), requested=float(cs.requested_volume[0]))))
@@ -1075,3 +1094,54 @@ class TestBuriedInvertCarve:
                 assert q == 0.0 and abs(q_req) < 1e-3                  # no head, no flow
         assert max(r["q"]) > 0.05 and min(r["q"]) >= -1e-6            # then it carries flow, forward
         assert r["v1"] - r["v0"] == pytest.approx(r["inflow"], rel=1e-6)
+
+
+class TestCouplerSmoothingOverride:
+    """TASK-3771: RUN_ANUGA_CULVERT_SMOOTHING_S overrides the coupler smoothing for A/B runs."""
+
+    def test_default_is_the_constant(self, monkeypatch):
+        from run_anuga.culverts.operator import coupler_smoothing_timescale
+        monkeypatch.delenv(constants.COUPLER_SMOOTHING_ENV, raising=False)
+        assert coupler_smoothing_timescale() == constants.COUPLER_SMOOTHING_TIMESCALE_S == 30.0
+
+    @pytest.mark.parametrize("raw, want", [("0", 0.0), ("5", 5.0), (" 12.5 ", 12.5)])
+    def test_override(self, monkeypatch, raw, want):
+        from run_anuga.culverts.operator import coupler_smoothing_timescale
+        monkeypatch.setenv(constants.COUPLER_SMOOTHING_ENV, raw)
+        assert coupler_smoothing_timescale() == want
+
+    @pytest.mark.parametrize("raw", ["-1", "abc", "nan"])
+    def test_bad_override_is_refused(self, monkeypatch, raw):
+        from run_anuga.culverts.features import CulvertBuildError
+        from run_anuga.culverts.operator import coupler_smoothing_timescale
+        monkeypatch.setenv(constants.COUPLER_SMOOTHING_ENV, raw)
+        with pytest.raises(CulvertBuildError):
+            coupler_smoothing_timescale()
+
+
+class TestCouplerEqualisationOverride:
+    """TASK-3771: RUN_ANUGA_CULVERT_EQUALISATION picks the coupler's cap for A/B runs."""
+
+    @pytest.mark.parametrize("raw, want", [(None, {}), ("default", {}), ("off", {"equalisation_factor": None}),
+                                           (" STRICT ", {"equalisation_strict": True})])
+    def test_modes(self, monkeypatch, raw, want):
+        from run_anuga.culverts.operator import coupler_equalisation_kwargs
+        if raw is None:
+            monkeypatch.delenv(constants.COUPLER_EQUALISATION_ENV, raising=False)
+        else:
+            monkeypatch.setenv(constants.COUPLER_EQUALISATION_ENV, raw)
+        assert coupler_equalisation_kwargs() == want
+
+    def test_unknown_mode_is_refused(self, monkeypatch):
+        from run_anuga.culverts.features import CulvertBuildError
+        from run_anuga.culverts.operator import coupler_equalisation_kwargs
+        monkeypatch.setenv(constants.COUPLER_EQUALISATION_ENV, "loose")
+        with pytest.raises(CulvertBuildError):
+            coupler_equalisation_kwargs()
+
+    @pytest.mark.requires_anuga  # anuga_drainage is in [sim], not [dev]
+    def test_the_kwargs_are_accepted_by_the_fork(self):
+        import inspect
+        import anuga_drainage.culverts.coupler as drainage
+        params = inspect.signature(drainage.HeadwallCulvertCoupler.__init__).parameters
+        assert {"equalisation_factor", "equalisation_strict"} <= set(params)
