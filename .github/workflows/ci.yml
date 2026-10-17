@@ -107,6 +107,9 @@ jobs:
           # here — replaced by the fork in the next step.
           pip install numpy "GDAL==$(gdal-config --version)"
           pip install -e ".[full,dev]"
+          # fiona: anuga_core 4.x spatialInputUtil imports fiona/rasterio/shapely together
+          # (mirrors batch/Dockerfile, which installs fiona explicitly).
+          pip install fiona
 
       # The required physics gate must validate the SAME engine prod runs: the Hydrata
       # anuga_core FORK (localhost + AWS Batch), NOT PyPI upstream `anuga`. Upstream's
