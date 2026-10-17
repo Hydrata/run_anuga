@@ -352,7 +352,11 @@ def test_real_domain_mode_2_without_gpu_fails_the_run(small_test_copy):
         capture_output=True, text=True, env=env, timeout=120,
     )
     assert result.returncode != 0
-    assert "did not engage (silent CPU fallback)" in result.stderr
+    # Older forks drop to mode 1 ("... did not engage (silent CPU fallback)");
+    # anuga_core 4.x keeps mode 2 and reports gpu_offload_active=False. Either
+    # way the run must refuse to continue in CPU mode.
+    assert "did not engage" in result.stderr
+    assert "refusing to run silently in CPU mode" in result.stderr
 
 
 # ---------------------------------------------------------------------------
