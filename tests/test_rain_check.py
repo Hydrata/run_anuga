@@ -215,7 +215,7 @@ def test_run_rain_check_returns_none_off_rank0():
 # --- real ANUGA CPU sim -------------------------------------------------------------
 
 def _real_sim(drop_feature=None, duration=120):
-    anuga = pytest.importorskip("anuga")
+    import anuga
     from anuga.operators.rate_operators import Polygonal_rate_operator
 
     domain = anuga.rectangular_cross_domain(20, 20, len1=100.0, len2=100.0)
@@ -243,6 +243,7 @@ def _real_sim(drop_feature=None, duration=120):
                           factor=defaults.RAINFALL_FACTOR, is_rank0=True, holes=[])
 
 
+@pytest.mark.requires_anuga
 def test_real_cpu_sim_applied_rain_matches_expected(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     rain = _real_sim()
@@ -253,6 +254,7 @@ def test_real_cpu_sim_applied_rain_matches_expected(tmp_path, monkeypatch):
     assert abs(rain["diff_pct"]) < 0.5
 
 
+@pytest.mark.requires_anuga
 def test_negative_control_real_sim_dropping_one_rain_polygon_is_not_ok(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     rain = _real_sim(drop_feature=0)

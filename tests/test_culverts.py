@@ -1139,8 +1139,9 @@ class TestCouplerEqualisationOverride:
         with pytest.raises(CulvertBuildError):
             coupler_equalisation_kwargs()
 
+    @pytest.mark.requires_anuga  # anuga_drainage is in [sim], not [dev]
     def test_the_kwargs_are_accepted_by_the_fork(self):
         import inspect
-        drainage = pytest.importorskip("anuga_drainage.culverts.coupler")
+        import anuga_drainage.culverts.coupler as drainage
         params = inspect.signature(drainage.HeadwallCulvertCoupler.__init__).parameters
         assert {"equalisation_factor", "equalisation_strict"} <= set(params)

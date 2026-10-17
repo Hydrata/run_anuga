@@ -40,8 +40,7 @@ def test_baked_manifest_wins(tmp_path):
 
 def test_without_manifest_falls_back_to_git_head(tmp_path):
     head = _git_head()
-    if head is None:
-        pytest.skip("run_anuga is not imported from a git checkout")
+    assert head is not None, "the tests run from a run_anuga git checkout"
     sha, source = resolve_run_anuga_sha(str(tmp_path / "absent.json"))
     assert (sha, source) == (head, "git")
 
@@ -66,8 +65,7 @@ def test_a_non_hex_or_too_short_manifest_sha_is_ignored(tmp_path, bad):
 
 def test_an_ignored_manifest_sha_still_falls_back_to_git(tmp_path):
     head = _git_head()
-    if head is None:
-        pytest.skip("run_anuga is not imported from a git checkout")
+    assert head is not None, "the tests run from a run_anuga git checkout"
     assert resolve_run_anuga_sha(_manifest(tmp_path, "nogit")) == (head, "git")
 
 
