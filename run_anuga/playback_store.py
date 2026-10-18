@@ -41,7 +41,15 @@ logger = logging.getLogger(__name__)
 #: v1 stores (no new attrs, chunk length always 10) remain valid forever —
 #: validate_playback_store.py gates the three new required attrs on
 #: format_version >= 2.
-FORMAT_VERSION = 2
+#: v3 (TASK-3836, epic 3801 W3.5) — adds the optional per-triangle
+#: ``stage_max_c`` array (+ ``stage_max_c_source``) and the
+#: ``coordinate_source`` attr; node_x/node_y are now written relative to a
+#: non-zero xllcorner/yllcorner when the SWW's own origin is 0 (so float32
+#: no longer rounds northings to 0.5 m). Every v2 rule still holds; readers
+#: gate on ``>= 2`` and must test for the array itself, never the number.
+#: NOTE: the unmerged epic-2981 branch (temporal_delta codec) also chose 3;
+#: whichever lands second takes 4.
+FORMAT_VERSION = 3
 #: O1 (v1) — ratified at 10, NOT 20: time-blocking buys zero compression
 #: (DEFLATE's 32 KiB window cannot span a 1.17 MB timestep row). Chunk length
 #: is a pure seek-latency/request-count tradeoff with no byte cost either way.
@@ -88,6 +96,22 @@ ENVELOPE_QUANTITIES = ("depth", "velocity", "div")
 #: magnitude, never signed, so it does NOT get the symmetric [-v,+v] treatment
 #: x_velocity/y_velocity use).
 ENVELOPE_FILL_VALUE = 0
+#: TASK-3836 (epic 3801, Decision 660) — the per-triangle peak CENTROID stage:
+#: the conserved value ANUGA's own validation scripts compare a flood mark
+#: against (nodal stage is a vertex average with dry nodes set to the bed).
+#: Raw stage on the model datum, never adjusted. Contract:
+#: deploy docs/reports/3801/w35-store-contract.md.
+STAGE_MAX_C = "stage_max_c"
+STAGE_MAX_C_FILL_VALUE = 0
+#: Where node_x/node_y's precision came from (group attr ``coordinate_source``):
+#: the run's float64 ``.msh`` (verified to be the SWW's own mesh), or the SWW's
+#: float32 x/y (0.5 m steps at UTM northings when the SWW origin is 0).
+COORDINATE_SOURCE_MESH = "mesh_file"
+COORDINATE_SOURCE_SWW = "sww"
+COORDINATE_SOURCES = (COORDINATE_SOURCE_MESH, COORDINATE_SOURCE_SWW)
+#: Frames read per block when maxing stage_c, so a prod-size SWW (millions of
+#: triangles x hundreds of frames) is never loaded whole.
+_STAGE_C_BLOCK_FRAMES = 16
 #: TASK-2709 (W2.1, epic 2706) — the cache directive written on EVERY playback
 #: object at export. S3 cannot add one later without rewriting the object, so
 #: it has to be set here or not at all (existing stores can never satisfy it;
@@ -303,7 +327,120 @@ def _read_sww_arrays(sww_path) -> dict[str, Any]:
             # TASK-3772: the engine's per-step max centroid arrays, or None
             # for an SWW written without them (max over saved frames only).
             engine_peaks=engine_peaks_from_dataset(ds),
+            # TASK-3836: max over saved frames of the centroid stage, or None
+            # for an SWW without stage_c.
+            stage_c_frame_max=_frame_max_centroid(ds, "stage_c"),
         )
+
+
+def _frame_max_centroid(ds, name):
+    """Max over saved frames of the ``(n_time, n_volumes)`` centroid variable
+    ``name`` (float64, masked cells NaN), read a block of frames at a time.
+    None when the SWW has no such variable (or it is not that shape)."""
+    var = ds.variables.get(name)
+    n_tri = ds.variables["volumes"].shape[0]
+    if var is None or var.ndim != 2 or var.shape[1] != n_tri or var.shape[0] == 0:
+        return None
+    out = np.full(n_tri, np.nan)
+    for start in range(0, var.shape[0], _STAGE_C_BLOCK_FRAMES):
+        block = np.ma.filled(np.ma.asarray(var[start:start + _STAGE_C_BLOCK_FRAMES], dtype=np.float64), np.nan)
+        out = np.fmax(out, np.fmax.reduce(block, axis=0))
+    return out
+
+
+def peak_centroid_stage(frame_max, engine_peaks):
+    """TASK-3836: the per-triangle peak centroid stage and its source.
+
+    ``frame_max`` is the max over saved frames of SWW ``stage_c`` (None when
+    the SWW has none); ``engine_peaks`` is ``_read_sww_arrays(...)
+    ['engine_peaks']``. With the engine's per-step ``max_stage_c`` the result
+    is ``fmax(frame max, engine)`` (never below a saved frame: a CPU engine
+    only samples every Nth step) and the source ``engine_per_step``; without it
+    the frame max and ``saved_frames``. Returns ``(None, None)`` when there is
+    no stage_c, or when a non-finite value survives — a store must never carry
+    a fabricated water level, so the array is left out and readers fall back.
+    """
+    from run_anuga import peaks
+
+    if frame_max is None:
+        return None, None
+    values = np.asarray(frame_max, dtype=np.float64)
+    source = peaks.ENVELOPE_SOURCE_FRAMES
+    engine = (engine_peaks or {}).get("max_stage_c")
+    if engine is not None:
+        values = np.fmax(values, np.asarray(engine, dtype=np.float64))
+        source = peaks.ENVELOPE_SOURCE_ENGINE
+    if not np.all(np.isfinite(values)):
+        logger.warning(
+            "playback_store: %d triangle(s) have no finite peak stage; %s not written",
+            int(np.sum(~np.isfinite(values))), STAGE_MAX_C,
+        )
+        return None, None
+    return values, source
+
+
+def _read_mesh_file(mesh_path):
+    """``(abs_x, abs_y, triangles)`` float64 from an ANUGA NetCDF ``.msh``,
+    or None when the file is absent or not that layout."""
+    if mesh_path is None or not Path(mesh_path).is_file():
+        return None
+    import netCDF4
+
+    try:
+        with netCDF4.Dataset(str(mesh_path)) as ds:
+            if "vertices" not in ds.variables or "triangles" not in ds.variables:
+                return None
+            vertices = np.asarray(ds.variables["vertices"][:], dtype=np.float64)
+            triangles = np.asarray(ds.variables["triangles"][:], dtype=np.int64)
+            xll = float(getattr(ds, "xllcorner", 0.0))
+            yll = float(getattr(ds, "yllcorner", 0.0))
+    except (OSError, RuntimeError):
+        logger.warning("playback_store: could not read mesh file %s", mesh_path, exc_info=True)
+        return None
+    return vertices[:, 0] + xll, vertices[:, 1] + yll, triangles
+
+
+def precise_node_coordinates(sww, mesh_paths):
+    """TASK-3836: absolute float64 node coordinates and their source.
+
+    ANUGA writes SWW x/y as float32; with the usual zero origin that is
+    absolute UTM and a northing near 6.2e6 snaps to 0.5 m. The run's ``.msh``
+    keeps float64 vertices, so the first of ``mesh_paths`` that is provably the
+    SWW's own mesh (same node count, triangles identical to ``volumes``, every
+    vertex within one float32 spacing of the SWW value) supplies them
+    (``mesh_file``). Otherwise the SWW's own values (``sww``).
+    """
+    x32 = np.asarray(sww["x"])
+    y32 = np.asarray(sww["y"])
+    sww_x = x32.astype(np.float64) + float(sww["xllcorner"])
+    sww_y = y32.astype(np.float64) + float(sww["yllcorner"])
+    for mesh_path in mesh_paths:
+        mesh = _read_mesh_file(mesh_path)
+        if mesh is None:
+            continue
+        mx, my, triangles = mesh
+        if mx.shape != sww_x.shape or not np.array_equal(triangles, np.asarray(sww["volumes"])):
+            logger.warning("playback_store: mesh file %s is not this SWW's mesh; ignored", mesh_path)
+            continue
+        if sww_x.size:
+            tol = float(np.spacing(np.float32(max(np.abs(x32).max(), np.abs(y32).max())))) + 1e-9
+            if np.abs(mx - sww_x).max() > tol or np.abs(my - sww_y).max() > tol:
+                logger.warning(
+                    "playback_store: mesh file %s vertices differ from the SWW by more than "
+                    "float32 rounding (%.3g m); ignored", mesh_path, tol,
+                )
+                continue
+        return mx, my, COORDINATE_SOURCE_MESH
+    return sww_x, sww_y, COORDINATE_SOURCE_SWW
+
+
+def store_origin(abs_x, abs_y, sww_xll, sww_yll):
+    """TASK-3836: the store's xllcorner/yllcorner. A non-zero SWW origin is
+    kept verbatim (B2); a zero one becomes ``floor(min)`` of the absolute
+    coordinates, so float32 node_x/node_y are small local offsets."""
+    if float(sww_xll) != 0.0 or float(sww_yll) != 0.0 or np.size(abs_x) == 0:
+        return float(sww_xll), float(sww_yll)
+    return float(np.floor(np.min(abs_x))), float(np.floor(np.min(abs_y)))
 
 
 def apply_engine_envelopes(envelopes, engine_peaks, volumes, n_node):
@@ -617,7 +754,16 @@ def _export_playback_store_impl(
 
     x_velocity = compute_velocity(sww["xmomentum"], depth, h0).astype(np.float32)
     y_velocity = compute_velocity(sww["ymomentum"], depth, h0).astype(np.float32)
-    inradius = compute_inradius(sww["x"], sww["y"], sww["volumes"])
+    # TASK-3836 — float64 coordinates (from the run's .msh when it is this
+    # SWW's mesh), stored float32 relative to a non-zero origin.
+    mesh_paths = [input_data.get("mesh_filepath"), Path(sww_path).with_suffix(".msh")]
+    abs_x, abs_y, coordinate_source = precise_node_coordinates(sww, mesh_paths)
+    xllcorner, yllcorner = store_origin(abs_x, abs_y, sww["xllcorner"], sww["yllcorner"])
+    local_x = abs_x - xllcorner
+    local_y = abs_y - yllcorner
+    node_x = local_x.astype(np.float32)
+    node_y = local_y.astype(np.float32)
+    inradius = compute_inradius(local_x, local_y, sww["volumes"])
 
     dt_ms, has_dt, dt_source = _load_dt_ms_series(output_dir, run_label, n_time)
 
@@ -663,6 +809,11 @@ def _export_playback_store_impl(
             byteorder="little", valid_min=0.0, valid_max=env_max,
         )
 
+    # TASK-3836 — per-triangle peak centroid stage (raw stage, model datum).
+    stage_max_c, stage_max_c_source = peak_centroid_stage(
+        sww.get("stage_c_frame_max"), sww.get("engine_peaks")
+    )
+
     epsg = scenario_config.get("epsg")
     model_start = scenario_config.get("model_start", "1970-01-01T00:00:00+00:00")
 
@@ -670,8 +821,11 @@ def _export_playback_store_impl(
 
     group_attrs = dict(
         format_version=FORMAT_VERSION,
-        xllcorner=sww["xllcorner"],
-        yllcorner=sww["yllcorner"],
+        xllcorner=xllcorner,
+        yllcorner=yllcorner,
+        # TASK-3836 — 'mesh_file' (float64 .msh vertices) or 'sww' (the
+        # SWW's float32 x/y; 0.5 m steps if the SWW origin was 0).
+        coordinate_source=coordinate_source,
         false_easting=sww["false_easting"],
         false_northing=sww["false_northing"],
         epsg=epsg,
@@ -718,8 +872,8 @@ def _export_playback_store_impl(
 
     t_chunks = (chunk_length_t, n_node)
     arrays = {
-        "node_x": dict(data=sww["x"], chunks=(n_node,), fill_value=0.0),
-        "node_y": dict(data=sww["y"], chunks=(n_node,), fill_value=0.0),
+        "node_x": dict(data=node_x, chunks=(n_node,), fill_value=0.0),
+        "node_y": dict(data=node_y, chunks=(n_node,), fill_value=0.0),
         "face_node_connectivity": dict(
             data=sww["volumes"], chunks=sww["volumes"].shape, fill_value=-1
         ),
@@ -768,6 +922,24 @@ def _export_playback_store_impl(
             fill_value=ENVELOPE_FILL_VALUE,
             attrs=envelope_attrs[name],
         )
+
+    # TASK-3836 — optional, first-class absence: no stage_c in the SWW -> no
+    # array and no stage_max_c_source attr (readers fall back to nodal).
+    if stage_max_c is not None:
+        smin = float(np.min(stage_max_c)) if stage_max_c.size else 0.0
+        smax = float(np.max(stage_max_c)) if stage_max_c.size else 0.0
+        s_scale, s_offset = quantize_range(smin, smax)
+        arrays[STAGE_MAX_C] = dict(
+            data=quantize(stage_max_c, s_scale, s_offset),
+            chunks=(max(stage_max_c.shape[0], 1),),
+            fill_value=STAGE_MAX_C_FILL_VALUE,
+            attrs=dict(
+                scale=s_scale, offset=s_offset, quantized_dtype="uint16",
+                byteorder="little", valid_min=smin, valid_max=smax,
+                location="face", units="m",
+            ),
+        )
+        group_attrs["stage_max_c_source"] = stage_max_c_source
 
     store_path = Path(output_dir) / f"{run_label}_playback.zarr"
     _write_zarr_v3_store(store_path, group_attrs=group_attrs, arrays=arrays)

@@ -22,7 +22,7 @@ from pathlib import Path
 # and the validator's idea of "which quantities can have an envelope" can
 # never drift apart. Safe: playback_store.py's only module-level import is
 # numpy, and it never imports this module (no cycle).
-from run_anuga.playback_store import ENVELOPE_QUANTITIES
+from run_anuga.playback_store import COORDINATE_SOURCES, ENVELOPE_QUANTITIES, STAGE_MAX_C
 from run_anuga.peaks import ENVELOPE_SOURCES
 
 # name -> (expected dtype kind+itemsize via numpy dtype string, expected ndim)
@@ -248,6 +248,35 @@ def validate_store(store_path) -> list[str]:
     if envelope_source is not None and envelope_source not in ENVELOPE_SOURCES:
         violations.append(
             f"envelope_source={envelope_source!r}, expected one of {ENVELOPE_SOURCES} (TASK-3772)"
+        )
+
+    # TASK-3836 (v3, epic 3801) — optional per-triangle peak centroid stage.
+    # Absent is valid; present must be a (nFace,) uint16 with its own
+    # quantization attrs AND say what it is a max over.
+    stage_source = root.attrs.get("stage_max_c_source")
+    if STAGE_MAX_C in names:
+        arr = root[STAGE_MAX_C]
+        if str(arr.dtype) != "uint16":
+            violations.append(f"{STAGE_MAX_C}: dtype={arr.dtype}, expected uint16 (TASK-3836)")
+        if arr.ndim != 1 or (n_face is not None and arr.shape[0] != n_face):
+            violations.append(f"{STAGE_MAX_C}: shape={arr.shape}, expected (nFace,)=({n_face},) (TASK-3836)")
+        for qattr in _REQUIRED_QUANT_ATTRS:
+            if qattr not in arr.attrs:
+                violations.append(f"{STAGE_MAX_C}: missing quantization attr '{qattr}' (TASK-3836)")
+        if stage_source not in ENVELOPE_SOURCES:
+            violations.append(
+                f"stage_max_c_source={stage_source!r}, expected one of {ENVELOPE_SOURCES} "
+                "for a store carrying stage_max_c (TASK-3836)"
+            )
+    elif stage_source is not None:
+        violations.append(
+            f"group attrs declare stage_max_c_source={stage_source!r} but array "
+            f"'{STAGE_MAX_C}' is missing (TASK-3836)"
+        )
+    coordinate_source = root.attrs.get("coordinate_source")
+    if coordinate_source is not None and coordinate_source not in COORDINATE_SOURCES:
+        violations.append(
+            f"coordinate_source={coordinate_source!r}, expected one of {COORDINATE_SOURCES} (TASK-3836)"
         )
 
     if _INRADIUS_ARRAY not in names:
