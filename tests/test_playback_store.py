@@ -408,15 +408,56 @@ class TestExportAgainstFixtureSww:
 
     def test_false_easting_northing_never_added_to_coords(self, tmp_path):
         """B2: false_easting/false_northing are informational-only attrs —
-        node_x/node_y must be stored as-is from the SWW, untouched."""
+        node + xllcorner reproduces the SWW's own absolute position (within
+        the SWW's float32 rounding), with no false easting/northing added.
+        (TASK-3836: node_x is now relative to the store's own origin.)"""
         import netCDF4
         import zarr
 
         result = self._export(tmp_path)
         root = zarr.open_group(result["local_path"], mode="r")
         with netCDF4.Dataset(self.sww_path) as ds:
-            sww_x = np.array(ds.variables["x"][:], dtype=np.float32)
-        np.testing.assert_array_equal(root["node_x"][:], sww_x)
+            x32 = np.array(ds.variables["x"][:], dtype=np.float32)
+            sww_x = x32.astype(np.float64) + float(ds.xllcorner)
+        store_x = root["node_x"][:].astype(np.float64) + root.attrs["xllcorner"]
+        tol = float(np.spacing(np.abs(x32).max())) + 1e-3
+        np.testing.assert_allclose(store_x, sww_x, rtol=0, atol=tol)
+
+    def test_fixture_store_coordinates_come_from_the_run_mesh_file(self, tmp_path):
+        """TASK-3836 on a REAL run: the fixture's .msh sits next to its SWW,
+        so node_y + yllcorner reproduces the float64 mesh vertex to < 1 cm
+        (the SWW's own float32 northings are 0.5 m steps at 5.8e6)."""
+        import netCDF4
+        import zarr
+
+        result = self._export(tmp_path)
+        root = zarr.open_group(result["local_path"], mode="r")
+        assert root.attrs["coordinate_source"] == "mesh_file"
+        with netCDF4.Dataset(str(Path(self.sww_path).with_suffix(".msh"))) as ds:
+            vy = np.asarray(ds.variables["vertices"][:, 1], dtype=np.float64) + float(ds.yllcorner)
+        y = root["node_y"][:].astype(np.float64) + root.attrs["yllcorner"]
+        assert np.abs(y - vy).max() < 0.01
+
+    def test_fixture_store_carries_frame_max_centroid_stage(self, tmp_path):
+        """TASK-3836 on a REAL run: stage_max_c is at or above every saved
+        frame's stage_c, per triangle, within quantisation; equal to the frame
+        max when the SWW has no engine arrays."""
+        import netCDF4
+        import zarr
+
+        result = self._export(tmp_path)
+        root = zarr.open_group(result["local_path"], mode="r")
+        with netCDF4.Dataset(self.sww_path) as ds:
+            frame_max = np.asarray(ds.variables["stage_c"][:], dtype=np.float64).max(axis=0)
+            has_engine = "max_stage_c" in ds.variables
+        arr = root["stage_max_c"]
+        got = arr.attrs["offset"] + arr[:].astype(np.float64) * arr.attrs["scale"]
+        half = arr.attrs["scale"] / 2 + 1e-6
+        assert got.shape == (root["face_node_connectivity"].shape[0],)
+        assert np.all(got >= frame_max - half)
+        if not has_engine:
+            assert root.attrs["stage_max_c_source"] == "saved_frames"
+            np.testing.assert_allclose(got, frame_max, rtol=0, atol=half)
 
     def test_upload_false_leaves_no_s3_call(self, tmp_path):
         with mock.patch.object(ps, "_upload_store_to_s3") as mock_upload:
@@ -531,7 +572,7 @@ class TestAdaptiveChunkLengthWrittenStore:
 
         root = zarr.open_group(result["local_path"], mode="r")
         # AC3 — the store declares its own dimensions.
-        assert root.attrs["format_version"] == 2
+        assert root.attrs["format_version"] == ps.FORMAT_VERSION
         assert root.attrs["n_node"] == n_node
         assert root.attrs["n_time"] == n_time
         assert root.attrs["chunk_length_t"] == 2
@@ -730,7 +771,7 @@ class TestValidatorCatchesRealDefects:
         )
         root = zarr.open_group(result["local_path"], mode="a")
         attrs = dict(root.attrs)
-        assert attrs["format_version"] == 2
+        assert attrs["format_version"] >= 2
         del attrs["chunk_length_t"]
         root.attrs.put(attrs)
 
@@ -1067,3 +1108,276 @@ class TestEngineEnvelopes:
         root = zarr.open_group(result["local_path"], mode="r")
         assert root.attrs["envelope_source"] == expected
         assert validate_store(result["local_path"]) == []
+
+
+# ---------------------------------------------------------------------------
+# TASK-3836 (epic 3801 W3.5) — per-triangle peak CENTROID stage + precise
+# node coordinates. Contract: deploy docs/reports/3801/w35-store-contract.md.
+# ---------------------------------------------------------------------------
+
+#: A Towradgi-like absolute UTM origin with fractional metres: float32 holds
+#: 6195670.41 as 6195670.5, the 0.5 m northing defect this task fixes.
+_ABS_X0 = 303517.37
+_ABS_Y0 = 6195670.41
+
+
+def _synthetic_mesh():
+    """Two triangles over four nodes at an absolute UTM origin (float64)."""
+    vx = np.array([0.0, 10.13, 0.0, 10.13]) + _ABS_X0
+    vy = np.array([0.0, 0.0, 9.77, 9.77]) + _ABS_Y0
+    tris = np.array([[0, 1, 2], [1, 3, 2]], dtype=np.int32)
+    return vx, vy, tris
+
+
+def _write_synthetic_msh(path, vx, vy, tris):
+    """The NetCDF .msh layout ANUGA writes (vertices float64 + triangles)."""
+    import netCDF4
+
+    with netCDF4.Dataset(str(path), "w") as ds:
+        ds.xllcorner = 0.0
+        ds.yllcorner = 0.0
+        ds.createDimension("num_of_vertices", len(vx))
+        ds.createDimension("num_of_dimensions", 2)
+        ds.createDimension("num_of_triangles", len(tris))
+        ds.createDimension("num_of_triangle_faces", 3)
+        v = ds.createVariable("vertices", "f8", ("num_of_vertices", "num_of_dimensions"))
+        v[:] = np.column_stack([vx, vy])
+        t = ds.createVariable("triangles", "i4", ("num_of_triangles", "num_of_triangle_faces"))
+        t[:] = tris
+
+
+#: stage_c per frame (3 frames x 2 triangles) and the engine's per-step max.
+#: Triangle 0's engine max (3.70) is above every saved frame (a peak between
+#: two yields); triangle 1's (2.10) is BELOW its best frame (2.25: a CPU
+#: engine samples every 10th step), so only np.fmax gives the true peak.
+_STAGE_C = np.array([[1.00, 2.00], [3.50, 2.25], [3.00, 1.90]], dtype=np.float32)
+_ENGINE_MAX_STAGE_C = np.array([3.70, 2.10], dtype=np.float32)
+
+
+def _write_synthetic_sww(path, *, engine, stage_c=True):
+    """A minimal smoothed SWW as ANUGA writes it: node x/y ABSOLUTE float32
+    with xllcorner = yllcorner = 0, plus stage_c (and the engine max_*_c
+    arrays when ``engine``)."""
+    import netCDF4
+
+    vx, vy, tris = _synthetic_mesh()
+    n_node, n_tri, n_time = len(vx), len(tris), _STAGE_C.shape[0]
+    with netCDF4.Dataset(str(path), "w") as ds:
+        ds.smoothing = "Yes"
+        ds.xllcorner = 0.0
+        ds.yllcorner = 0.0
+        ds.zone = 56
+        ds.createDimension("number_of_points", n_node)
+        ds.createDimension("number_of_volumes", n_tri)
+        ds.createDimension("number_of_vertices", 3)
+        ds.createDimension("number_of_timesteps", None)
+
+        def var(name, dtype, dims, data):
+            v = ds.createVariable(name, dtype, dims)
+            v[:] = data
+
+        var("x", "f4", ("number_of_points",), vx)
+        var("y", "f4", ("number_of_points",), vy)
+        var("volumes", "i4", ("number_of_volumes", "number_of_vertices"), tris)
+        var("elevation", "f4", ("number_of_points",), np.zeros(n_node))
+        var("friction", "f4", ("number_of_points",), np.full(n_node, 0.04))
+        var("time", "f8", ("number_of_timesteps",), np.arange(n_time, dtype=np.float64))
+        node_stage = np.repeat(_STAGE_C.max(axis=1, keepdims=True), n_node, axis=1)
+        var("stage", "f4", ("number_of_timesteps", "number_of_points"), node_stage)
+        var("xmomentum", "f4", ("number_of_timesteps", "number_of_points"), np.zeros((n_time, n_node)))
+        var("ymomentum", "f4", ("number_of_timesteps", "number_of_points"), np.zeros((n_time, n_node)))
+        if stage_c:
+            var("stage_c", "f4", ("number_of_timesteps", "number_of_volumes"), _STAGE_C)
+        if engine:
+            var("max_stage_c", "f4", ("number_of_volumes",), _ENGINE_MAX_STAGE_C)
+            for name in ("max_depth_c", "max_speed_c", "max_uh_c"):
+                var(name, "f4", ("number_of_volumes",), np.zeros(n_tri))
+    return path
+
+
+def _dequant(arr):
+    return arr.attrs["offset"] + arr[:].astype(np.float64) * arr.attrs["scale"]
+
+
+class TestPeakCentroidStage:
+    """Pure fold of the frame max with the engine's per-step max_stage_c."""
+
+    def test_engine_folded_with_frames_never_below_a_saved_frame(self):
+        frame_max = _STAGE_C.max(axis=0).astype(np.float64)
+        values, source = ps.peak_centroid_stage(frame_max, {"max_stage_c": _ENGINE_MAX_STAGE_C})
+        assert source == "engine_per_step"
+        np.testing.assert_allclose(values, [3.70, 2.25], atol=1e-6)
+
+    def test_no_engine_arrays_is_saved_frames(self):
+        frame_max = _STAGE_C.max(axis=0).astype(np.float64)
+        values, source = ps.peak_centroid_stage(frame_max, None)
+        assert source == "saved_frames"
+        np.testing.assert_allclose(values, [3.50, 2.25], atol=1e-6)
+
+    def test_no_stage_c_means_no_array(self):
+        assert ps.peak_centroid_stage(None, {"max_stage_c": _ENGINE_MAX_STAGE_C}) == (None, None)
+
+    def test_engine_nan_falls_back_to_the_frame_value(self):
+        values, _ = ps.peak_centroid_stage(np.array([3.5, 2.25]), {"max_stage_c": np.array([np.nan, 2.1])})
+        np.testing.assert_allclose(values, [3.5, 2.25])
+
+    def test_leftover_non_finite_drops_the_array(self):
+        """Never write a fabricated water level: a NaN that survives the fold
+        drops the whole array (the sampler falls back to nearest node)."""
+        assert ps.peak_centroid_stage(np.array([np.nan, 2.25]), None) == (None, None)
+
+
+class TestStoreOrigin:
+    def test_sww_origin_kept_verbatim_when_non_zero(self):
+        assert ps.store_origin(np.array([321001.5]), np.array([5812003.2]), 321000.0, 5812000.0) == (
+            321000.0, 5812000.0)
+
+    def test_zero_sww_origin_becomes_floor_of_min(self):
+        x = np.array([_ABS_X0, _ABS_X0 + 10.0])
+        y = np.array([_ABS_Y0, _ABS_Y0 + 10.0])
+        assert ps.store_origin(x, y, 0.0, 0.0) == (303517.0, 6195670.0)
+
+    def test_empty_mesh_keeps_zero(self):
+        assert ps.store_origin(np.array([]), np.array([]), 0.0, 0.0) == (0.0, 0.0)
+
+
+class TestPreciseNodeCoordinates:
+    def _sww_like(self):
+        vx, vy, tris = _synthetic_mesh()
+        return dict(x=vx.astype(np.float32), y=vy.astype(np.float32), volumes=tris,
+                    xllcorner=0.0, yllcorner=0.0)
+
+    def test_matching_mesh_file_gives_float64_coordinates(self, tmp_path):
+        vx, vy, tris = _synthetic_mesh()
+        msh = tmp_path / "run.msh"
+        _write_synthetic_msh(msh, vx, vy, tris)
+        x, y, source = ps.precise_node_coordinates(self._sww_like(), [msh])
+        assert source == "mesh_file"
+        np.testing.assert_array_equal(x, vx)
+        np.testing.assert_array_equal(y, vy)
+
+    def test_no_mesh_file_falls_back_to_sww(self, tmp_path):
+        x, y, source = ps.precise_node_coordinates(self._sww_like(), [tmp_path / "absent.msh", None])
+        assert source == "sww"
+        # NEGATIVE CONTROL: the SWW's float32 northing is the 0.5 m step.
+        assert set(np.round(np.mod(y, 1.0), 3)) <= {0.0, 0.5}
+
+    def test_mesh_with_other_triangles_is_refused(self, tmp_path):
+        vx, vy, tris = _synthetic_mesh()
+        msh = tmp_path / "run.msh"
+        _write_synthetic_msh(msh, vx, vy, tris[:, ::-1].copy())
+        assert ps.precise_node_coordinates(self._sww_like(), [msh])[2] == "sww"
+
+    def test_mesh_with_moved_vertices_is_refused(self, tmp_path):
+        vx, vy, tris = _synthetic_mesh()
+        msh = tmp_path / "run.msh"
+        _write_synthetic_msh(msh, vx, vy + 3.0, tris)
+        assert ps.precise_node_coordinates(self._sww_like(), [msh])[2] == "sww"
+
+
+@requires_zarr
+@pytest.mark.requires_anuga
+class TestStoreCentroidStageAndCoordinates:
+    """Full export of a synthetic SWW (no simulation): the written store."""
+
+    def _export(self, tmp_path, *, engine, msh=True, stage_c=True):
+        import zarr
+
+        out = tmp_path / "outputs_1_1_1"
+        out.mkdir()
+        sww = _write_synthetic_sww(out / "run_1_1_1.sww", engine=engine, stage_c=stage_c)
+        if msh:
+            _write_synthetic_msh(out / "run_1_1_1.msh", *_synthetic_mesh())
+        result = ps.export_playback_store(
+            input_data={"run_label": "run_1_1_1",
+                        "scenario_config": {"project": 1, "id": 1, "run_id": 1, "epsg": "EPSG:28356"}},
+            sww_path=str(sww), output_dir=str(out), upload=False,
+        )
+        assert result["status"] == "ok", result
+        return zarr.open_group(result["local_path"], mode="r"), result
+
+    def test_engine_store_carries_stage_max_c(self, tmp_path):
+        from run_anuga.validate_playback_store import validate_store
+
+        root, result = self._export(tmp_path, engine=True)
+        assert root.attrs["format_version"] == 3
+        assert root.attrs["stage_max_c_source"] == "engine_per_step"
+        arr = root["stage_max_c"]
+        assert str(arr.dtype) == "uint16" and arr.shape == (2,)
+        assert arr.attrs["location"] == "face"
+        np.testing.assert_allclose(_dequant(arr), [3.70, 2.25], atol=arr.attrs["scale"] / 2 + 1e-9)
+        assert validate_store(result["local_path"]) == []
+
+    def test_frames_only_store_is_saved_frames(self, tmp_path):
+        root, _ = self._export(tmp_path, engine=False)
+        assert root.attrs["stage_max_c_source"] == "saved_frames"
+        np.testing.assert_allclose(_dequant(root["stage_max_c"]), [3.50, 2.25],
+                                   atol=root["stage_max_c"].attrs["scale"] / 2 + 1e-9)
+
+    def test_sww_without_stage_c_writes_no_array(self, tmp_path):
+        from run_anuga.validate_playback_store import validate_store
+
+        root, result = self._export(tmp_path, engine=False, stage_c=False)
+        assert "stage_max_c" not in set(root.array_keys())
+        assert "stage_max_c_source" not in root.attrs
+        assert validate_store(result["local_path"]) == []
+
+    def test_node_y_round_trips_to_a_centimetre(self, tmp_path):
+        root, _ = self._export(tmp_path, engine=False)
+        assert root.attrs["coordinate_source"] == "mesh_file"
+        assert root.attrs["yllcorner"] == 6195670.0
+        _, vy, _ = _synthetic_mesh()
+        y = root["node_y"][:].astype("f8") + float(root.attrs["yllcorner"])
+        assert np.abs(y - vy).max() < 0.01
+        assert str(root["node_y"].dtype) == "float32"
+
+    def test_negative_control_without_mesh_file_keeps_the_half_metre_step(self, tmp_path):
+        root, _ = self._export(tmp_path, engine=False, msh=False)
+        assert root.attrs["coordinate_source"] == "sww"
+        y = root["node_y"][:].astype("f8") + float(root.attrs["yllcorner"])
+        assert set(np.round(np.mod(y, 1.0), 3)) <= {0.0, 0.5}
+
+
+@requires_zarr
+@pytest.mark.requires_anuga
+class TestValidatorChecksCentroidStage:
+    """TASK-3836: the validator refuses a malformed stage_max_c / source attr,
+    and an absent array stays valid (first-class absence)."""
+
+    def _store(self, tmp_path):
+        import zarr
+
+        root, result = TestStoreCentroidStageAndCoordinates()._export(tmp_path, engine=True)
+        return zarr.open_group(result["local_path"], mode="a"), result["local_path"]
+
+    def test_unknown_source_is_caught(self, tmp_path):
+        from run_anuga.validate_playback_store import validate_store
+
+        root, path = self._store(tmp_path)
+        root.attrs["stage_max_c_source"] = "calibrated"
+        assert any("stage_max_c_source" in v for v in validate_store(path))
+
+    def test_array_without_source_attr_is_caught(self, tmp_path):
+        from run_anuga.validate_playback_store import validate_store
+
+        root, path = self._store(tmp_path)
+        attrs = dict(root.attrs)
+        del attrs["stage_max_c_source"]
+        root.attrs.put(attrs)
+        assert any("stage_max_c_source" in v for v in validate_store(path))
+
+    def test_missing_quantization_attr_is_caught(self, tmp_path):
+        from run_anuga.validate_playback_store import validate_store
+
+        root, path = self._store(tmp_path)
+        arr_attrs = dict(root["stage_max_c"].attrs)
+        del arr_attrs["scale"]
+        root["stage_max_c"].attrs.put(arr_attrs)
+        assert any("stage_max_c" in v and "scale" in v for v in validate_store(path))
+
+    def test_unknown_coordinate_source_is_caught(self, tmp_path):
+        from run_anuga.validate_playback_store import validate_store
+
+        root, path = self._store(tmp_path)
+        root.attrs["coordinate_source"] = "guessed"
+        assert any("coordinate_source" in v for v in validate_store(path))
