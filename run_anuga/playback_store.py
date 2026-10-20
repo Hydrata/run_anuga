@@ -47,9 +47,17 @@ logger = logging.getLogger(__name__)
 #: non-zero xllcorner/yllcorner when the SWW's own origin is 0 (so float32
 #: no longer rounds northings to 0.5 m). Every v2 rule still holds; readers
 #: gate on ``>= 2`` and must test for the array itself, never the number.
-#: NOTE: the unmerged epic-2981 branch (temporal_delta codec) also chose 3;
-#: whichever lands second takes 4.
-FORMAT_VERSION = 3
+#: v4 (TASK-2989, epic 2981 W3.1, decision D5) — the three time-series arrays
+#: MAY carry the ``temporal_delta`` array->array codec ahead of bytes+gzip,
+#: recorded in the ``temporal_delta_applied`` group attr (required >= 4,
+#: forbidden below). Epic 2981 originally numbered this v3; TASK-3836 landed
+#: on main first and took 3, so the codec took 4 at the merge (20-10-26).
+#: Clients read each array's codec chain from the manifest's ``codecs``
+#: block, never from this number. v1/v2/v3 stores stay valid forever.
+#: NOTE the bump belongs to TASK-2989 and NOT to TASK-3014 (the Morton
+#: reorder, node_order/face_order + node_permutation/face_permutation):
+#: a reorder is invisible to every reader, a codec chain is not.
+FORMAT_VERSION = 4
 #: O1 (v1) — ratified at 10, NOT 20: time-blocking buys zero compression
 #: (DEFLATE's 32 KiB window cannot span a 1.17 MB timestep row). Chunk length
 #: is a pure seek-latency/request-count tradeoff with no byte cost either way.
@@ -112,6 +120,28 @@ COORDINATE_SOURCES = (COORDINATE_SOURCE_MESH, COORDINATE_SOURCE_SWW)
 #: Frames read per block when maxing stage_c, so a prod-size SWW (millions of
 #: triangles x hundreds of frames) is never loaded whole.
 _STAGE_C_BLOCK_FRAMES = 16
+#: TASK-3014 (W3.0, epic 2981) — the permutation arrays' fill value. -1 is not
+#: a legal index into anything, so a chunk that was never written can never be
+#: mistaken for "node 0" the way a 0 fill could.
+PERMUTATION_FILL_VALUE = -1
+#: Epic 2981 merge (20-10-26) — KILL SWITCHES for the two new export features,
+#: read by run_utils where the Batch run calls the exporter. Default ON; set
+#: either to an off value ("0", "false", "off", "no") in the Batch job
+#: definition's environment to turn that feature off WITHOUT a re-pin and four
+#: rebakes. Same convention as RUN_ANUGA_TRUE_PEAKS (run_anuga/peaks.py).
+#: Off writes a still-valid store: spatial order off = SWW order, no permutation
+#: arrays or order attrs (TASK-3014's pre-Morton shape); temporal delta off =
+#: format_version 4 with temporal_delta_applied False and plain bytes+gzip.
+PLAYBACK_SPATIAL_ORDER_ENV = "RUN_ANUGA_PLAYBACK_SPATIAL_ORDER"
+PLAYBACK_TEMPORAL_DELTA_ENV = "RUN_ANUGA_PLAYBACK_TEMPORAL_DELTA"
+_ENV_OFF_VALUES = frozenset({"0", "off", "false", "no"})
+
+
+def playback_feature_enabled(env_name: str) -> bool:
+    """False only when ``env_name`` is set to an off value (default ON)."""
+    return os.environ.get(env_name, "").strip().lower() not in _ENV_OFF_VALUES
+
+
 #: TASK-2709 (W2.1, epic 2706) — the cache directive written on EVERY playback
 #: object at export. S3 cannot add one later without rewriting the object, so
 #: it has to be set here or not at all (existing stores can never satisfy it;
@@ -554,7 +584,10 @@ def _write_zarr_v3_store(store_path, *, group_attrs: dict, arrays: dict):
             shape=data.shape,
             chunks=spec["chunks"],
             dtype=data.dtype,
-            filters=[],
+            # TASK-2989 — array->array filters, written BEFORE the serializer
+            # in the zarr v3 `codecs` list. Defaults to none, so every array
+            # that does not ask for one is byte-identical to before.
+            filters=spec.get("filters", []),
             serializer=BytesCodec(endian="little"),
             compressors=GzipCodec(level=CODEC_LEVEL),
             fill_value=spec["fill_value"],
@@ -679,6 +712,8 @@ def export_playback_store(
     upload: bool = True,
     bucket: str | None = None,
     prefix: str | None = None,
+    spatial_order: bool = True,
+    temporal_delta: bool = True,
 ) -> dict:
     """Export ``sww_path`` to a local Zarr v3 playback store under
     ``output_dir``, then (if ``upload``) push it to S3.
@@ -687,6 +722,20 @@ def export_playback_store(
     logged warning and ``{"status": ...}``, so the run itself never fails
     (landmine #1, TASK-2622 context). Returns a dict with at least a
     ``status`` key: ``"ok"``, ``"skipped_no_zarr"``, or ``"error"``.
+
+    ``spatial_order`` (TASK-3014, W3.0, epic 2981) writes the mesh in Morton /
+    Z-order — see :func:`_apply_spatial_order`. It defaults ON because it is
+    client-transparent and buys 1.30x on the blocking geometry prefix; passing
+    ``False`` writes exactly the store this exporter wrote before TASK-3014
+    (SWW order, no permutation arrays, no order attrs), which is what makes
+    the reorder's own byte case falsifiable.
+
+    ``temporal_delta`` (TASK-2989, W3.1) allows the ``temporal_delta`` codec on
+    the three time-series arrays. It is a PERMISSION, not a command: the codec
+    is applied only when ``derive_chunk_length_t(n_node) >= 5`` (decision D5 —
+    below that it measured 96% on depth and LARGER on velocity). Passing
+    ``False`` switches it off unconditionally, which is what makes "a store
+    below the gate is byte-identical to a pre-TASK-2989 export" testable.
     """
     if not zarr_available():
         logger.warning(
@@ -707,6 +756,8 @@ def export_playback_store(
             upload=upload,
             bucket=bucket,
             prefix=prefix,
+            spatial_order=spatial_order,
+            temporal_delta=temporal_delta,
         )
     except Exception:
         logger.exception(
@@ -717,8 +768,61 @@ def export_playback_store(
     return result
 
 
+def _apply_spatial_order(*, node_x, node_y, volumes):
+    """TASK-3014 (W3.0, epic 2981) — the Morton reorder, as one pure step.
+
+    @returns ``(node_perm, face_perm, remapped_volumes)``. Both permutations
+    are ``int64`` and genuine (``perm[newIndex] == originalIndex``);
+    ``remapped_volumes`` is ``volumes`` with its VALUES already substituted
+    through the inverse node permutation, still in the ORIGINAL face order.
+
+    The remapped volumes come back rather than being recomputed by the caller
+    because this function has to build them anyway (a face's Morton key is its
+    centroid's, which needs the new node coordinates) and at run-1328 scale
+    that array is 6,779,432 x 3 int64 = 163 MB. Computing it twice allocated it
+    twice, on the one code path that already runs at the memory ceiling.
+
+    WHY FACES MOVE TOO, and why that is not optional. Measured on the two real
+    fixtures under the store's own bytes+gzip(6) chain, reorder only (no delta,
+    no byte-shuffle — those belong to W3.1/W3.2/W3.3):
+
+        variant             face_node_connectivity          client prefix
+        nodes only          35,435,624 -> 32,615,509 (1.09x)     1.10x
+        nodes AND faces     35,435,624 -> 23,552,802 (1.50x)     1.30x
+
+    A node reorder alone leaves the three integers in a connectivity ROW
+    spatially coherent but leaves the ROWS in mesh-generation order, so
+    consecutive rows still jump across the mesh and DEFLATE's 32 KiB window
+    finds nothing. Sorting the rows by their centroid's Z-key is what makes the
+    high bytes of consecutive rows repeat. Nodes-only buys 1.09x on
+    connectivity, i.e. below TASK-3014 AC2's 1.3x escalation threshold; nodes
+    plus faces buys 1.50x. Same shape on the small store (1.54x).
+
+    TRIANGLE WINDING IS PRESERVED: this reorders ROWS and substitutes VALUES,
+    and never sorts the three vertices inside a row. The critique measured the
+    orientation-preserving variant explicitly (9,221,596 B vs 9,094,123 B for
+    the vertex-sorted one) and the renderer depends on the orientation, so the
+    127 KB is deliberately left on the table.
+    """
+    from run_anuga.playback_order import inverse_permutation, morton_node_order
+
+    node_perm = morton_node_order(node_x, node_y)
+    inv = inverse_permutation(node_perm)
+    # Face keys are computed in the NEW node order so the two curves agree;
+    # the centroid is the same point either way, this just avoids a second
+    # gather over the original coordinates.
+    new_x = node_x[node_perm]
+    new_y = node_y[node_perm]
+    remapped = inv[volumes]
+    face_perm = morton_node_order(
+        new_x[remapped].mean(axis=1), new_y[remapped].mean(axis=1)
+    )
+    return node_perm, face_perm, remapped
+
+
 def _export_playback_store_impl(
-    *, input_data, sww_path, output_dir, domain, upload, bucket, prefix
+    *, input_data, sww_path, output_dir, domain, upload, bucket, prefix,
+    spatial_order: bool = True, temporal_delta: bool = True,
 ) -> dict:
     from run_anuga import defaults
 
@@ -790,6 +894,15 @@ def _export_playback_store_impl(
     v_scale, v_offset = symmetric_velocity_range(v_absmax)
     x_velocity_q = quantize(x_velocity, v_scale, v_offset)
     y_velocity_q = quantize(y_velocity, v_scale, v_offset)
+    # PEAK MEMORY (epic 2981 merge, 20-10-26): nothing below reads the float32
+    # depth/velocity series or the SWW's raw stage/momentum again (envelopes
+    # were computed above, quantization ranges are taken), and the Morton
+    # reorder further down makes one uint16 copy per array. Free them here so
+    # the export's peak stays at or below the pre-2981 exporter's on a path
+    # that already runs at the Batch cgroup's memory ceiling.
+    del depth, x_velocity, y_velocity
+    for _key in ("stage", "xmomentum", "ymomentum"):
+        sww.pop(_key, None)
 
     # TASK-2752 — each envelope gets its OWN [0, max] quantization range,
     # independent of the primitive arrays' ranges: velocity_max (a speed
@@ -808,16 +921,77 @@ def _export_playback_store_impl(
             scale=env_scale, offset=env_offset, quantized_dtype="uint16",
             byteorder="little", valid_min=0.0, valid_max=env_max,
         )
+    del envelopes, raw  # float32 envelopes: quantized copies are all that is written
 
     # TASK-3836 — per-triangle peak centroid stage (raw stage, model datum).
     stage_max_c, stage_max_c_source = peak_centroid_stage(
         sww.get("stage_c_frame_max"), sww.get("engine_peaks")
     )
 
+    # TASK-3014 (W3.0, epic 2981) — THE SPATIAL REORDER, applied to every
+    # per-node axis and to the connectivity's VALUES, immediately before the
+    # arrays dict is built and after every quantization range has been taken.
+    #
+    # ORDER-INVARIANCE IS WHY THIS SITS HERE. quantize_range/symmetric_
+    # velocity_range are reductions over the WHOLE array (min/max/absmax), so
+    # they give the identical scale/offset whichever order the nodes are in —
+    # which means permuting the already-QUANTIZED uint16 arrays is both
+    # bit-identical to permuting the physical float32 ones and half the memory
+    # traffic. compute_envelopes and compute_inradius likewise ran above, in
+    # SWW order, and their results are simply gathered here.
+    # node_x/node_y are main's TASK-3836 precise, origin-relative float32
+    # coordinates (computed above) — NOT sww["x"]/sww["y"]. The Morton key is
+    # translation-invariant (it quantises over the store's own bbox).
+    elevation = sww["elevation"]
+    friction = sww["friction"]
+    volumes = sww["volumes"]
+    node_permutation = None
+    face_permutation = None
+    if spatial_order:
+        from run_anuga.playback_order import MORTON_ORDER_NAME
+
+        node_permutation, face_permutation, remapped_volumes = _apply_spatial_order(
+            node_x=node_x, node_y=node_y, volumes=volumes,
+        )
+        node_x = node_x[node_permutation]
+        node_y = node_y[node_permutation]
+        elevation = elevation[node_permutation]
+        friction = friction[node_permutation]
+        # VALUES remapped (each row still holds its own three vertices in the
+        # same rotational order), then ROWS reordered. Never a sort within a
+        # row — winding is load-bearing for the renderer.
+        volumes = remapped_volumes.astype(np.int32)[face_permutation]
+        inradius = inradius[face_permutation]
+        # TASK-3836's stage_max_c is PER FACE in SWW face order, exactly like
+        # inradius: it must travel with its face or a mark would read another
+        # triangle's peak stage (calibration_sampler, epic 3801).
+        if stage_max_c is not None:
+            stage_max_c = stage_max_c[face_permutation]
+        depth_q = depth_q[:, node_permutation]
+        x_velocity_q = x_velocity_q[:, node_permutation]
+        y_velocity_q = y_velocity_q[:, node_permutation]
+        for name in ENVELOPE_QUANTITIES:
+            envelope_quantized[name] = envelope_quantized[name][node_permutation]
+
     epsg = scenario_config.get("epsg")
     model_start = scenario_config.get("model_start", "1970-01-01T00:00:00+00:00")
 
     chunk_length_t = derive_chunk_length_t(n_node)
+
+    # TASK-2989 (W3.1, epic 2981) — decision D5. The delta pays only where
+    # there are enough rows in a chunk for inter-row similarity to survive
+    # gzip's window: measured 35%/48% at length 10 on run 1412, but 96% on
+    # depth and LARGER on x_velocity at length 2. `temporal_delta=False` is
+    # the unconditional off switch; the length rule is the automatic one.
+    time_series_filters: list = []
+    apply_temporal_delta = False
+    if temporal_delta:
+        from run_anuga.playback_codecs import (TEMPORAL_DELTA_MIN_CHUNK_LENGTH,
+                                               TemporalDeltaCodec)
+
+        apply_temporal_delta = chunk_length_t >= TEMPORAL_DELTA_MIN_CHUNK_LENGTH
+        if apply_temporal_delta:
+            time_series_filters = [TemporalDeltaCodec()]
 
     group_attrs = dict(
         format_version=FORMAT_VERSION,
@@ -868,17 +1042,32 @@ def _export_playback_store_impl(
         # 'saved_frames' (an SWW without the engine arrays: max over saved
         # frames only). Optional; a store without it is a saved_frames store.
         envelope_source=envelope_source,
+        # TASK-2989 (v4, W3.1, epic 2981) — decision D5's verdict for THIS
+        # store, recorded rather than left to be re-derived. It is written
+        # unconditionally at v4 (not presence-gated like node_order) precisely
+        # so the validator can catch a store that CLAIMS a codec it does not
+        # carry, or carries one it does not claim; the chunk-length rule alone
+        # could not tell those apart from a correct store.
+        temporal_delta_applied=bool(apply_temporal_delta),
     )
+    if spatial_order:
+        # TASK-3014 — first-class ABSENCE, the shape has_dt and
+        # envelope_quantities already use: a store that never declares these
+        # is in the original SWW order and stays valid forever. Declaring the
+        # order is what makes node_permutation's presence REQUIRED, so the
+        # validator can tell a real permutation from a corrupted one.
+        group_attrs["node_order"] = MORTON_ORDER_NAME
+        group_attrs["face_order"] = MORTON_ORDER_NAME
 
     t_chunks = (chunk_length_t, n_node)
     arrays = {
         "node_x": dict(data=node_x, chunks=(n_node,), fill_value=0.0),
         "node_y": dict(data=node_y, chunks=(n_node,), fill_value=0.0),
         "face_node_connectivity": dict(
-            data=sww["volumes"], chunks=sww["volumes"].shape, fill_value=-1
+            data=volumes, chunks=volumes.shape, fill_value=-1
         ),
-        "elevation": dict(data=sww["elevation"], chunks=(n_node,), fill_value=0.0),
-        "friction": dict(data=sww["friction"], chunks=(n_node,), fill_value=0.0),
+        "elevation": dict(data=elevation, chunks=(n_node,), fill_value=0.0),
+        "friction": dict(data=friction, chunks=(n_node,), fill_value=0.0),
         "inradius": dict(data=inradius, chunks=(inradius.shape[0],), fill_value=0.0),
         "time": dict(data=sww["time"], chunks=(n_time,), fill_value=0.0),
         "dt_ms": dict(data=dt_ms, chunks=(n_time,), fill_value=float("nan")),
@@ -886,6 +1075,7 @@ def _export_playback_store_impl(
             data=depth_q,
             chunks=t_chunks,
             fill_value=DEPTH_FILL_VALUE,
+            filters=time_series_filters,
             attrs=dict(
                 scale=depth_scale, offset=depth_offset, quantized_dtype="uint16",
                 byteorder="little", valid_min=0.0, valid_max=max_depth,
@@ -895,6 +1085,7 @@ def _export_playback_store_impl(
             data=x_velocity_q,
             chunks=t_chunks,
             fill_value=VELOCITY_FILL_VALUE,
+            filters=time_series_filters,
             attrs=dict(
                 scale=v_scale, offset=v_offset, quantized_dtype="uint16",
                 byteorder="little", valid_min=-v_absmax, valid_max=v_absmax,
@@ -904,6 +1095,7 @@ def _export_playback_store_impl(
             data=y_velocity_q,
             chunks=t_chunks,
             fill_value=VELOCITY_FILL_VALUE,
+            filters=time_series_filters,
             attrs=dict(
                 scale=v_scale, offset=v_offset, quantized_dtype="uint16",
                 byteorder="little", valid_min=-v_absmax, valid_max=v_absmax,
@@ -921,6 +1113,25 @@ def _export_playback_store_impl(
             chunks=(n_node,),
             fill_value=ENVELOPE_FILL_VALUE,
             attrs=envelope_attrs[name],
+        )
+    if spatial_order:
+        # TASK-3014 — the only way back to SWW order. THE CLIENT NEVER FETCHES
+        # THESE: playbackEpics.js's mesh object list is node_x, node_y,
+        # elevation, friction, inradius, face_node_connectivity, time, dt_ms,
+        # so they cost S3 storage and nothing at all on the blocking prefix
+        # this task exists to shrink. Measured cost, gzip-6, run 1328:
+        # node_permutation 6,738,192 B and face_permutation 14,127,682 B —
+        # about 50% of raw, i.e. NOT "compresses well", so the trade is a
+        # 14.7 MB smaller download against a 20.9 MB bigger object store.
+        arrays["node_permutation"] = dict(
+            data=node_permutation.astype(np.int32),
+            chunks=(n_node,),
+            fill_value=PERMUTATION_FILL_VALUE,
+        )
+        arrays["face_permutation"] = dict(
+            data=face_permutation.astype(np.int32),
+            chunks=(face_permutation.shape[0],),
+            fill_value=PERMUTATION_FILL_VALUE,
         )
 
     # TASK-3836 — optional, first-class absence: no stage_c in the SWW -> no

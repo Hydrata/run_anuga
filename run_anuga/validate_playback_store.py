@@ -66,6 +66,102 @@ _EXPECTED_CODECS = [
     {"name": "gzip", "configuration": {"level": 6}},
 ]
 _EXPECTED_CHUNK_KEY_ENCODING = {"name": "default", "configuration": {"separator": "/"}}
+#: TASK-3014 (W3.0, epic 2981) — the spatial-order declarations, as
+#: ``(group attr, permutation array, "which count it must permute")`` triples.
+#: PRESENCE-GATED, exactly like ``has_dt`` and ``envelope_quantities``: a store
+#: that declares NEITHER is in the original SWW order and must validate with
+#: ZERO violations forever. Declaring the attr is what makes the array
+#: required, and vice versa — a half-declared store is refused in both
+#: directions, because either half alone silently misdescribes the mesh.
+_ORDER_DECLARATIONS = (
+    ("node_order", "node_permutation", "nNode"),
+    ("face_order", "face_permutation", "nFace"),
+)
+#: The only ordering this validator knows how to reason about. An unknown name
+#: is refused rather than ignored: "hilbert" would mean the stored permutation
+#: does not describe the curve the attr claims, and a reader that trusted the
+#: attr would re-export a scrambled mesh.
+_KNOWN_ORDERS = ("morton",)
+#: TASK-2989 (v4, W3.1, epic 2981) — the group attr recording D5's verdict for
+#: this store. Required at format_version >= 4 and forbidden below it, so a
+#: store can never be ambiguous about whether its time series carry the codec.
+#: (Epic 2981 first numbered this v3; TASK-3836 took 3 on main, so the codec
+#: is v4 — a v3 store is TASK-3836's and never carries the codec.)
+_TEMPORAL_DELTA_MIN_FORMAT_VERSION = 4
+_TEMPORAL_DELTA_ATTR = "temporal_delta_applied"
+#: The codec's own name. Duplicated from run_anuga.playback_codecs on purpose:
+#: that module imports zarr at module level, and this one must stay importable
+#: without zarr (see the module docstring). The single test
+#: `test_validator_and_codec_agree_on_the_name` pins the two together.
+_TEMPORAL_DELTA_NAME = "temporal_delta"
+
+
+def _declared_codec_names(store_path) -> dict[str, list[str]]:
+    """``{array_name: [codec names]}`` read straight out of each array's
+    ``zarr.json``, WITHOUT going through zarr.
+
+    This has to bypass zarr because it is the thing that catches a codec zarr
+    cannot resolve: ``zarr.registry.get_codec_class`` raises ``KeyError`` for
+    an unregistered name, and that KeyError surfaces the moment anything
+    touches the array's metadata — so a validator that reached for
+    ``root[name].metadata.codecs`` first would die with a traceback instead of
+    reporting the violation. Which is exactly what a reader in an environment
+    without run_anuga installed experiences.
+    """
+    import json
+
+    out: dict[str, list[str]] = {}
+    root = Path(store_path)
+    if not root.is_dir():
+        # A missing / non-directory store is NOT this function's error to
+        # report. validate_store's contract (see its docstring) is that a
+        # structurally-broken store raises via ZARR's own errors, and running
+        # first must not change which exception the caller sees.
+        return out
+    for child in sorted(root.iterdir()):
+        meta = child / "zarr.json"
+        if not child.is_dir() or not meta.is_file():
+            continue
+        try:
+            doc = json.loads(meta.read_text())
+        except Exception:
+            continue
+        if doc.get("node_type") != "array":
+            continue
+        names = [
+            c.get("name") for c in (doc.get("codecs") or [])
+            if isinstance(c, dict) and isinstance(c.get("name"), str)
+        ]
+        out[child.name] = names
+    return out
+
+
+def _unresolvable_codecs(store_path) -> list[str]:
+    """Violations for every declared codec THIS reader cannot resolve."""
+    from zarr.registry import get_codec_class
+
+    try:
+        # zarr >= 3.4 raises its own UnknownCodecError straight from
+        # get_codec_class (zarr 3.3 raised a bare KeyError there and only the
+        # metadata parser wrapped it). Catch both, or a missing codec becomes
+        # a traceback again — the exact failure this function exists to stop.
+        from zarr.errors import UnknownCodecError
+    except ImportError:  # pragma: no cover - zarr < 3.3
+        UnknownCodecError = KeyError
+
+    violations: list[str] = []
+    for array_name, names in sorted(_declared_codec_names(store_path).items()):
+        for codec_name in names:
+            try:
+                get_codec_class(codec_name)
+            except (KeyError, UnknownCodecError):
+                violations.append(
+                    f"{array_name}: declares codec '{codec_name}', which is NOT REGISTERED "
+                    "in this environment — zarr cannot open the array at all. Install "
+                    "run_anuga (its 'zarr.codecs' entry point provides 'temporal_delta') "
+                    "or the codec's own package. TASK-2989"
+                )
+    return violations
 
 
 def validate_store(store_path) -> list[str]:
@@ -79,6 +175,14 @@ def validate_store(store_path) -> list[str]:
     import zarr
 
     violations: list[str] = []
+    # TASK-2989 — BEFORE zarr parses a single array. An unresolvable codec is
+    # not a "violation plus the rest of the report": it makes every later read
+    # in this function raise KeyError, so it is reported and the walk stops.
+    # That is also the honest verdict — a store whose codec this reader lacks
+    # is one it genuinely cannot validate.
+    unresolvable = _unresolvable_codecs(store_path)
+    if unresolvable:
+        return unresolvable
     root = zarr.open_group(str(store_path), mode="r")
 
     if root.metadata.zarr_format != 3:
@@ -96,6 +200,27 @@ def validate_store(store_path) -> list[str]:
                     f"group attrs missing '{attr}' (schema §5, required for format_version >= 2)"
                 )
 
+    # TASK-2989 (v4) — is this store's time series delta-coded? The attr is
+    # the store's own claim; the chunk-length rule is what it must agree with;
+    # and the per-array codec chains below are what must match BOTH. All three
+    # are checked, because any two of them agreeing while the third differs is
+    # a store that decodes to plausible, wrong water.
+    is_delta_era = (
+        isinstance(format_version, (int, float))
+        and format_version >= _TEMPORAL_DELTA_MIN_FORMAT_VERSION
+    )
+    delta_declared = root.attrs.get(_TEMPORAL_DELTA_ATTR)
+    if is_delta_era and delta_declared is None:
+        violations.append(
+            f"group attrs missing '{_TEMPORAL_DELTA_ATTR}' "
+            f"(TASK-2989, required for format_version >= {_TEMPORAL_DELTA_MIN_FORMAT_VERSION})"
+        )
+    if not is_delta_era and delta_declared is not None:
+        violations.append(
+            f"group attrs declare '{_TEMPORAL_DELTA_ATTR}' at format_version="
+            f"{format_version!r} — the temporal_delta codec is a v4 feature (TASK-2989)"
+        )
+
     # TASK-2719 (v2) — the store's OWN declared chunk_length_t is the law
     # for its three quantized arrays' time-chunk length (O1/D5: "clients
     # MUST read them from zarr.json and MUST NOT hardcode them" applies to
@@ -110,6 +235,31 @@ def validate_store(store_path) -> list[str]:
             f"chunk_length_t={declared_chunk_length_t!r}, expected an int in "
             f"[{_CHUNK_LENGTH_T_FLOOR}, {_CHUNK_LENGTH_T_CAP}] (D5)"
         )
+
+    # TASK-2989 — the store's own claim (temporal_delta_applied) decides the
+    # expected chain, and the chunk-length rule (D5) bounds the claim: the
+    # codec is FORBIDDEN below chunk length 5, but may be OFF at any length —
+    # the exporter's kill switch (RUN_ANUGA_PLAYBACK_TEMPORAL_DELTA=0, set on a
+    # Batch jobdef without a rebake) writes a v4 store with the attr False and
+    # a plain bytes+gzip chain, and that store is valid. A claim that
+    # disagrees with the arrays' real chains is still caught below, per array.
+    # A v1/v2/v3 store never declares the attr and never carries the codec.
+    expected_delta = False
+    if is_delta_era:
+        from run_anuga.playback_codecs import TEMPORAL_DELTA_MIN_CHUNK_LENGTH
+
+        expected_delta = bool(delta_declared)
+        if (expected_delta and isinstance(declared_chunk_length_t, int)
+                and declared_chunk_length_t < TEMPORAL_DELTA_MIN_CHUNK_LENGTH):
+            violations.append(
+                f"{_TEMPORAL_DELTA_ATTR}={delta_declared!r} but chunk_length_t="
+                f"{declared_chunk_length_t!r} is below {TEMPORAL_DELTA_MIN_CHUNK_LENGTH} "
+                "(D5: the codec is only ever applied at chunk_length_t >= "
+                f"{TEMPORAL_DELTA_MIN_CHUNK_LENGTH}) — TASK-2989"
+            )
+    expected_time_series_codecs = (
+        ([{"name": _TEMPORAL_DELTA_NAME}] if expected_delta else []) + _EXPECTED_CODECS
+    )
 
     names = set(root.array_keys())
     n_node = None
@@ -169,8 +319,11 @@ def validate_store(store_path) -> list[str]:
                 "(schema §1 — fill_value is load-bearing, must decode to physical zero)"
             )
         codecs_dumped = [c.to_dict() for c in arr.metadata.codecs]
-        if codecs_dumped != _EXPECTED_CODECS:
-            violations.append(f"{name}: codecs={codecs_dumped}, expected {_EXPECTED_CODECS} (schema §1)")
+        if codecs_dumped != expected_time_series_codecs:
+            violations.append(
+                f"{name}: codecs={codecs_dumped}, expected {expected_time_series_codecs} "
+                "(schema §1; TASK-2989 D5 for the temporal_delta half)"
+            )
         cke = arr.metadata.chunk_key_encoding.to_dict()
         if cke != _EXPECTED_CHUNK_KEY_ENCODING:
             violations.append(f"{name}: chunk_key_encoding={cke}, expected {_EXPECTED_CHUNK_KEY_ENCODING}")
@@ -278,6 +431,58 @@ def validate_store(store_path) -> list[str]:
         violations.append(
             f"coordinate_source={coordinate_source!r}, expected one of {COORDINATE_SOURCES} (TASK-3836)"
         )
+
+    # TASK-3014 (W3.0, epic 2981) — spatial (Morton) export order.
+    counts = {"nNode": n_node, "nFace": n_face}
+    for attr_name, array_name, count_key in _ORDER_DECLARATIONS:
+        declared_order = root.attrs.get(attr_name)
+        present = array_name in names
+        if declared_order is None:
+            if present:
+                violations.append(
+                    f"array '{array_name}' is present but group attrs declare no "
+                    f"'{attr_name}' — a permutation nothing declares cannot be applied, "
+                    "and absence of the attr means the ORIGINAL SWW order (TASK-3014)"
+                )
+            continue
+        if declared_order not in _KNOWN_ORDERS:
+            violations.append(
+                f"{attr_name}={declared_order!r}, expected one of {_KNOWN_ORDERS} "
+                "(TASK-3014 — an ordering this reader cannot reproduce)"
+            )
+        if not present:
+            violations.append(
+                f"group attrs declare {attr_name}={declared_order!r} but array "
+                f"'{array_name}' is missing (TASK-3014 — a store must not advertise "
+                "a reordering it cannot undo)"
+            )
+            continue
+        arr = root[array_name]
+        if str(arr.dtype) != "int32":
+            violations.append(
+                f"{array_name}: dtype={arr.dtype}, expected int32 (TASK-3014)"
+            )
+        expected_count = counts.get(count_key)
+        if expected_count is None:
+            continue
+        if arr.ndim != 1 or arr.shape[0] != expected_count:
+            violations.append(
+                f"{array_name}: shape={arr.shape}, expected ({expected_count},) "
+                f"— one entry per {count_key} (TASK-3014)"
+            )
+            continue
+        # THE check that matters. A DUPLICATED index keeps the dtype, the
+        # shape and an entirely plausible value range, but drops one node and
+        # doubles another — a re-export through it silently corrupts the mesh
+        # and nothing else in the store would notice.
+        from run_anuga.playback_order import is_permutation
+
+        if not is_permutation(arr[:], expected_count):
+            violations.append(
+                f"{array_name}: not a permutation of 0..{expected_count - 1} "
+                "(duplicated or out-of-range index) — re-exporting through it would "
+                "silently corrupt the mesh (TASK-3014)"
+            )
 
     if _INRADIUS_ARRAY not in names:
         violations.append(f"missing required array '{_INRADIUS_ARRAY}' (schema §2)")

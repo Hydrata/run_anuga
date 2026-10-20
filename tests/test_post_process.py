@@ -131,6 +131,25 @@ class TestPostProcessLegacyTifsFlagGate:
         assert call_kwargs["sww_path"].endswith("run_1_1_1.sww")
         assert call_kwargs["output_dir"] == str(package_with_sww / "outputs_1_1_1")
 
+    def test_playback_features_default_on(self, package_with_sww, monkeypatch):
+        monkeypatch.delenv("RUN_ANUGA_PLAYBACK_SPATIAL_ORDER", raising=False)
+        monkeypatch.delenv("RUN_ANUGA_PLAYBACK_TEMPORAL_DELTA", raising=False)
+        _, mock_playback = self._call_post_process(package_with_sww)
+        _, call_kwargs = mock_playback.call_args
+        assert call_kwargs["spatial_order"] is True
+        assert call_kwargs["temporal_delta"] is True
+
+    @pytest.mark.parametrize("order_env,delta_env", [("0", "0"), ("false", "1"), ("1", "off")])
+    def test_playback_kill_switches_read_from_env(self, package_with_sww, monkeypatch, order_env, delta_env):
+        """Epic 2981 merge: a Batch jobdef env var switches either feature off
+        at the run's own call site, without a rebake."""
+        monkeypatch.setenv("RUN_ANUGA_PLAYBACK_SPATIAL_ORDER", order_env)
+        monkeypatch.setenv("RUN_ANUGA_PLAYBACK_TEMPORAL_DELTA", delta_env)
+        _, mock_playback = self._call_post_process(package_with_sww)
+        _, call_kwargs = mock_playback.call_args
+        assert call_kwargs["spatial_order"] is (order_env == "1")
+        assert call_kwargs["temporal_delta"] is (delta_env == "1")
+
     def test_domain_threaded_through_to_playback_export(self, package_with_sww):
         from types import SimpleNamespace
 

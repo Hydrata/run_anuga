@@ -1937,13 +1937,22 @@ def post_process_sww(
     # while the SWW is still local. Import-guarded + never raises: a missing
     # zarr or any export failure degrades to a logged warning, never a
     # failed run (see run_anuga.playback_store.export_playback_store).
-    from run_anuga.playback_store import export_playback_store
+    from run_anuga.playback_store import (
+        PLAYBACK_SPATIAL_ORDER_ENV, PLAYBACK_TEMPORAL_DELTA_ENV, export_playback_store, playback_feature_enabled,
+    )
+    # Epic 2981 kill switches: a Batch jobdef env var turns either feature off
+    # without a rebake (see playback_store.PLAYBACK_*_ENV).
+    spatial_order = playback_feature_enabled(PLAYBACK_SPATIAL_ORDER_ENV)
+    temporal_delta = playback_feature_enabled(PLAYBACK_TEMPORAL_DELTA_ENV)
+    logger.info(f"playback_store export: spatial_order={spatial_order} temporal_delta={temporal_delta}")
     playback_result = export_playback_store(
         input_data=input_data,
         sww_path=f"{input_data['output_directory']}/{input_data['run_label']}.sww",
         output_dir=input_data['output_directory'],
         domain=domain,
         upload=True,
+        spatial_order=spatial_order,
+        temporal_delta=temporal_delta,
     )
     logger.info(f"playback_store export result: {playback_result}")
 
