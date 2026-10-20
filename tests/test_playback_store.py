@@ -27,6 +27,15 @@ except ImportError:
 requires_zarr = pytest.mark.skipif(not HAS_ZARR, reason="zarr not installed")
 
 
+def _to_sww_order(stored, perm):
+    """Undo TASK-3014's Morton reorder: ``perm[new] == original`` so the value
+    stored at ``new`` belongs at ``perm[new]`` in SWW order."""
+    stored = np.asarray(stored)
+    out = np.empty_like(stored)
+    out[np.asarray(perm)] = stored
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Quantization math (pure functions, no zarr needed)
 # ---------------------------------------------------------------------------
@@ -410,7 +419,12 @@ class TestExportAgainstFixtureSww:
         """B2: false_easting/false_northing are informational-only attrs —
         node + xllcorner reproduces the SWW's own absolute position (within
         the SWW's float32 rounding), with no false easting/northing added.
-        (TASK-3836: node_x is now relative to the store's own origin.)"""
+        (TASK-3836: node_x is now relative to the store's own origin.)
+
+        TASK-3014 (W3.0, epic 2981) changed the ORDER of these values and
+        nothing else, so the assertion is made after undoing the stored
+        permutation — stricter than a set comparison, which would pass a store
+        whose coordinates had been shifted and re-sorted."""
         import netCDF4
         import zarr
 
@@ -419,7 +433,8 @@ class TestExportAgainstFixtureSww:
         with netCDF4.Dataset(self.sww_path) as ds:
             x32 = np.array(ds.variables["x"][:], dtype=np.float32)
             sww_x = x32.astype(np.float64) + float(ds.xllcorner)
-        store_x = root["node_x"][:].astype(np.float64) + root.attrs["xllcorner"]
+        store_x = _to_sww_order(root["node_x"][:], root["node_permutation"][:]).astype(np.float64) \
+            + root.attrs["xllcorner"]
         tol = float(np.spacing(np.abs(x32).max())) + 1e-3
         np.testing.assert_allclose(store_x, sww_x, rtol=0, atol=tol)
 
@@ -435,7 +450,8 @@ class TestExportAgainstFixtureSww:
         assert root.attrs["coordinate_source"] == "mesh_file"
         with netCDF4.Dataset(str(Path(self.sww_path).with_suffix(".msh"))) as ds:
             vy = np.asarray(ds.variables["vertices"][:, 1], dtype=np.float64) + float(ds.yllcorner)
-        y = root["node_y"][:].astype(np.float64) + root.attrs["yllcorner"]
+        y = _to_sww_order(root["node_y"][:], root["node_permutation"][:]).astype(np.float64) \
+            + root.attrs["yllcorner"]
         assert np.abs(y - vy).max() < 0.01
 
     def test_fixture_store_carries_frame_max_centroid_stage(self, tmp_path):
@@ -451,7 +467,9 @@ class TestExportAgainstFixtureSww:
             frame_max = np.asarray(ds.variables["stage_c"][:], dtype=np.float64).max(axis=0)
             has_engine = "max_stage_c" in ds.variables
         arr = root["stage_max_c"]
-        got = arr.attrs["offset"] + arr[:].astype(np.float64) * arr.attrs["scale"]
+        # TASK-3014 moved faces too: stage_max_c travels with its face.
+        got = arr.attrs["offset"] + _to_sww_order(arr[:], root["face_permutation"][:]).astype(np.float64) \
+            * arr.attrs["scale"]
         half = arr.attrs["scale"] / 2 + 1e-6
         assert got.shape == (root["face_node_connectivity"].shape[0],)
         assert np.all(got >= frame_max - half)
@@ -571,8 +589,10 @@ class TestAdaptiveChunkLengthWrittenStore:
         assert result["status"] == "ok", result
 
         root = zarr.open_group(result["local_path"], mode="r")
-        # AC3 — the store declares its own dimensions.
-        assert root.attrs["format_version"] == ps.FORMAT_VERSION
+        # AC3 — the store declares its own dimensions. FORMAT_VERSION is 4
+        # (TASK-3836 took 3 on main; TASK-2989's codec took 4 at the merge);
+        # the v2 attrs are required at >= 2.
+        assert root.attrs["format_version"] == ps.FORMAT_VERSION == 4
         assert root.attrs["n_node"] == n_node
         assert root.attrs["n_time"] == n_time
         assert root.attrs["chunk_length_t"] == 2
@@ -738,6 +758,13 @@ class TestValidatorCatchesRealDefects:
         result = ps.export_playback_store(
             input_data=input_data, sww_path=str(fixture_sww),
             output_dir=str(tmp_path), upload=False,
+            # TASK-2989 — rolling the ATTRS back to v1 is not enough: a real
+            # v1 store also has bytes+gzip on disk. Exporting with the codec
+            # off is what makes this a genuine v1 simulation rather than a
+            # v3 store wearing a v1 label (which the validator correctly
+            # refuses, and which would have made this test pass for the
+            # wrong reason).
+            temporal_delta=False,
         )
         root = zarr.open_group(result["local_path"], mode="a")
         assert root.attrs["chunk_length_t"] == 10, (
@@ -749,6 +776,10 @@ class TestValidatorCatchesRealDefects:
         del attrs["n_node"]
         del attrs["n_time"]
         del attrs["chunk_length_t"]
+        # TASK-2989 — a genuine v1 store never carried the v4-only codec
+        # attr either, and the validator refuses one that does (a store
+        # cannot claim a codec feature below the version that introduced it).
+        del attrs["temporal_delta_applied"]
         root.attrs.put(attrs)
 
         assert validate_store(result["local_path"]) == []
@@ -771,7 +802,7 @@ class TestValidatorCatchesRealDefects:
         )
         root = zarr.open_group(result["local_path"], mode="a")
         attrs = dict(root.attrs)
-        assert attrs["format_version"] >= 2
+        assert attrs["format_version"] == ps.FORMAT_VERSION >= 2
         del attrs["chunk_length_t"]
         root.attrs.put(attrs)
 
@@ -1300,7 +1331,7 @@ class TestStoreCentroidStageAndCoordinates:
         from run_anuga.validate_playback_store import validate_store
 
         root, result = self._export(tmp_path, engine=True)
-        assert root.attrs["format_version"] == 3
+        assert root.attrs["format_version"] == ps.FORMAT_VERSION >= 3
         assert root.attrs["stage_max_c_source"] == "engine_per_step"
         arr = root["stage_max_c"]
         assert str(arr.dtype) == "uint16" and arr.shape == (2,)
@@ -1336,6 +1367,538 @@ class TestStoreCentroidStageAndCoordinates:
         assert root.attrs["coordinate_source"] == "sww"
         y = root["node_y"][:].astype("f8") + float(root.attrs["yllcorner"])
         assert set(np.round(np.mod(y, 1.0), 3)) <= {0.0, 0.5}
+
+
+# ---------------------------------------------------------------------------
+# TASK-3014 (W3.0, epic 2981) — Morton / Z-order node export
+# ---------------------------------------------------------------------------
+
+class TestMortonNodeOrder:
+    """AC1 — the permutation is a permutation, and the test can see a broken
+    one. Pure helper, unit-testable without an SWW (that is the whole point of
+    run_anuga/playback_order.py existing as its own module)."""
+
+    @staticmethod
+    def _helpers():
+        from run_anuga.playback_order import inverse_permutation, morton_node_order
+
+        return morton_node_order, inverse_permutation
+
+    def test_is_a_permutation_of_arange(self):
+        morton_node_order, _ = self._helpers()
+        rng = np.random.default_rng(20260909)
+        x = rng.uniform(-1000.0, 1000.0, 977)
+        y = rng.uniform(5.0e6, 5.1e6, 977)
+        perm = morton_node_order(x, y)
+        assert perm.dtype.kind == "i"
+        assert np.array_equal(np.sort(perm), np.arange(977))
+
+    def test_deterministic_same_input_same_output(self):
+        morton_node_order, _ = self._helpers()
+        rng = np.random.default_rng(7)
+        x = rng.uniform(0.0, 1.0, 512)
+        y = rng.uniform(0.0, 1.0, 512)
+        assert np.array_equal(morton_node_order(x, y), morton_node_order(x, y))
+
+    def test_orders_a_grid_by_z_curve_not_by_row(self):
+        """The whole point: nodes adjacent in the OUTPUT must be spatially
+        adjacent. On a 4x4 lattice written out row-major, Z-order puts the
+        first quadrant's four nodes first — a row-major (identity) order does
+        not."""
+        morton_node_order, _ = self._helpers()
+        xs, ys = np.meshgrid(np.arange(4.0), np.arange(4.0))
+        x = xs.ravel()
+        y = ys.ravel()
+        perm = morton_node_order(x, y)
+        assert not np.array_equal(perm, np.arange(16)), "identity is not a Z-order"
+        first_quadrant = {(0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)}
+        assert {(x[i], y[i]) for i in perm[:4]} == first_quadrant
+
+    def test_degenerate_coordinates_still_a_permutation(self):
+        """Every node on one point (a legal, if useless, mesh): the quantizer
+        divides by a zero span. Must not NaN out into a broken permutation."""
+        morton_node_order, _ = self._helpers()
+        x = np.full(64, 321000.0)
+        y = np.full(64, 5812000.0)
+        perm = morton_node_order(x, y)
+        assert np.array_equal(np.sort(perm), np.arange(64))
+
+    def test_empty_input(self):
+        morton_node_order, _ = self._helpers()
+        perm = morton_node_order(np.zeros(0), np.zeros(0))
+        assert perm.shape == (0,)
+
+    def test_inverse_permutation_round_trips(self):
+        morton_node_order, inverse_permutation = self._helpers()
+        rng = np.random.default_rng(11)
+        x = rng.uniform(0.0, 10.0, 300)
+        y = rng.uniform(0.0, 10.0, 300)
+        perm = morton_node_order(x, y)
+        inv = inverse_permutation(perm)
+        # perm[new] = original ; inv[original] = new
+        assert np.array_equal(inv[perm], np.arange(300))
+        assert np.array_equal(perm[inv], np.arange(300))
+        # And the defining property: applying perm reorders, applying inv undoes.
+        reordered = x[perm]
+        assert np.array_equal(reordered[inv], x)
+
+
+@requires_zarr
+@pytest.mark.requires_anuga
+class TestMortonOrderedExport:
+    """TASK-3014 AC3/AC4/AC7/AC-P1(c)/AC-P2 — the exporter writes the store in
+    Morton order, declares it, and stores the way back.
+
+    SHIPPED VARIANT: nodes AND faces. Measured on the two real fixtures under
+    the store's own bytes+gzip(6) chain (no delta, no shuffle — those are
+    W3.1/W3.2/W3.3):
+        face_node_connectivity  35,435,624 -> 23,552,802 B  (1.50x) on run 1328
+                                 1,540,555 ->  1,001,844 B  (1.54x) on run 1412
+        client blocking prefix  63,212,197 -> 48,501,176 B  (1.30x) on run 1328
+    A nodes-only reorder buys only 1.09x on connectivity, i.e. BELOW AC2's
+    1.3x escalation threshold — the face reorder is what makes the high bytes
+    of a connectivity row repetitive, and it is not optional.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _sww(self, fixture_sww):
+        self.sww_path = str(fixture_sww)
+
+    def _export(self, tmp_path, run_id=1, **kwargs):
+        return ps.export_playback_store(
+            input_data={
+                "run_label": f"run_morton_{run_id}",
+                "scenario_config": {
+                    "project": 1, "id": 1, "run_id": run_id, "epsg": "EPSG:28355",
+                },
+            },
+            sww_path=self.sww_path,
+            output_dir=str(tmp_path),
+            upload=False,
+            **kwargs,
+        )
+
+    @staticmethod
+    def _sww_arrays(sww_path):
+        return ps._read_sww_arrays(sww_path)
+
+    def test_declares_morton_order_and_stores_both_permutations(self, tmp_path):
+        import zarr
+
+        result = self._export(tmp_path, run_id=1)
+        root = zarr.open_group(result["local_path"], mode="r")
+        assert root.attrs["node_order"] == "morton"
+        assert root.attrs["face_order"] == "morton"
+        n_node = root["node_x"].shape[0]
+        n_face = root["face_node_connectivity"].shape[0]
+        node_perm = np.asarray(root["node_permutation"][:])
+        face_perm = np.asarray(root["face_permutation"][:])
+        assert str(root["node_permutation"].dtype) == "int32"
+        assert str(root["face_permutation"].dtype) == "int32"
+        assert node_perm.shape == (n_node,)
+        assert face_perm.shape == (n_face,)
+        assert np.array_equal(np.sort(node_perm), np.arange(n_node))
+        assert np.array_equal(np.sort(face_perm), np.arange(n_face))
+
+    def test_is_not_the_identity_permutation(self, tmp_path):
+        """The discriminator against a store that merely DECLARES morton
+        order: a real mesh's SWW order is not already Z-order."""
+        import zarr
+
+        result = self._export(tmp_path, run_id=2)
+        root = zarr.open_group(result["local_path"], mode="r")
+        node_perm = np.asarray(root["node_permutation"][:])
+        assert not np.array_equal(node_perm, np.arange(node_perm.shape[0]))
+
+    def test_every_per_node_array_round_trips_to_sww_order_byte_exact(self, tmp_path):
+        """AC4 — applying the stored permutation reproduces the SWW-order
+        array EXACTLY (numpy array_equal, not 'close')."""
+        import zarr
+
+        result = self._export(tmp_path, run_id=3)
+        sww = self._sww_arrays(self.sww_path)
+        root = zarr.open_group(result["local_path"], mode="r")
+        perm = np.asarray(root["node_permutation"][:])
+        for store_name, sww_name in (("elevation", "elevation"), ("friction", "friction")):
+            restored = _to_sww_order(root[store_name][:], perm)
+            assert np.array_equal(restored, sww[sww_name]), store_name
+        # TASK-3836 (merged 20-10-26): node_x/node_y are no longer the SWW's
+        # own float32 x/y but precise, origin-RELATIVE coordinates. Their
+        # byte-exact SWW-order reference is therefore the same exporter with
+        # the reorder switched off, and the same origin.
+        plain = self._export(tmp_path, run_id=30, spatial_order=False)
+        root_p = zarr.open_group(plain["local_path"], mode="r")
+        assert root.attrs["xllcorner"] == root_p.attrs["xllcorner"]
+        assert root.attrs["yllcorner"] == root_p.attrs["yllcorner"]
+        for store_name in ("node_x", "node_y"):
+            restored = _to_sww_order(root[store_name][:], perm)
+            assert np.array_equal(restored, np.asarray(root_p[store_name][:])), store_name
+
+    def test_connectivity_round_trips_including_winding(self, tmp_path):
+        """AC4 — the (nFace, 3) arrays must match ELEMENT-WISE, not as sets:
+        winding is load-bearing for the renderer and a per-triangle vertex
+        sort would still compare equal as a set of edges."""
+        import zarr
+
+        result = self._export(tmp_path, run_id=4)
+        sww = self._sww_arrays(self.sww_path)
+        root = zarr.open_group(result["local_path"], mode="r")
+        node_perm = np.asarray(root["node_permutation"][:])
+        face_perm = np.asarray(root["face_permutation"][:])
+        stored = np.asarray(root["face_node_connectivity"][:])
+        # stored values are NEW node indices; perm maps new -> original.
+        original_values = node_perm[stored]
+        restored = np.empty_like(original_values)
+        restored[face_perm] = original_values
+        assert np.array_equal(restored, sww["volumes"])
+
+    def test_inradius_travels_with_its_face(self, tmp_path):
+        """AC3 — a face reorder that leaves inradius behind silently gives
+        every triangle its neighbour's Courant radius."""
+        import zarr
+
+        result = self._export(tmp_path, run_id=5)
+        # TASK-3836: inradius is computed from the precise local coordinates,
+        # so the SWW-order reference is the un-reordered export's own inradius.
+        plain = self._export(tmp_path, run_id=50, spatial_order=False)
+        expected = np.asarray(zarr.open_group(plain["local_path"], mode="r")["inradius"][:])
+        root = zarr.open_group(result["local_path"], mode="r")
+        face_perm = np.asarray(root["face_permutation"][:])
+        stored = np.asarray(root["inradius"][:])
+        assert np.array_equal(stored, expected[face_perm])
+        # And a spot value read back for a known face, per AC3.
+        known = int(face_perm[7])
+        assert stored[7] == expected[known]
+
+    def test_time_series_node_axis_is_permuted_consistently(self, tmp_path):
+        """AC4 for the [n_time, n_node] arrays — the SAME permutation, so a
+        frame row still lines up with node_x/node_y."""
+        import zarr
+
+        result = self._export(tmp_path, run_id=6)
+        root_m = zarr.open_group(result["local_path"], mode="r")
+        plain = self._export(tmp_path, run_id=7, spatial_order=False)
+        root_p = zarr.open_group(plain["local_path"], mode="r")
+        perm = np.asarray(root_m["node_permutation"][:])
+        for name in ("depth", "x_velocity", "y_velocity", "depth_max"):
+            morton = np.asarray(root_m[name][:])
+            unordered = np.asarray(root_p[name][:])
+            expected = unordered[..., perm]
+            assert np.array_equal(morton, expected), name
+
+    def test_spatial_order_false_is_the_pre_morton_store(self, tmp_path):
+        """AC-P2 — the opt-out writes exactly what HEAD wrote: SWW order, no
+        permutation arrays, no order attrs."""
+        import zarr
+
+        result = self._export(tmp_path, run_id=8, spatial_order=False)
+        sww = self._sww_arrays(self.sww_path)
+        root = zarr.open_group(result["local_path"], mode="r")
+        assert "node_order" not in root.attrs
+        assert "face_order" not in root.attrs
+        names = set(root.array_keys())
+        assert "node_permutation" not in names
+        assert "face_permutation" not in names
+        # TASK-3836: node_x is origin-relative, so SWW order is checked as
+        # node_x + xllcorner against the SWW's absolute float32 x.
+        sww_abs_x = sww["x"].astype(np.float64) + float(sww["xllcorner"])
+        store_abs_x = np.asarray(root["node_x"][:]).astype(np.float64) + root.attrs["xllcorner"]
+        tol = float(np.spacing(np.abs(sww["x"]).max())) + 1e-3
+        np.testing.assert_allclose(store_abs_x, sww_abs_x, rtol=0, atol=tol)
+        assert np.array_equal(np.asarray(root["face_node_connectivity"][:]), sww["volumes"])
+
+    def test_morton_order_does_not_move_the_format_version(self, tmp_path):
+        """TASK-3014 AC7 — the Morton reorder is invisible to every reader, so
+        it must NOT bump the version: a bump would make every shipped client
+        refuse a store it can in fact read. It shipped at FORMAT_VERSION 2 and
+        this test asserted 2.
+
+        TASK-2989 then bumped to 3 for the temporal_delta codec, which is a
+        genuinely incompatible chain — so the version equality is no longer
+        the way to state 3014's claim. The claim that survives, and the one
+        that actually carries AC7, is the SUPERSET: a Morton store's group
+        attrs differ from an unreordered one's by exactly the two order keys
+        and nothing else, at whatever the current version is."""
+        import zarr
+
+        morton = self._export(tmp_path, run_id=9)
+        plain = self._export(tmp_path, run_id=10, spatial_order=False)
+        morton_attrs = dict(zarr.open_group(morton["local_path"], mode="r").attrs)
+        plain_attrs = dict(zarr.open_group(plain["local_path"], mode="r").attrs)
+        assert morton_attrs["format_version"] == plain_attrs["format_version"]
+        assert set(morton_attrs) > set(plain_attrs)
+        assert set(morton_attrs) - set(plain_attrs) == {"node_order", "face_order"}
+
+    def test_exported_morton_store_validates_clean(self, tmp_path):
+        """AC-P1(c) — the ONE leg in this task's chain that can tell the
+        change from HEAD: a store exported BY THIS CHANGE, validated."""
+        from run_anuga.validate_playback_store import validate_store
+
+        result = self._export(tmp_path, run_id=11)
+        assert validate_store(result["local_path"]) == []
+
+
+@requires_zarr
+@pytest.mark.requires_anuga
+class TestValidatorSpatialOrder:
+    """TASK-3014 AC5 — the validator can tell a real permutation from a
+    corrupted one, and a store that declares NEITHER (every store written
+    before this task) still validates with ZERO violations."""
+
+    @pytest.fixture(autouse=True)
+    def _sww(self, fixture_sww):
+        self.sww_path = str(fixture_sww)
+
+    def _export(self, tmp_path, run_id, **kwargs):
+        return ps.export_playback_store(
+            input_data={
+                "run_label": f"run_val_{run_id}",
+                "scenario_config": {
+                    "project": 2, "id": 2, "run_id": run_id, "epsg": "EPSG:28355",
+                },
+            },
+            sww_path=self.sww_path, output_dir=str(tmp_path), upload=False, **kwargs,
+        )
+
+    def test_declared_node_order_without_the_array_is_a_violation(self, tmp_path):
+        import zarr
+        from run_anuga.validate_playback_store import validate_store
+
+        result = self._export(tmp_path, 1)
+        root = zarr.open_group(result["local_path"], mode="a")
+        del root["node_permutation"]
+        violations = validate_store(result["local_path"])
+        assert any("node_permutation" in v and "node_order" in v for v in violations), violations
+
+    def test_node_permutation_without_the_attr_is_a_violation(self, tmp_path):
+        import zarr
+        from run_anuga.validate_playback_store import validate_store
+
+        result = self._export(tmp_path, 2)
+        root = zarr.open_group(result["local_path"], mode="a")
+        attrs = dict(root.attrs)
+        del attrs["node_order"]
+        root.attrs.put(attrs)
+        violations = validate_store(result["local_path"])
+        assert any("node_permutation" in v for v in violations), violations
+
+    def test_duplicated_index_in_node_permutation_is_a_violation(self, tmp_path):
+        """THE failure mode: a duplicate keeps the dtype, the shape and a
+        wholly plausible value range, but drops one node and doubles another,
+        so a re-export through it silently corrupts the mesh."""
+        import zarr
+        from run_anuga.validate_playback_store import validate_store
+
+        result = self._export(tmp_path, 3)
+        root = zarr.open_group(result["local_path"], mode="a")
+        arr = root["node_permutation"]
+        values = np.asarray(arr[:])
+        values[1] = values[0]
+        arr[:] = values
+        violations = validate_store(result["local_path"])
+        assert any("node_permutation" in v and "permutation" in v for v in violations), violations
+
+    def test_declared_face_order_without_the_array_is_a_violation(self, tmp_path):
+        import zarr
+        from run_anuga.validate_playback_store import validate_store
+
+        result = self._export(tmp_path, 4)
+        root = zarr.open_group(result["local_path"], mode="a")
+        del root["face_permutation"]
+        violations = validate_store(result["local_path"])
+        assert any("face_permutation" in v and "face_order" in v for v in violations), violations
+
+    def test_duplicated_index_in_face_permutation_is_a_violation(self, tmp_path):
+        import zarr
+        from run_anuga.validate_playback_store import validate_store
+
+        result = self._export(tmp_path, 5)
+        root = zarr.open_group(result["local_path"], mode="a")
+        arr = root["face_permutation"]
+        values = np.asarray(arr[:])
+        values[2] = values[3]
+        arr[:] = values
+        violations = validate_store(result["local_path"])
+        assert any("face_permutation" in v and "permutation" in v for v in violations), violations
+
+    def test_unknown_order_name_is_a_violation(self, tmp_path):
+        import zarr
+        from run_anuga.validate_playback_store import validate_store
+
+        result = self._export(tmp_path, 6)
+        root = zarr.open_group(result["local_path"], mode="a")
+        attrs = dict(root.attrs)
+        attrs["node_order"] = "hilbert"
+        root.attrs.put(attrs)
+        violations = validate_store(result["local_path"])
+        assert any("node_order" in v and "hilbert" in v for v in violations), violations
+
+    def test_store_declaring_neither_validates_clean(self, tmp_path):
+        """The first-class-absence control — the shape has_dt and
+        envelope_quantities already use. This is what keeps every store
+        written before TASK-3014 valid forever."""
+        from run_anuga.validate_playback_store import validate_store
+
+        result = self._export(tmp_path, 7, spatial_order=False)
+        assert validate_store(result["local_path"]) == []
+
+
+# ---------------------------------------------------------------------------
+# TASK-2989 (W3.1, epic 2981) — the temporal_delta zarr v3 codec
+# ---------------------------------------------------------------------------
+
+PLAYBACK_FIXTURE_ROOT = Path("/home/david/hydrata/playback-fixtures")
+requires_local_fixtures = pytest.mark.skipif(
+    not PLAYBACK_FIXTURE_ROOT.is_dir(),
+    reason="prod-mirror playback fixtures are a local rig artefact, not in the repo",
+)
+
+
+@requires_zarr
+class TestTemporalDeltaCodec:
+    """AC1 / AC-P2(a) — the codec is LOSSLESS, and the test can see it not be."""
+
+    @staticmethod
+    def _codec():
+        from run_anuga.playback_codecs import TemporalDeltaCodec
+
+        return TemporalDeltaCodec()
+
+    @staticmethod
+    def _fns():
+        from run_anuga.playback_codecs import decode_temporal_delta, encode_temporal_delta
+
+        return encode_temporal_delta, decode_temporal_delta
+
+    def test_row_zero_is_raw_and_later_rows_are_wrapped_differences(self):
+        encode, _ = self._fns()
+        chunk = np.array([[10, 20], [12, 5], [12, 65535]], dtype=np.uint16)
+        encoded = encode(chunk)
+        assert np.array_equal(encoded[0], chunk[0])
+        assert encoded[1, 0] == 2
+        # 5 - 20 wraps to 65521, it does NOT clip to 0 — clipping would be lossy.
+        assert encoded[1, 1] == 65521
+        assert encoded[2, 1] == 65530
+
+    def test_round_trip_is_bit_identical_on_synthetic_extremes(self):
+        encode, decode = self._fns()
+        rng = np.random.default_rng(2989)
+        chunk = rng.integers(0, 65536, size=(10, 977), dtype=np.uint16)
+        chunk[0, :3] = [0, 65535, 32767]
+        assert np.array_equal(decode(encode(chunk)), chunk)
+
+    def test_single_row_chunk_is_unchanged(self):
+        encode, decode = self._fns()
+        chunk = np.array([[7, 9, 65535]], dtype=np.uint16)
+        assert np.array_equal(encode(chunk), chunk)
+        assert np.array_equal(decode(chunk), chunk)
+
+    def test_to_dict_from_dict_round_trip(self):
+        from run_anuga.playback_codecs import TemporalDeltaCodec
+
+        codec = self._codec()
+        assert codec.to_dict() == {"name": "temporal_delta"}
+        assert TemporalDeltaCodec.from_dict({"name": "temporal_delta"}) == codec
+
+    def test_registered_in_zarrs_own_registry(self):
+        import run_anuga.playback_codecs as pc  # noqa: F401
+        from zarr.registry import get_codec_class
+
+        from run_anuga.playback_codecs import TemporalDeltaCodec
+
+        assert get_codec_class("temporal_delta") is TemporalDeltaCodec
+
+    def test_declared_as_a_zarr_codecs_entry_point(self):
+        """AC-P1(a) — the decisive RED. MEASURED 2026-09-09: the installed
+        `zarr.codecs` entry-point group was EMPTY at HEAD."""
+        import importlib.metadata as md
+
+        names = [e.name for e in md.entry_points().select(group="zarr.codecs")]
+        assert "temporal_delta" in names, names
+
+    def test_refuses_a_dtype_whose_wraparound_is_not_defined(self):
+        from run_anuga.playback_codecs import encode_temporal_delta
+
+        with pytest.raises(ValueError, match="unsigned"):
+            encode_temporal_delta(np.zeros((3, 4), dtype=np.float32))
+
+    @requires_local_fixtures
+    def test_round_trip_on_the_real_run_1328_depth_chunk(self):
+        """AC1 — playback-fixtures/741_410_1328 depth chunk 1 (length 10)."""
+        import zarr
+
+        encode, decode = self._fns()
+        root = zarr.open_group(str(PLAYBACK_FIXTURE_ROOT / "741_410_1328"), mode="r")
+        chunk = np.asarray(root["depth"][10:20, :])
+        assert chunk.dtype == np.uint16 and chunk.shape[0] == 10
+        assert np.array_equal(decode(encode(chunk)), chunk)
+
+    @requires_local_fixtures
+    def test_round_trip_on_the_real_run_1412_depth_chunk_5(self):
+        import zarr
+
+        encode, decode = self._fns()
+        root = zarr.open_group(str(PLAYBACK_FIXTURE_ROOT / "813_417_1412"), mode="r")
+        chunk = np.asarray(root["depth"][50:60, :])
+        assert np.array_equal(decode(encode(chunk)), chunk)
+
+
+@requires_zarr
+@requires_local_fixtures
+class TestTemporalDeltaByteGain:
+    """AC2 — the codec must actually pay on the store class it is switched on
+    for, measured against a SAME-ORDER gzip-only baseline (the resequencing
+    note in TASK-2989's context: comparing a delta on Morton-ordered data
+    against a gzip-only figure from SWW-ordered data would flatter it by
+    10-14% and is not a valid ratio)."""
+
+    @staticmethod
+    def _gzip_bytes(chunk, filters):
+        import shutil
+        import tempfile
+
+        import zarr
+        from zarr.codecs import BytesCodec, GzipCodec
+
+        with tempfile.TemporaryDirectory(dir="/var/tmp") as td:
+            root = zarr.open_group(f"{td}/s", mode="w", zarr_format=3)
+            arr = root.create_array(
+                "a", shape=chunk.shape, chunks=chunk.shape, dtype=chunk.dtype,
+                filters=filters, serializer=BytesCodec(endian="little"),
+                compressors=GzipCodec(level=6), fill_value=0,
+                chunk_key_encoding={"name": "default", "configuration": {"separator": "/"}},
+            )
+            arr[:] = chunk
+            total = sum(p.stat().st_size for p in Path(f"{td}/s/a/c").rglob("*") if p.is_file())
+            shutil.rmtree(f"{td}/s", ignore_errors=True)
+            return total
+
+    def _morton_chunk(self, name):
+        """The chunk as the exporter will actually write it after TASK-3014 —
+        Morton node order. Both the baseline and the delta are measured on it."""
+        import zarr
+
+        from run_anuga.playback_order import morton_node_order
+
+        root = zarr.open_group(str(PLAYBACK_FIXTURE_ROOT / "813_417_1412"), mode="r")
+        perm = morton_node_order(np.asarray(root["node_x"][:]), np.asarray(root["node_y"][:]))
+        return np.asarray(root[name][50:60, :])[:, perm]
+
+    def _ratio(self, name):
+        from run_anuga.playback_codecs import TemporalDeltaCodec
+
+        chunk = self._morton_chunk(name)
+        plain = self._gzip_bytes(chunk, [])
+        delta = self._gzip_bytes(chunk, [TemporalDeltaCodec()])
+        return plain, delta, delta / plain
+
+    def test_depth_chunk_5_is_at_most_45_percent_of_gzip_only(self):
+        plain, delta, ratio = self._ratio("depth")
+        assert ratio <= 0.45, f"depth {plain} -> {delta} ({ratio:.1%})"
+
+    def test_x_velocity_chunk_5_is_at_most_55_percent_of_gzip_only(self):
+        plain, delta, ratio = self._ratio("x_velocity")
+        assert ratio <= 0.55, f"x_velocity {plain} -> {delta} ({ratio:.1%})"
 
 
 @requires_zarr
@@ -1381,3 +1944,396 @@ class TestValidatorChecksCentroidStage:
         root, path = self._store(tmp_path)
         root.attrs["coordinate_source"] = "guessed"
         assert any("coordinate_source" in v for v in validate_store(path))
+
+
+# ---------------------------------------------------------------------------
+# Merge of epic 2981 onto main (20-10-26): Morton order (TASK-3014) +
+# temporal_delta (TASK-2989) + TASK-3836's relative coordinates and per-face
+# stage_max_c must hold TOGETHER in one store.
+# ---------------------------------------------------------------------------
+
+def _shuffled_grid_mesh(n_side=8, seed=20261020):
+    """A grid mesh whose SWW node AND face order are deliberately NOT spatial,
+    at a precise absolute UTM origin (float32 would snap the northings)."""
+    rng = np.random.default_rng(seed)
+    gx, gy = np.meshgrid(np.arange(n_side, dtype=np.float64), np.arange(n_side, dtype=np.float64))
+    vx = gx.ravel() * 7.31 + _ABS_X0
+    vy = gy.ravel() * 6.97 + _ABS_Y0
+    tris = []
+    for j in range(n_side - 1):
+        for i in range(n_side - 1):
+            a, b, c, d = j * n_side + i, j * n_side + i + 1, (j + 1) * n_side + i, (j + 1) * n_side + i + 1
+            tris += [[a, b, c], [b, d, c]]
+    tris = np.asarray(tris, dtype=np.int32)
+    node_shuffle = rng.permutation(len(vx))          # new SWW index -> grid index
+    inv = np.empty_like(node_shuffle)
+    inv[node_shuffle] = np.arange(len(vx))
+    vx, vy = vx[node_shuffle], vy[node_shuffle]
+    tris = inv[tris].astype(np.int32)[rng.permutation(len(tris))]
+    return vx, vy, tris
+
+
+def _write_grid_sww(path, vx, vy, tris, n_time=12):
+    """Smoothed SWW, ABSOLUTE float32 x/y with origin 0 (as ANUGA writes it),
+    a time-varying nodal stage and a DISTINCT stage_c per face."""
+    import netCDF4
+
+    n_node, n_tri = len(vx), len(tris)
+    t = np.arange(n_time, dtype=np.float64)
+    stage = (0.1 * t[:, None] + 0.001 * np.arange(n_node)[None, :]).astype(np.float32)
+    stage_c = (1.0 + 0.01 * np.arange(n_tri)[None, :] + 0.05 * t[:, None]).astype(np.float32)
+    with netCDF4.Dataset(str(path), "w") as ds:
+        ds.smoothing = "Yes"
+        ds.xllcorner = 0.0
+        ds.yllcorner = 0.0
+        ds.zone = 56
+        ds.createDimension("number_of_points", n_node)
+        ds.createDimension("number_of_volumes", n_tri)
+        ds.createDimension("number_of_vertices", 3)
+        ds.createDimension("number_of_timesteps", None)
+
+        def var(name, dtype, dims, data):
+            v = ds.createVariable(name, dtype, dims)
+            v[:] = data
+
+        var("x", "f4", ("number_of_points",), vx)
+        var("y", "f4", ("number_of_points",), vy)
+        var("volumes", "i4", ("number_of_volumes", "number_of_vertices"), tris)
+        var("elevation", "f4", ("number_of_points",), np.zeros(n_node))
+        var("friction", "f4", ("number_of_points",), np.full(n_node, 0.04))
+        var("time", "f8", ("number_of_timesteps",), t)
+        var("stage", "f4", ("number_of_timesteps", "number_of_points"), stage)
+        var("xmomentum", "f4", ("number_of_timesteps", "number_of_points"), 0.01 * stage)
+        var("ymomentum", "f4", ("number_of_timesteps", "number_of_points"), -0.01 * stage)
+        var("stage_c", "f4", ("number_of_timesteps", "number_of_volumes"), stage_c)
+    return stage_c.astype(np.float64).max(axis=0)
+
+
+@requires_zarr
+@pytest.mark.requires_anuga
+class TestMergedStoreKeepsMainSemanticsUnderMortonAndDelta:
+    """One store exercising every feature at once, read back the way readers
+    do (zarr.open_group + the store's own attrs), never via exporter internals.
+    A reader that ignored xllcorner, the face permutation or the codec would
+    read wrong (or one constant) values and fail here."""
+
+    def _export(self, tmp_path, label, **kwargs):
+        import zarr
+
+        out = tmp_path / label
+        out.mkdir()
+        vx, vy, tris = _shuffled_grid_mesh()
+        peak = _write_grid_sww(out / "run_1_1_1.sww", vx, vy, tris)
+        _write_synthetic_msh(out / "run_1_1_1.msh", vx, vy, tris)
+        result = ps.export_playback_store(
+            input_data={"run_label": "run_1_1_1",
+                        "scenario_config": {"project": 1, "id": 1, "run_id": 1, "epsg": "EPSG:28356"}},
+            sww_path=str(out / "run_1_1_1.sww"), output_dir=str(out), upload=False, **kwargs,
+        )
+        assert result["status"] == "ok", result
+        return zarr.open_group(result["local_path"], mode="r"), result, (vx, vy, tris, peak)
+
+    def test_round_trip_keeps_relative_coordinates_stage_max_c_and_codec(self, tmp_path):
+        from run_anuga.playback_codecs import TEMPORAL_DELTA_NAME
+        from run_anuga.validate_playback_store import validate_store
+
+        root, result, (vx, vy, tris, peak) = self._export(tmp_path, "merged")
+        attrs = root.attrs
+        assert attrs["format_version"] == ps.FORMAT_VERSION == 4
+        assert attrs["temporal_delta_applied"] is True
+        assert attrs["node_order"] == "morton" and attrs["face_order"] == "morton"
+        assert attrs["coordinate_source"] == "mesh_file"
+        assert attrs["stage_max_c_source"] == "saved_frames"
+        assert validate_store(result["local_path"]) == []
+        for name in ("depth", "x_velocity", "y_velocity"):
+            names = [c.to_dict()["name"] for c in root[name].metadata.codecs]
+            assert names == [TEMPORAL_DELTA_NAME, "bytes", "gzip"], (name, names)
+
+        node_perm = np.asarray(root["node_permutation"][:])
+        face_perm = np.asarray(root["face_permutation"][:])
+        assert not np.array_equal(node_perm, np.arange(len(node_perm)))
+        assert not np.array_equal(face_perm, np.arange(len(face_perm)))
+
+        # TASK-3836 format-3 semantics: node_x/node_y are RELATIVE to a
+        # non-zero origin and precise (from the .msh), not 0.5 m-snapped.
+        xll, yll = float(attrs["xllcorner"]), float(attrs["yllcorner"])
+        assert xll != 0.0 and yll != 0.0
+        node_x = np.asarray(root["node_x"][:]).astype(np.float64)
+        node_y = np.asarray(root["node_y"][:]).astype(np.float64)
+        assert node_x.min() >= 0.0 and node_x.max() < 100.0
+        assert node_y.min() >= 0.0 and node_y.max() < 100.0
+        abs_x = _to_sww_order(node_x, node_perm) + xll
+        abs_y = _to_sww_order(node_y, node_perm) + yll
+        assert np.abs(abs_x - vx).max() < 0.01
+        assert np.abs(abs_y - vy).max() < 0.01
+        assert len(np.unique(np.round(abs_y, 3))) > 2  # not one constant value
+
+        # stage_max_c travels with its face: un-permuted it is the SWW-order
+        # per-face peak, and in STORE order it belongs to the face whose
+        # centroid the store's own coordinates + connectivity describe.
+        arr = root["stage_max_c"]
+        half = arr.attrs["scale"] / 2 + 1e-6
+        stored = _dequant(arr)
+        np.testing.assert_allclose(_to_sww_order(stored, face_perm), peak, rtol=0, atol=half)
+        conn = np.asarray(root["face_node_connectivity"][:])
+        cx = node_x[conn].mean(axis=1) + xll
+        cy = node_y[conn].mean(axis=1) + yll
+        np.testing.assert_allclose(cx, vx[tris[face_perm]].mean(axis=1), rtol=0, atol=0.01)
+        np.testing.assert_allclose(cy, vy[tris[face_perm]].mean(axis=1), rtol=0, atol=0.01)
+        np.testing.assert_allclose(stored, peak[face_perm], rtol=0, atol=half)
+
+    def test_time_series_decode_equals_the_plain_store_after_unpermuting(self, tmp_path):
+        """The codec is lossless and the node axis permutation is consistent:
+        decoding through temporal_delta and undoing the Morton order gives the
+        exact codes a plain (no reorder, no codec) export writes."""
+        root, _, _ = self._export(tmp_path, "merged")
+        plain, _, _ = self._export(tmp_path, "plain", spatial_order=False, temporal_delta=False)
+        assert "node_permutation" not in set(plain.array_keys())
+        perm = np.asarray(root["node_permutation"][:])
+        for name in ("depth", "x_velocity", "y_velocity"):
+            merged = np.asarray(root[name][:])
+            unperm = np.empty_like(merged)
+            unperm[:, perm] = merged
+            assert np.array_equal(unperm, np.asarray(plain[name][:])), name
+            assert len(np.unique(merged)) > 1, name
+        np.testing.assert_array_equal(
+            _to_sww_order(root["stage_max_c"][:], root["face_permutation"][:]),
+            np.asarray(plain["stage_max_c"][:]),
+        )
+
+
+@requires_zarr
+@pytest.mark.requires_anuga
+class TestFormatVersion3Export:
+    """AC3 / AC5 / AC-P2(b) — the codec is applied EXACTLY when the chunk-length
+    rule says so, and a store below the gate is byte-identical to what a
+    pre-TASK-2989 export wrote."""
+
+    @pytest.fixture(autouse=True)
+    def _sww(self, fixture_sww):
+        self.sww_path = str(fixture_sww)
+
+    def _export(self, tmp_path, run_id=1, **kwargs):
+        return ps.export_playback_store(
+            input_data={
+                "run_label": f"run_v3_{run_id}",
+                "scenario_config": {
+                    "project": 3, "id": 3, "run_id": run_id, "epsg": "EPSG:28355",
+                },
+            },
+            sww_path=self.sww_path, output_dir=str(tmp_path), upload=False, **kwargs,
+        )
+
+    def test_format_version_is_four(self):
+        # Epic 2981 numbered the codec v3; TASK-3836 (epic 3801) took 3 on
+        # main first, so the codec is v4 (merge of 20-10-26).
+        assert ps.FORMAT_VERSION == 4
+
+    def test_small_mesh_store_declares_and_carries_the_codec(self):
+        import zarr
+
+        from run_anuga.playback_codecs import TEMPORAL_DELTA_NAME
+
+        # This fixture's mesh is tiny, so derive_chunk_length_t gives the CAP
+        # of 10, i.e. comfortably above the >= 5 gate.
+        pass_dir = Path(str(self.sww_path)).parent
+        assert ps.derive_chunk_length_t(10) == 10, pass_dir
+        result = self._export(pass_dir.parent, run_id=1)
+        root = zarr.open_group(result["local_path"], mode="r")
+        assert root.attrs["format_version"] == 4
+        assert root.attrs["temporal_delta_applied"] is True
+        for name in ("depth", "x_velocity", "y_velocity"):
+            names = [c.to_dict()["name"] for c in root[name].metadata.codecs]
+            assert names == [TEMPORAL_DELTA_NAME, "bytes", "gzip"], (name, names)
+        for name in ("node_x", "elevation", "inradius", "depth_max"):
+            names = [c.to_dict()["name"] for c in root[name].metadata.codecs]
+            assert names == ["bytes", "gzip"], (name, names)
+
+    def test_values_survive_the_codec_on_a_real_export(self, tmp_path):
+        """AC1 at the STORE level: what comes back out must equal what the
+        exporter put in, not merely decompress."""
+        import zarr
+
+        v3 = self._export(tmp_path, run_id=2)
+        plain = self._export(tmp_path, run_id=3, temporal_delta=False)
+        r3 = zarr.open_group(v3["local_path"], mode="r")
+        rp = zarr.open_group(plain["local_path"], mode="r")
+        for name in ("depth", "x_velocity", "y_velocity"):
+            assert np.array_equal(np.asarray(r3[name][:]), np.asarray(rp[name][:])), name
+
+    def test_a_chunk_length_two_store_carries_no_temporal_delta_anywhere(self, tmp_path):
+        """AC3 / D5. MEASURED at chunk length 2 (fixture 741_410_1328_chunk2,
+        chunk 1): depth 172,709 -> 166,530 B (96%) and x_velocity
+        173,538 -> 173,592 B, i.e. LARGER. That is the whole reason the gate
+        exists, and it is why this store must be byte-identical to what a
+        pre-TASK-2989 export wrote."""
+        import zarr
+
+        from run_anuga.playback_codecs import TEMPORAL_DELTA_NAME
+
+        n_node = 2_796_203  # the D5 floor crossover -> chunk_length_t == 2
+        assert ps.derive_chunk_length_t(n_node) == 2
+        fake = TestAdaptiveChunkLengthWrittenStore._fabricate_sww_arrays(n_node, n_time=2)
+        with mock.patch.object(ps, "_read_sww_arrays", return_value=fake):
+            result = ps.export_playback_store(
+                input_data={"run_label": "run_len2", "scenario_config": {
+                    "project": 3, "id": 3, "run_id": 9, "epsg": "EPSG:28355"}},
+                sww_path="mocked", output_dir=str(tmp_path), upload=False,
+            )
+        root = zarr.open_group(result["local_path"], mode="r")
+        assert root.attrs["chunk_length_t"] == 2
+        assert root.attrs["temporal_delta_applied"] is False
+        for name in root.array_keys():
+            names = [c.to_dict()["name"] for c in root[name].metadata.codecs]
+            assert TEMPORAL_DELTA_NAME not in names, (name, names)
+
+
+@requires_zarr
+@pytest.mark.requires_anuga
+class TestValidatorCodecChain:
+    """AC4 / AC6 — the validator is the thing that stops a mis-declared store
+    shipping, and it must REPORT rather than raise."""
+
+    @pytest.fixture(autouse=True)
+    def _sww(self, fixture_sww):
+        self.sww_path = str(fixture_sww)
+
+    def _export(self, tmp_path, run_id, **kwargs):
+        return ps.export_playback_store(
+            input_data={"run_label": f"run_vc_{run_id}", "scenario_config": {
+                "project": 4, "id": 4, "run_id": run_id, "epsg": "EPSG:28355"}},
+            sww_path=self.sww_path, output_dir=str(tmp_path), upload=False, **kwargs,
+        )
+
+    def test_an_unregistered_codec_is_a_violation_not_a_keyerror(self, tmp_path):
+        """AC4 — at HEAD zarr.registry.get_codec_class raises KeyError and the
+        validator dies with a traceback instead of reporting."""
+        import json
+
+        result = self._export(tmp_path, 1)
+        meta = Path(result["local_path"]) / "depth" / "zarr.json"
+        doc = json.loads(meta.read_text())
+        doc["codecs"] = [{"name": "quantum_delta_9000"}] + doc["codecs"][-2:]
+        meta.write_text(json.dumps(doc, indent=2))
+
+        from run_anuga.validate_playback_store import validate_store
+
+        violations = validate_store(result["local_path"])
+        assert any("quantum_delta_9000" in v for v in violations), violations
+
+    def test_temporal_delta_unregistered_is_a_violation(self, tmp_path):
+        """The exact AC4 scenario: the store is fine, the READER is missing the
+        codec — which is what happens on any box where run_anuga is not
+        installed. It must be reported, not raised."""
+        import zarr.registry as zreg
+
+        from run_anuga.validate_playback_store import validate_store
+
+        result = self._export(tmp_path, 2)
+        saved = zreg._codec_registries.pop("temporal_delta", None)
+        try:
+            violations = validate_store(result["local_path"])
+        finally:
+            if saved is not None:
+                zreg._codec_registries["temporal_delta"] = saved
+        assert any("temporal_delta" in v for v in violations), violations
+
+    def test_v3_store_missing_the_codec_where_the_rule_requires_it(self, tmp_path):
+        import zarr
+
+        from run_anuga.validate_playback_store import validate_store
+
+        result = self._export(tmp_path, 3, temporal_delta=False)
+        root = zarr.open_group(result["local_path"], mode="a")
+        attrs = dict(root.attrs)
+        attrs["temporal_delta_applied"] = True   # claims a codec it does not carry
+        root.attrs.put(attrs)
+        violations = validate_store(result["local_path"])
+        assert any("temporal_delta" in v for v in violations), violations
+
+    def test_v2_store_carrying_the_codec_is_a_violation(self, tmp_path):
+        import zarr
+
+        from run_anuga.validate_playback_store import validate_store
+
+        result = self._export(tmp_path, 4)
+        root = zarr.open_group(result["local_path"], mode="a")
+        attrs = dict(root.attrs)
+        attrs["format_version"] = 2
+        del attrs["temporal_delta_applied"]
+        root.attrs.put(attrs)
+        violations = validate_store(result["local_path"])
+        assert any("temporal_delta" in v and "codecs" in v for v in violations), violations
+
+    def test_a_v3_store_this_exporter_wrote_validates_clean(self, tmp_path):
+        from run_anuga.validate_playback_store import validate_store
+
+        result = self._export(tmp_path, 5)
+        assert validate_store(result["local_path"]) == []
+
+
+@requires_zarr
+@pytest.mark.requires_anuga
+class TestCodecResolvesWithoutImportingRunAnuga:
+    """AC5 — the whole point of the entry point.
+
+    A reader that has never heard of run_anuga must still decode a v3 store,
+    because that is what the web box's celery worker, the rig and
+    prod_store_dequant_check.py all are at the moment they call
+    ``zarr.open_group``. The check runs in a SUBPROCESS with
+    ``run_anuga.playback_codecs`` deliberately absent from ``sys.modules`` —
+    in-process it would pass vacuously, since importing this test module has
+    already registered the codec by hand.
+    """
+
+    def test_a_fresh_interpreter_decodes_a_v3_store(self, tmp_path, fixture_sww):
+        import subprocess
+        import sys
+        import textwrap
+
+        result = ps.export_playback_store(
+            input_data={"run_label": "run_ep_1", "scenario_config": {
+                "project": 5, "id": 5, "run_id": 1, "epsg": "EPSG:28355"}},
+            sww_path=str(fixture_sww), output_dir=str(tmp_path), upload=False,
+        )
+        expected = np.asarray(
+            __import__("zarr").open_group(result["local_path"], mode="r")["depth"][:])
+
+        probe = textwrap.dedent(
+            """
+            import sys
+            import numpy as np
+            import zarr
+            store = sys.argv[1]
+            # THE CLAIM UNDER TEST: this reader has not imported run_anuga.
+            before = [m for m in sys.modules if m.startswith("run_anuga")]
+            assert before == [], before
+            root = zarr.open_group(store, mode="r")
+            depth = np.asarray(root["depth"][:])
+            names = [c.to_dict()["name"] for c in root["depth"].metadata.codecs]
+            assert "temporal_delta" in names, names
+            # ... and zarr pulled the codec in BY ITSELF, off the entry point,
+            # which is the mechanism this AC exists to prove.
+            after = [m for m in sys.modules if m.startswith("run_anuga")]
+            assert "run_anuga.playback_codecs" in after, after
+            np.save(sys.argv[2], depth)
+            print("OK", names, after)
+            """
+        )
+        out_npy = str(tmp_path / "probe.npy")
+        proc = subprocess.run(
+            [sys.executable, "-c", probe, result["local_path"], out_npy],
+            capture_output=True, text=True, cwd="/",
+        )
+        assert proc.returncode == 0, proc.stderr[-2000:]
+        assert np.array_equal(np.load(out_npy), expected), (
+            "a fresh interpreter decoded different water than this one")
+
+
+@requires_zarr
+class TestCodecNameIsSharedNotGuessed:
+    def test_validator_and_codec_agree_on_the_name(self):
+        from run_anuga import validate_playback_store as vps
+        from run_anuga.playback_codecs import TEMPORAL_DELTA_NAME
+
+        assert vps._TEMPORAL_DELTA_NAME == TEMPORAL_DELTA_NAME
