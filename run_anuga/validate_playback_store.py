@@ -140,12 +140,21 @@ def _unresolvable_codecs(store_path) -> list[str]:
     """Violations for every declared codec THIS reader cannot resolve."""
     from zarr.registry import get_codec_class
 
+    try:
+        # zarr >= 3.4 raises its own UnknownCodecError straight from
+        # get_codec_class (zarr 3.3 raised a bare KeyError there and only the
+        # metadata parser wrapped it). Catch both, or a missing codec becomes
+        # a traceback again — the exact failure this function exists to stop.
+        from zarr.errors import UnknownCodecError
+    except ImportError:  # pragma: no cover - zarr < 3.3
+        UnknownCodecError = KeyError
+
     violations: list[str] = []
     for array_name, names in sorted(_declared_codec_names(store_path).items()):
         for codec_name in names:
             try:
                 get_codec_class(codec_name)
-            except KeyError:
+            except (KeyError, UnknownCodecError):
                 violations.append(
                     f"{array_name}: declares codec '{codec_name}', which is NOT REGISTERED "
                     "in this environment — zarr cannot open the array at all. Install "
