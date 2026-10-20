@@ -2102,6 +2102,65 @@ class TestMergedStoreKeepsMainSemanticsUnderMortonAndDelta:
         )
 
 
+class TestPlaybackKillSwitchEnv:
+    """Epic 2981 merge: RUN_ANUGA_PLAYBACK_SPATIAL_ORDER / _TEMPORAL_DELTA turn
+    the two new export features off from a Batch jobdef, no rebake."""
+
+    @pytest.mark.parametrize("value,expected", [
+        (None, True), ("", True), ("1", True), ("true", True), ("on", True),
+        ("0", False), ("false", False), ("FALSE", False), (" off ", False), ("no", False),
+    ])
+    def test_enabled_unless_set_to_an_off_value(self, monkeypatch, value, expected):
+        for env in (ps.PLAYBACK_SPATIAL_ORDER_ENV, ps.PLAYBACK_TEMPORAL_DELTA_ENV):
+            if value is None:
+                monkeypatch.delenv(env, raising=False)
+            else:
+                monkeypatch.setenv(env, value)
+            assert ps.playback_feature_enabled(env) is expected
+
+    def test_env_names(self):
+        assert ps.PLAYBACK_SPATIAL_ORDER_ENV == "RUN_ANUGA_PLAYBACK_SPATIAL_ORDER"
+        assert ps.PLAYBACK_TEMPORAL_DELTA_ENV == "RUN_ANUGA_PLAYBACK_TEMPORAL_DELTA"
+
+
+@requires_zarr
+@pytest.mark.requires_anuga
+class TestKillSwitchStoresAreValid:
+    """A store written with either (or both) features switched off must be a
+    VALID v4 store: no delta codec and SWW order where switched off, and the
+    validator must accept it (the delta claim may be False at any length)."""
+
+    @pytest.mark.parametrize("spatial_order,temporal_delta", [
+        (False, False), (True, False), (False, True),
+    ])
+    def test_switched_off_store_validates_clean(self, tmp_path, spatial_order, temporal_delta):
+        from run_anuga.validate_playback_store import validate_store
+
+        root, result, _ = TestMergedStoreKeepsMainSemanticsUnderMortonAndDelta()._export(
+            tmp_path, "ks", spatial_order=spatial_order, temporal_delta=temporal_delta)
+        assert root.attrs["format_version"] == ps.FORMAT_VERSION == 4
+        assert root.attrs["chunk_length_t"] >= 5  # the delta WOULD apply by the length rule
+        assert root.attrs["temporal_delta_applied"] is temporal_delta
+        chain = [c.to_dict()["name"] for c in root["depth"].metadata.codecs]
+        assert chain == (["temporal_delta"] if temporal_delta else []) + ["bytes", "gzip"]
+        names = set(root.array_keys())
+        assert ("node_permutation" in names) is spatial_order
+        assert ("node_order" in root.attrs) is spatial_order
+        assert validate_store(result["local_path"]) == []
+
+    def test_delta_claim_below_chunk_length_five_is_refused(self, tmp_path):
+        import zarr
+
+        from run_anuga.validate_playback_store import validate_store
+
+        _, result, _ = TestMergedStoreKeepsMainSemanticsUnderMortonAndDelta()._export(tmp_path, "d5")
+        root = zarr.open_group(result["local_path"], mode="a")
+        attrs = dict(root.attrs)
+        attrs["chunk_length_t"] = 2
+        root.attrs.put(attrs)
+        assert any("is below" in v and "temporal_delta_applied" in v for v in validate_store(result["local_path"]))
+
+
 @requires_zarr
 @pytest.mark.requires_anuga
 class TestFormatVersion3Export:

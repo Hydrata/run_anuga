@@ -124,6 +124,24 @@ _STAGE_C_BLOCK_FRAMES = 16
 #: a legal index into anything, so a chunk that was never written can never be
 #: mistaken for "node 0" the way a 0 fill could.
 PERMUTATION_FILL_VALUE = -1
+#: Epic 2981 merge (20-10-26) — KILL SWITCHES for the two new export features,
+#: read by run_utils where the Batch run calls the exporter. Default ON; set
+#: either to an off value ("0", "false", "off", "no") in the Batch job
+#: definition's environment to turn that feature off WITHOUT a re-pin and four
+#: rebakes. Same convention as RUN_ANUGA_TRUE_PEAKS (run_anuga/peaks.py).
+#: Off writes a still-valid store: spatial order off = SWW order, no permutation
+#: arrays or order attrs (TASK-3014's pre-Morton shape); temporal delta off =
+#: format_version 4 with temporal_delta_applied False and plain bytes+gzip.
+PLAYBACK_SPATIAL_ORDER_ENV = "RUN_ANUGA_PLAYBACK_SPATIAL_ORDER"
+PLAYBACK_TEMPORAL_DELTA_ENV = "RUN_ANUGA_PLAYBACK_TEMPORAL_DELTA"
+_ENV_OFF_VALUES = frozenset({"0", "off", "false", "no"})
+
+
+def playback_feature_enabled(env_name: str) -> bool:
+    """False only when ``env_name`` is set to an off value (default ON)."""
+    return os.environ.get(env_name, "").strip().lower() not in _ENV_OFF_VALUES
+
+
 #: TASK-2709 (W2.1, epic 2706) — the cache directive written on EVERY playback
 #: object at export. S3 cannot add one later without rewriting the object, so
 #: it has to be set here or not at all (existing stores can never satisfy it;
@@ -876,6 +894,15 @@ def _export_playback_store_impl(
     v_scale, v_offset = symmetric_velocity_range(v_absmax)
     x_velocity_q = quantize(x_velocity, v_scale, v_offset)
     y_velocity_q = quantize(y_velocity, v_scale, v_offset)
+    # PEAK MEMORY (epic 2981 merge, 20-10-26): nothing below reads the float32
+    # depth/velocity series or the SWW's raw stage/momentum again (envelopes
+    # were computed above, quantization ranges are taken), and the Morton
+    # reorder further down makes one uint16 copy per array. Free them here so
+    # the export's peak stays at or below the pre-2981 exporter's on a path
+    # that already runs at the Batch cgroup's memory ceiling.
+    del depth, x_velocity, y_velocity
+    for _key in ("stage", "xmomentum", "ymomentum"):
+        sww.pop(_key, None)
 
     # TASK-2752 — each envelope gets its OWN [0, max] quantization range,
     # independent of the primitive arrays' ranges: velocity_max (a speed
@@ -894,6 +921,7 @@ def _export_playback_store_impl(
             scale=env_scale, offset=env_offset, quantized_dtype="uint16",
             byteorder="little", valid_min=0.0, valid_max=env_max,
         )
+    del envelopes, raw  # float32 envelopes: quantized copies are all that is written
 
     # TASK-3836 — per-triangle peak centroid stage (raw stage, model datum).
     stage_max_c, stage_max_c_source = peak_centroid_stage(

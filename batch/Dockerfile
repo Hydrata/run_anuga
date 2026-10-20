@@ -170,7 +170,9 @@ RUN pip install --no-cache-dir "numpy>=2.0" setuptools wheel "cython<3.3" pybind
 # gpu-dev base installs the trio explicitly; rasterio/shapely arrive via
 # run_anuga[sim] below, fiona must be explicit (TASK-2671 unification: the
 # cpu image must run riverwall scenarios identically to the gpu image).
-# zarr/numcodecs are PINNED (TASK-2989, W3.1, epic 2981). They used to float on
+# zarr/numcodecs are PINNED EXACTLY (zarr 3.4.1 + numcodecs 0.17.0 = what run_anuga
+# CI resolved on PR #32, 20-10-26; ranges let two bakes differ). Bump deliberately:
+# the round-trip guard below must pass on the new pair. (TASK-2989, W3.1, epic 2981.) They used to float on
 # "zarr>=3.0", which was fine while every array carried the stock bytes+gzip
 # chain and stopped being fine the moment the store started carrying a
 # temporal_delta ArrayArrayCodec: that codec is written against zarr 3.3's
@@ -182,7 +184,7 @@ RUN pip install --no-cache-dir "numpy>=2.0" setuptools wheel "cython<3.3" pybind
 # play — not as a red build.
 RUN pip install --no-cache-dir \
     scipy matplotlib "meshpy==2025.1.1" "pymetis==2025.2.2" netcdf4 dill utm pyproj affine \
-    mpi4py requests boto3 awscli fiona "zarr>=3.3.0,<4" "numcodecs>=0.16.5,<1.0"
+    mpi4py requests boto3 awscli fiona "zarr==3.4.1" "numcodecs==0.17.0"
 
 # ---- the engine, from the SHARED checkout (never a second clone/pin) ------
 # ANUGA_VERSION (TASK-2700): the src stage deletes .git, so `git describe` fails
@@ -239,7 +241,7 @@ RUN pip install --no-cache-dir "pyswmm==2.2.0" "swmm-toolkit==0.17.0" /app/anuga
 # happened. See the gpu stage for the full rationale.
 RUN python -c "import run_anuga.playback_store as p; assert p.zarr_available(), \
 'TASK-2749: playback extra missing from this image — export_playback_store() would silently skip'"
-# ---- v4 codec-entry-point guard (TASK-2989, W3.1, epic 2981) --------------
+# ---- v4 codec guard: entry point + a REAL write/read round trip (TASK-2989) ----
 # KEEP THIS AFTER THE LAST pip install OF THE STAGE, same placement rule as
 # the two guards around it. The exporter now writes a `temporal_delta`
 # ArrayArrayCodec into every store whose chunk length is >= 5, and EVERY
@@ -251,10 +253,20 @@ RUN python -c "import run_anuga.playback_store as p; assert p.zarr_available(), 
 # whose run will not play back. Measured on the laptop 2026-09-09: a shadowed
 # dist-info with no `zarr.codecs` group turns a plain `zarr.open_group` into
 # `UnknownCodecError: Unknown codec: 'temporal_delta'`.
-RUN python -c "import importlib.metadata as md; \
+RUN python -c "import importlib.metadata as md, tempfile, numpy as np, zarr; \
+from zarr.codecs import GzipCodec; \
+from zarr.registry import get_codec_class; \
 names=[e.name for e in md.entry_points().select(group='zarr.codecs')]; \
-assert 'temporal_delta' in names, \
-'TASK-2989: run_anuga did not register its zarr.codecs entry point (%r) — this image would write v4 stores no reader in the fleet can open' % (names,)"
+assert 'temporal_delta' in names, 'TASK-2989: run_anuga did not register its zarr.codecs entry point (%r) - this image would write v4 stores no reader in the fleet can open' % (names,); \
+a=((np.arange(12*7, dtype='uint32')*4099) % 65535).astype('uint16').reshape(12, 7); \
+p=tempfile.mkdtemp()+'/rt.zarr'; \
+z=zarr.create_array(p, shape=a.shape, chunks=(6, 7), dtype='uint16', filters=[get_codec_class('temporal_delta')()], compressors=[GzipCodec(level=6)], fill_value=0); \
+z[:]=a; \
+r=zarr.open_array(p, mode='r'); \
+chain=[c.to_dict()['name'] for c in r.metadata.codecs]; \
+assert chain==['temporal_delta', 'bytes', 'gzip'], chain; \
+assert np.array_equal(r[:], a), 'TASK-2989: temporal_delta round trip is NOT lossless under zarr %s' % zarr.__version__; \
+print('TASK-2989 guard: temporal_delta entry point + lossless round trip OK, zarr', zarr.__version__)"
 
 
 # ---- substitution guard (TASK-2700) ---------------------------------------
@@ -389,7 +401,7 @@ COPY --from=src /src/run_anuga /app/run_anuga_src
 # "zarr>=3.0", so the two images could silently resolve different zarr majors
 # from the same source tree. The temporal_delta codec is written against
 # zarr 3.3's ArrayArrayCodec ABC; a drift here writes unreadable stores.
-RUN pip install --no-cache-dir "zarr>=3.3.0,<4" "numcodecs>=0.16.5,<1.0"
+RUN pip install --no-cache-dir "zarr==3.4.1" "numcodecs==0.17.0"
 RUN pip install --no-cache-dir "/app/run_anuga_src[sim,platform,playback]"
 
 # ---- culvert engine (TASK-3643, epic 3585) --------------------------------
@@ -412,7 +424,7 @@ RUN pip install --no-cache-dir "pyswmm==2.2.0" "swmm-toolkit==0.17.0" /app/anuga
 # a fleet of successful runs with no playback data.
 RUN python -c "import run_anuga.playback_store as p; assert p.zarr_available(), \
 'TASK-2749: playback extra missing from this image — export_playback_store() would silently skip'"
-# ---- v4 codec-entry-point guard (TASK-2989, W3.1, epic 2981) --------------
+# ---- v4 codec guard: entry point + a REAL write/read round trip (TASK-2989) ----
 # KEEP THIS AFTER THE LAST pip install OF THE STAGE, same placement rule as
 # the two guards around it. The exporter now writes a `temporal_delta`
 # ArrayArrayCodec into every store whose chunk length is >= 5, and EVERY
@@ -424,10 +436,20 @@ RUN python -c "import run_anuga.playback_store as p; assert p.zarr_available(), 
 # whose run will not play back. Measured on the laptop 2026-09-09: a shadowed
 # dist-info with no `zarr.codecs` group turns a plain `zarr.open_group` into
 # `UnknownCodecError: Unknown codec: 'temporal_delta'`.
-RUN python -c "import importlib.metadata as md; \
+RUN python -c "import importlib.metadata as md, tempfile, numpy as np, zarr; \
+from zarr.codecs import GzipCodec; \
+from zarr.registry import get_codec_class; \
 names=[e.name for e in md.entry_points().select(group='zarr.codecs')]; \
-assert 'temporal_delta' in names, \
-'TASK-2989: run_anuga did not register its zarr.codecs entry point (%r) — this image would write v4 stores no reader in the fleet can open' % (names,)"
+assert 'temporal_delta' in names, 'TASK-2989: run_anuga did not register its zarr.codecs entry point (%r) - this image would write v4 stores no reader in the fleet can open' % (names,); \
+a=((np.arange(12*7, dtype='uint32')*4099) % 65535).astype('uint16').reshape(12, 7); \
+p=tempfile.mkdtemp()+'/rt.zarr'; \
+z=zarr.create_array(p, shape=a.shape, chunks=(6, 7), dtype='uint16', filters=[get_codec_class('temporal_delta')()], compressors=[GzipCodec(level=6)], fill_value=0); \
+z[:]=a; \
+r=zarr.open_array(p, mode='r'); \
+chain=[c.to_dict()['name'] for c in r.metadata.codecs]; \
+assert chain==['temporal_delta', 'bytes', 'gzip'], chain; \
+assert np.array_equal(r[:], a), 'TASK-2989: temporal_delta round trip is NOT lossless under zarr %s' % zarr.__version__; \
+print('TASK-2989 guard: temporal_delta entry point + lossless round trip OK, zarr', zarr.__version__)"
 
 
 # ---- substitution guard (TASK-2700) — same contract as the cpu target ------

@@ -236,20 +236,25 @@ def validate_store(store_path) -> list[str]:
             f"[{_CHUNK_LENGTH_T_FLOOR}, {_CHUNK_LENGTH_T_CAP}] (D5)"
         )
 
-    # TASK-2989 — the chunk-length rule (D5) is the LAW; the attr is a claim
-    # about it. A v1/v2/v3 store never declares the attr and never carries the
-    # codec, which is why expected_delta is False there.
+    # TASK-2989 — the store's own claim (temporal_delta_applied) decides the
+    # expected chain, and the chunk-length rule (D5) bounds the claim: the
+    # codec is FORBIDDEN below chunk length 5, but may be OFF at any length —
+    # the exporter's kill switch (RUN_ANUGA_PLAYBACK_TEMPORAL_DELTA=0, set on a
+    # Batch jobdef without a rebake) writes a v4 store with the attr False and
+    # a plain bytes+gzip chain, and that store is valid. A claim that
+    # disagrees with the arrays' real chains is still caught below, per array.
+    # A v1/v2/v3 store never declares the attr and never carries the codec.
     expected_delta = False
     if is_delta_era:
         from run_anuga.playback_codecs import TEMPORAL_DELTA_MIN_CHUNK_LENGTH
 
-        if isinstance(declared_chunk_length_t, int):
-            expected_delta = declared_chunk_length_t >= TEMPORAL_DELTA_MIN_CHUNK_LENGTH
-        if delta_declared is not None and bool(delta_declared) != expected_delta:
+        expected_delta = bool(delta_declared)
+        if (expected_delta and isinstance(declared_chunk_length_t, int)
+                and declared_chunk_length_t < TEMPORAL_DELTA_MIN_CHUNK_LENGTH):
             violations.append(
                 f"{_TEMPORAL_DELTA_ATTR}={delta_declared!r} but chunk_length_t="
-                f"{declared_chunk_length_t!r} means it should be {expected_delta} "
-                f"(D5: the codec applies iff chunk_length_t >= "
+                f"{declared_chunk_length_t!r} is below {TEMPORAL_DELTA_MIN_CHUNK_LENGTH} "
+                "(D5: the codec is only ever applied at chunk_length_t >= "
                 f"{TEMPORAL_DELTA_MIN_CHUNK_LENGTH}) — TASK-2989"
             )
     expected_time_series_codecs = (
