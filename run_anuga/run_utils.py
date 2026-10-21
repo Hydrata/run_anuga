@@ -668,29 +668,26 @@ def compute_yieldstep(duration):
 
 
 def make_frictions(input_data):
-    # Raster precedence (TASK-830 / TASK-1259): a friction raster sets the
-    # base Manning's value at full raster resolution across the whole domain.
-    # Per-building Manning's-n patches (method='Mannings') must STILL overlay
-    # the raster — ANUGA's composite_quantity_setting_function evaluates entries
-    # in order, last-match wins, so appending the building patches AFTER the
-    # raster entry applies them on top.
-    #
-    # Old behaviour (pre-TASK-1259): early-return dropped all building patches
-    # when a raster was present.  New behaviour: raster first, then building
-    # patches, no 'All' fallback (raster already covers the whole domain).
+    # Raster precedence (TASK-830 / TASK-1259 / TASK-3928): a friction raster
+    # sets the base Manning's value at full raster resolution. Per-building
+    # Manning's-n patches (method='Mannings') must STILL win over the raster.
+    # ANUGA's composite_quantity_setting_function is FIRST-match ("the first
+    # elements of the list are given priority"; later entries only set points
+    # still unset), so the building patches go BEFORE the raster Extent. Extent
+    # is legal last (only 'All' must be last) and resolves to the raster's own
+    # footprint. No 'All' fallback with a raster.
     #
     # Without a raster: polygon-only path unchanged (building + friction polys
     # + 'All' fallback).
     # See docs/reports/2026-05-13-q-1-task-830-friction-raster-attachment.html.
     frictions = list()
     if input_data.get('friction_raster_filename'):
-        frictions.append(['Extent', input_data['friction_raster_filename']])
-        # Overlay per-building Manning's-n patches on top of the raster.
         if input_data.get('building'):
             for building in input_data['building']['features']:
                 if building.get('properties').get('method') == 'Mannings':
                     building_polygon = _extract_polygon_outer_ring(building.get('geometry'))
                     frictions.append((building_polygon, defaults.BUILDING_MANNINGS_N,))
+        frictions.append(['Extent', input_data['friction_raster_filename']])
         return frictions
     if input_data.get('building'):
         for building in input_data['building']['features']:
