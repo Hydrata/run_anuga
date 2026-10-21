@@ -195,6 +195,25 @@ def overlap_failures(results) -> list:
     return messages
 
 
+def culvert_warning_records(results) -> list:
+    """JSON-safe warning records for the results that carry any (TASK-3932).
+
+    One record per culvert with warnings: ``{culvert, coarseness_ratio, severe, messages}``,
+    ``severe`` meaning the ratio is past COARSE_RATIO_SEVERE (results unreliable). Stamped at
+    Build (``mesh_provenance['culvert_warnings']``) so the web box can warn before Run.
+    """
+    return [
+        {
+            "culvert": result.culvert.label,
+            "coarseness_ratio": round(float(result.coarseness_ratio), 3),
+            "severe": bool(result.coarseness_ratio > constants.COARSE_RATIO_SEVERE),
+            "messages": list(result.warnings),
+        }
+        for result in results or []
+        if result.warnings
+    ]
+
+
 def analyse_culverts(culverts, mesh, log=None) -> list:
     """Place each culvert on ``mesh`` (a MeshView); raise CulvertBuildError on any failure."""
     log = log or logger

@@ -1,5 +1,7 @@
 """Tests for run_anuga._imports — lazy import helper."""
 
+import sys
+
 import pytest
 
 from run_anuga._imports import import_optional
@@ -23,8 +25,23 @@ def test_import_nonexistent_raises():
         import_optional("nonexistent_module_xyz")
 
 
-def test_import_hint_uses_extra_map():
-    """The error message should reference the correct pip extra."""
+def test_import_hint_uses_extra_map(monkeypatch):
+    """The error message should reference the correct pip extra.
+
+    Simulates anuga as NOT INSTALLED (import blocked + no distribution
+    metadata) so this holds on a box with the anuga_core fork installed too.
+    """
+    import importlib.metadata
+
+    real_distribution = importlib.metadata.distribution
+
+    def _distribution(name):
+        if name == "anuga":
+            raise importlib.metadata.PackageNotFoundError(name)
+        return real_distribution(name)
+
+    monkeypatch.setitem(sys.modules, "anuga", None)
+    monkeypatch.setattr(importlib.metadata, "distribution", _distribution)
     with pytest.raises(ImportError, match="full"):
         import_optional("anuga")
 

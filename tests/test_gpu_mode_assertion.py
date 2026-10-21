@@ -228,15 +228,27 @@ def test_raises_when_multiprocessor_mode_silently_fell_back_to_cpu():
         _assert_gpu_engaged(domain, _MULTIPROCESSOR_GPU)
 
 
-def test_falls_back_to_multiprocessor_mode_attribute_when_no_getter():
+def _no_module_offload_probe(monkeypatch):
+    """Simulate an engine with no package-level anuga.gpu_offload_enabled()
+    (e.g. anuga not importable, as in the light CI unit job). Without this the
+    installed engine's real probe is consulted — on a box with the anuga_core
+    fork but no GPU it reports False and fails these domain-only tests."""
+    import run_anuga.run as run_module
+    monkeypatch.setattr(run_module, "_get_module_offload_probe", lambda: None)
+
+
+def test_falls_back_to_multiprocessor_mode_attribute_when_no_getter(monkeypatch):
+    _no_module_offload_probe(monkeypatch)
+
     class _Domain:
         multiprocessor_mode = _MULTIPROCESSOR_GPU
 
     _assert_gpu_engaged(_Domain(), _MULTIPROCESSOR_GPU)  # must not raise
 
 
-def test_raises_when_no_signal_available_at_all():
+def test_raises_when_no_signal_available_at_all(monkeypatch):
     """Fail CLOSED: mode 2 was requested and NOTHING can verify it engaged."""
+    _no_module_offload_probe(monkeypatch)
     domain = object()
     with pytest.raises(RuntimeError, match="no gpu_offload_enabled"):
         _assert_gpu_engaged(domain, _MULTIPROCESSOR_GPU)

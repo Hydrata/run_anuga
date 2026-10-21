@@ -1481,14 +1481,19 @@ def build_and_report(
             )
 
             input_data = setup_input_data(str(package_dir))
+            culvert_warnings = []
             with phase_tracker.phase(phase_tracker.PHASE_MESH_GEN):
                 mesh_filepath, anuga_mesh = create_anuga_mesh(input_data)
             if input_data.get('culverts'):
                 # TASK-3638: fail the BUILD job (before the paid run) when a
                 # culvert cannot be placed on this mesh; warnings are logged.
                 # The run writes culverts/metrics.json, not the build.
-                from run_anuga.culverts import MeshView, analyse_culverts
-                analyse_culverts(input_data['culverts'], MeshView.from_pmesh(anuga_mesh), log=logger)
+                from run_anuga.culverts import MeshView, analyse_culverts, culvert_warning_records
+                culvert_results = analyse_culverts(
+                    input_data['culverts'], MeshView.from_pmesh(anuga_mesh), log=logger)
+                # TASK-3932: the coarse-mesh warnings ride the build result so the
+                # web box stamps them on the built Run (build_check reads them).
+                culvert_warnings = culvert_warning_records(culvert_results)
             triangle_count = int(len(anuga_mesh.tri_mesh.triangles))
             node_count = int(len(anuga_mesh.tri_mesh.vertices))
             mesh_area = float(anuga_mesh.tri_mesh.calc_mesh_area())
@@ -1521,6 +1526,8 @@ def build_and_report(
         }
         if mesh_qa is not None:
             fields["mesh_qa"] = mesh_qa
+        if culvert_warnings:
+            fields["culvert_warnings"] = culvert_warnings
         out = {BUILT_PACKAGE_KEY_FIELD: key, "mesh_triangle_count": triangle_count}
         if telemetry_client.result(**fields):
             return {**out, "process_result_status": "events"}

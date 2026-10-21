@@ -3,10 +3,60 @@
 import os
 import subprocess
 import sys
+import textwrap
 from unittest import mock
 
 
 FIXTURE_DIR = os.path.join(os.path.dirname(__file__), "data", "minimal_package")
+
+# Optional modules the light CI unit job ([dev] extra) does NOT have. The
+# import-error tests below run the CLI with these blocked so they hold on a
+# box that has the [full] extras installed (e.g. the anuga_core fork), where
+# the real import would succeed and the command would run on.
+_BLOCKED_OPTIONAL = ("anuga", "cv2", "matplotlib")
+
+# Bootstrap for `python -c`: a meta-path finder that makes the blocked modules
+# unimportable, plus an importlib.metadata.distribution shim so
+# run_anuga._imports.import_optional sees them as NOT INSTALLED (its
+# "installed but failed to import" branch would otherwise fire), then runs the
+# CLI as __main__ with the remaining argv.
+_RUN_CLI_WITHOUT_OPTIONAL = textwrap.dedent(
+    """
+    import importlib.abc
+    import importlib.metadata as _md
+    import runpy
+    import sys
+
+    _BLOCKED = set({blocked!r})
+
+    class _BlockOptional(importlib.abc.MetaPathFinder):
+        def find_spec(self, name, path=None, target=None):
+            if name.partition(".")[0] in _BLOCKED:
+                raise ModuleNotFoundError(f"No module named {{name!r}}", name=name)
+            return None
+
+    sys.meta_path.insert(0, _BlockOptional())
+    _real_distribution = _md.distribution
+
+    def _distribution(name):
+        if name in _BLOCKED:
+            raise _md.PackageNotFoundError(name)
+        return _real_distribution(name)
+
+    _md.distribution = _distribution
+    runpy.run_module("run_anuga.cli", run_name="__main__", alter_sys=True)
+    """
+).format(blocked=_BLOCKED_OPTIONAL)
+
+
+def _run_cli_without_optional_deps(*args):
+    """Run ``run_anuga.cli`` in a subprocess with the [full]-only optional
+    modules simulated as not installed (hermetic either way)."""
+    return subprocess.run(
+        [sys.executable, "-c", _RUN_CLI_WITHOUT_OPTIONAL, *args],
+        capture_output=True,
+        text=True,
+    )
 
 
 class TestMainHelp:
@@ -68,29 +118,17 @@ class TestInfoSubcommand:
 class TestRunSubcommandImport:
     def test_run_import_error_mentions_extra(self):
         """run subcommand should fail with ImportError mentioning pip install."""
-        result = subprocess.run(
-            [sys.executable, "-m", "run_anuga.cli", "run", FIXTURE_DIR],
-            capture_output=True,
-            text=True,
-        )
+        result = _run_cli_without_optional_deps("run", FIXTURE_DIR)
         assert result.returncode != 0
         assert 'pip install "run_anuga[full]"' in result.stderr
 
     def test_post_process_import_error(self):
-        result = subprocess.run(
-            [sys.executable, "-m", "run_anuga.cli", "post-process", FIXTURE_DIR],
-            capture_output=True,
-            text=True,
-        )
+        result = _run_cli_without_optional_deps("post-process", FIXTURE_DIR)
         assert result.returncode != 0
         assert "pip install" in result.stderr
 
     def test_viz_import_error(self, tmp_path):
-        result = subprocess.run(
-            [sys.executable, "-m", "run_anuga.cli", "viz", str(tmp_path), "depth"],
-            capture_output=True,
-            text=True,
-        )
+        result = _run_cli_without_optional_deps("viz", str(tmp_path), "depth")
         assert result.returncode != 0
         assert "pip install" in result.stderr
 

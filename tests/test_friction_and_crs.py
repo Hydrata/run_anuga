@@ -25,10 +25,9 @@ class TestMakeFrictionsRasterPlusStructure:
     """
     TASK-1259: When a friction_raster_filename is present AND buildings with
     Manning's-n patches exist, make_frictions must return BOTH:
-      - the raster as ['Extent', path] (first, lowest priority in ANUGA's
-        composite_quantity_setting_function which processes last-wins, but
-        the raster is domain-wide background)
-      - each building polygon's Manning's-n as a patch ON TOP of the raster
+      - each building polygon's Manning's-n as a patch FIRST (ANUGA's
+        composite_quantity_setting_function is first-match: earlier entries win)
+      - the raster as ['Extent', path] LAST (domain-wide background)
 
     The old early-return dropped the building patches entirely.
     """
@@ -92,6 +91,57 @@ class TestMakeFrictionsRasterPlusStructure:
         result = make_frictions(input_data)
         assert len(result) == 1
         assert result[0] == ['Extent', '/raster.tif']
+
+    @pytest.mark.requires_anuga
+    def test_building_keeps_its_n_under_a_friction_raster(self, tmp_path):
+        """TASK-3928: value-asserting. ANUGA's composite setter is FIRST-match, so
+        the building patch must precede the raster Extent for the building
+        centroid to read BUILDING_MANNINGS_N (and outside it, the raster n)."""
+        import anuga
+        import numpy as np
+        import rasterio
+        from rasterio.transform import from_origin
+        import anuga.utilities.quantity_setting_functions as qs
+        from run_anuga import defaults
+        from run_anuga.run_utils import make_frictions
+
+        xll, yll = 382000.0, 6354000.0
+        raster_n = 0.07
+        raster_path = str(tmp_path / 'friction.tif')
+        data = np.full((120, 120), raster_n, dtype='float32')
+        with rasterio.open(
+            raster_path, 'w', driver='GTiff', height=120, width=120, count=1,
+            dtype='float32', crs='EPSG:32756',
+            transform=from_origin(xll - 10, yll + 110, 1.0, 1.0),
+        ) as dst:
+            dst.write(data, 1)
+
+        points, vertices, boundary = anuga.rectangular_cross(20, 20, len1=100.0, len2=100.0)
+        gr = anuga.Geo_reference(zone=56, xllcorner=xll, yllcorner=yll)
+        domain = anuga.Domain(points, vertices, boundary, geo_reference=gr)
+        ring = [[xll + 20, yll + 20], [xll + 80, yll + 20], [xll + 80, yll + 80],
+                [xll + 20, yll + 80], [xll + 20, yll + 20]]
+        input_data = {
+            'friction_raster_filename': raster_path,
+            'building': {'features': [_polygon_feature(ring=ring, properties={'method': 'Mannings'})]},
+        }
+        frictions = make_frictions(input_data)
+        domain.set_quantity('friction', qs.composite_quantity_setting_function(frictions, domain), verbose=False)
+
+        vals = domain.get_quantity('friction').get_values(location='centroids')
+        cx = domain.get_centroid_coordinates(absolute=True)
+        inside = (cx[:, 0] > xll + 30) & (cx[:, 0] < xll + 70) & (cx[:, 1] > yll + 30) & (cx[:, 1] < yll + 70)
+        outside = (cx[:, 0] < xll + 10) | (cx[:, 0] > xll + 90)
+        assert inside.sum() > 0 and outside.sum() > 0
+        assert np.allclose(vals[inside], defaults.BUILDING_MANNINGS_N)
+        assert np.allclose(vals[outside], raster_n, atol=1e-6)
+
+    def test_building_patch_precedes_raster_extent(self):
+        """TASK-3928: first-match order. Patches first, Extent last, no 'All'."""
+        from run_anuga.run_utils import make_frictions
+        result = make_frictions(self._input_data_raster_plus_building('/path/friction.tif'))
+        assert isinstance(result[0], tuple)
+        assert result[-1] == ['Extent', '/path/friction.tif']
 
     def test_no_raster_with_structure_unchanged(self):
         """Without raster: existing behaviour (building patches + All default)."""

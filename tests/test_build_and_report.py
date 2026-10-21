@@ -223,3 +223,45 @@ def test_build_and_report_entrypoint_unknown_verb_exits_2_before_download(tmp_pa
     assert 'unknown ANUGA_VERB' in proc.stderr
     assert 'Downloading simulation package' not in proc.stdout
     assert not cap
+
+
+def _stage_coarse_culvert(package):
+    """A 1.5 m wide culvert on the fixture's 10 m mesh: coarseness ratio ~6.7 (severe, > 3)."""
+    culvert = {
+        "type": "FeatureCollection",
+        "features": [{
+            "type": "Feature", "id": 7,
+            "geometry": {"type": "LineString",
+                         "coordinates": [[321030.0, 5812050.0], [321070.0, 5812050.0]]},
+            "properties": {"name": "C7", "shape": "box", "width_m": 1.5, "height_m": 1.0},
+        }],
+    }
+    (package / 'inputs' / 'culvert.geojson').write_text(json.dumps(culvert))
+    config_path = package / 'scenario.json'
+    config = json.loads(config_path.read_text())
+    config['culvert'] = 'culvert.geojson'
+    config_path.write_text(json.dumps(config))
+
+
+@pytest.mark.requires_anuga
+def test_build_and_report_carries_culvert_warnings_for_a_coarse_mesh(package, build_env):
+    """TASK-3932: the Batch build result carries the coarse-culvert warnings so the web box can stamp them."""
+    _stage_coarse_culvert(package)
+    with mock.patch.object(_handoff, 'upload_result_to_s3', _UploadSpy()):
+        _handoff.build_and_report(package)
+    (_, fields), = BuildFakeClient.instances[-1].of('result')
+    records = fields['culvert_warnings']
+    assert len(records) == 1
+    assert 'C7' in records[0]['culvert']
+    assert records[0]['coarseness_ratio'] > 3
+    assert records[0]['severe'] is True
+    assert 'coarse' in records[0]['messages'][0]
+    json.dumps(fields)
+
+
+@pytest.mark.requires_anuga
+def test_build_and_report_without_culverts_has_no_culvert_warnings_field(package, build_env):
+    with mock.patch.object(_handoff, 'upload_result_to_s3', _UploadSpy()):
+        _handoff.build_and_report(package)
+    (_, fields), = BuildFakeClient.instances[-1].of('result')
+    assert 'culvert_warnings' not in fields
