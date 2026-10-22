@@ -722,14 +722,17 @@ class SimulationMonitor:
         peak_speed_rec = max(self._records, key=lambda r: r["max_speed_ms"], default={})
         final_rec = self._records[-1] if self._records else {}
 
-        # Stability
-        all_implied = [r["implied_max_speed_ms"] for r in self._records]
-        max_implied_ms = max(all_implied) if all_implied else 0.0
-        max_implied_at = (
-            self._records[all_implied.index(max_implied_ms)]["sim_time_s"]
-            if all_implied
-            else 0.0
+        # Stability. TASK-3840: only windows that took an internal step count.
+        # ANUGA yields once at the start time (t=0, or the checkpoint time on a
+        # resume) before any step, with domain.timestep ~0, so that record's
+        # CFL-implied speed is a divide-by-~0 artefact (3.8e11 m/s on prod
+        # runs 1591-1594) that made every run read stable=False.
+        stepped_recs = [r for r in self._records if r["n_steps"] > 0]
+        peak_implied_rec = max(
+            stepped_recs, key=lambda r: r["implied_max_speed_ms"], default=None
         )
+        max_implied_ms = peak_implied_rec["implied_max_speed_ms"] if peak_implied_rec else 0.0
+        max_implied_at = peak_implied_rec["sim_time_s"] if peak_implied_rec else 0.0
         collapse_ratio = (min_dt_ms / first_dt_ms) if first_dt_ms > 0 else 1.0
         # bool() because max_implied_ms may be a numpy scalar (prod domains),
         # making this comparison an np.bool that json.dump refuses (run 1284).

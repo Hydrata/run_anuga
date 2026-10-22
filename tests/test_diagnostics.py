@@ -1017,3 +1017,103 @@ class TestObservedStatsFeed:
         series = mon.observed_stats()["yieldstep_series"]
         assert len(series) <= SimulationMonitor.SERIES_MAX_POINTS + 1
         assert series[-1]["cum_steps"] == 5000
+
+
+class TestStabilityIgnoresStartupFrame:
+    """TASK-3840: the stability flag must reflect the run, not the t=0 yield.
+
+    ANUGA yields once at the start time before any internal step: n_steps is
+    0 and domain.timestep is ~0, so CFL * min_inradius_wet / dt explodes. On
+    hydrata.com runs 1591-1594 (run_anuga 0f25d4e) every run_summary read
+    stable=False, max_implied_speed_ms=375724339405.99 at sim 0.0 s against a
+    20 m/s threshold, although each run completed normally.
+    """
+
+    #: The value recorded at sim 0.0 s by prod run 1593 (run_summary_1.json).
+    PROD_T0_IMPLIED_MS = 375724339405.99
+
+    def _stab(self, tmp_path, mon):
+        mon.finalize()
+        data = json.loads((tmp_path / "run_summary_1.json").read_text())
+        return data["stability"], data["run"]
+
+    def _prod_1593_like(self, tmp_path, late_blowup_ms=None):
+        """Equivalent fixture for the saved run 1593 diagnostics (not on this
+        box): a t=0 record carrying the recorded prod implied speed, then
+        normal stepped records (and optionally a genuine late blow-up)."""
+        domain = _make_mock_domain(n=4, number_of_steps=0)
+        mon = SimulationMonitor(domain, str(tmp_path), 1, yieldstep=60,
+                                duration_s=300.0)
+        base = {
+            "wall_time_s": 1.0, "mean_dt_ms": 125.0, "last_dt_ms": 125.0,
+            "min_dt_ms": 125.0, "wet_cells": 3, "wet_fraction": 0.75,
+            "volume_m3": 10.0, "max_depth_m": 1.0, "max_speed_ms": 1.2,
+            "peak_speed_x": 1.0, "peak_speed_y": 0.0, "mem_mb": 100.0,
+        }
+        mon._records.append({**base, "sim_time_s": 0.0, "n_steps": 0,
+                             "mean_dt_ms": 60000.0, "last_dt_ms": 0.0,
+                             "min_dt_ms": 0.0,
+                             "implied_max_speed_ms": self.PROD_T0_IMPLIED_MS})
+        for t, implied in ((60.0, 2.1), (120.0, 3.4), (180.0, 2.7),
+                           (240.0, 2.2), (300.0, 1.9)):
+            if late_blowup_ms is not None and t == 240.0:
+                implied = late_blowup_ms
+            mon._records.append({**base, "sim_time_s": t, "n_steps": 480,
+                                 "implied_max_speed_ms": implied})
+        return mon
+
+    def test_prod_1593_equivalent_reads_stable(self, tmp_path):
+        stab, run = self._stab(tmp_path, self._prod_1593_like(tmp_path))
+        assert stab["stable"] is True
+        assert stab["max_implied_speed_ms"] == 3.4
+        assert stab["max_implied_speed_at_sim_s"] == 120.0
+        assert stab["max_implied_speed_at_sim_s"] > 0
+        assert stab["instability_threshold_ms"] == INSTABILITY_SPEED_THRESHOLD_MS
+        assert run["outcome"] == "completed"
+
+    def test_late_blowup_still_reads_unstable(self, tmp_path):
+        """Negative control: a genuine blow-up after t=0 is still caught."""
+        mon = self._prod_1593_like(tmp_path, late_blowup_ms=520.0)
+        stab, _ = self._stab(tmp_path, mon)
+        assert stab["stable"] is False
+        assert stab["max_implied_speed_ms"] == 520.0
+        assert stab["max_implied_speed_at_sim_s"] == 240.0
+
+    def test_recorded_t0_frame_with_near_zero_dt_is_ignored(self, tmp_path):
+        """Through record(): wet at t=0 with dt ~1e-12 and no steps taken."""
+        domain = _make_mock_domain(n=4, timestep=1.4e-12, number_of_steps=0)
+        mon = SimulationMonitor(domain, str(tmp_path), 1, yieldstep=60,
+                                duration_s=120.0)
+        rec0 = mon.record(0.0, wall_time_s=0.0)
+        assert rec0["implied_max_speed_ms"] > 1e11  # the spurious start-up value
+        domain.timestep = 0.125
+        for t in (60.0, 120.0):
+            domain.number_of_steps = 480
+            mon.record(t, wall_time_s=16.0)
+        stab, _ = self._stab(tmp_path, mon)
+        assert stab["stable"] is True
+        assert 0 < stab["max_implied_speed_ms"] < INSTABILITY_SPEED_THRESHOLD_MS
+        assert stab["max_implied_speed_at_sim_s"] == 60.0
+
+    def test_resume_first_yield_without_steps_is_ignored(self, tmp_path):
+        """A checkpoint resume yields first at t>0, again before any step."""
+        domain = _make_mock_domain(n=4, timestep=1.4e-12, number_of_steps=0)
+        mon = SimulationMonitor(domain, str(tmp_path), 2, yieldstep=60,
+                                duration_s=240.0)
+        mon.record(120.0, wall_time_s=0.0)
+        domain.timestep = 0.125
+        domain.number_of_steps = 480
+        mon.record(180.0, wall_time_s=16.0)
+        mon.finalize()
+        stab = json.loads((tmp_path / "run_summary_2.json").read_text())["stability"]
+        assert stab["stable"] is True
+        assert stab["max_implied_speed_at_sim_s"] == 180.0
+
+    def test_only_startup_frame_reads_zero(self, tmp_path):
+        domain = _make_mock_domain(n=4, timestep=1.4e-12, number_of_steps=0)
+        mon = SimulationMonitor(domain, str(tmp_path), 1, yieldstep=60,
+                                duration_s=120.0)
+        mon.record(0.0, wall_time_s=0.0)
+        stab, _ = self._stab(tmp_path, mon)
+        assert stab["stable"] is True
+        assert stab["max_implied_speed_ms"] == 0.0
