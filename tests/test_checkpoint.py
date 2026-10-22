@@ -14,7 +14,10 @@
 
 from __future__ import annotations
 
+import json
 import os
+import subprocess
+import sys
 from unittest import mock
 
 import pytest
@@ -39,6 +42,52 @@ class TestCheckpoint:
         checkpoint_dirs = list(small_test_copy.glob("outputs_*/checkpoints"))
         assert len(checkpoint_dirs) == 1
         assert checkpoint_dirs[0].is_dir()
+
+
+@pytest.mark.requires_anuga
+class TestSingleProcessResume:
+    """TASK-3739: a single-process checkpoint resume (CLI ``--batch-number 2``) of a
+    non-culvert package loads its checkpoint. run_sim's resume branch only built the
+    pickle name for MPI ranks (``<label>_P<n>_<id>``), so on one process it called
+    os.path.join(checkpoint_dir, None) and died with a TypeError for ANY package.
+    Both runs go through the CLI in a subprocess: a run_sim failure ends in MPI Abort,
+    which would kill pytest."""
+
+    @staticmethod
+    def _cli(package, *args):
+        env = {k: v for k, v in os.environ.items() if k != "AWS_BATCH_JOB_ID"}
+        env["RUN_ANUGA_CHECKPOINTS"] = "on"  # the local default, made explicit
+        result = subprocess.run(
+            [sys.executable, "-m", "run_anuga.cli", "run", str(package), *args],
+            capture_output=True, text=True, timeout=900, env=env, cwd=str(package),
+        )
+        return result, result.stdout + result.stderr
+
+    @staticmethod
+    def _set_duration(package, duration):
+        path = package / "scenario.json"
+        config = json.loads(path.read_text())
+        config["duration"] = duration
+        path.write_text(json.dumps(config))
+
+    def test_single_process_resume_loads_its_checkpoint(self, small_test_copy):
+        # Batch 1 writes a checkpoint per yieldstep; batch 2 resumes from the middle one with
+        # the SAME duration (the pickled rain operator holds the series only to that duration).
+        self._set_duration(small_test_copy, 240)
+        result, output = self._cli(small_test_copy)
+        assert result.returncode == 0, output[-3000:]
+        [output_dir] = small_test_copy.glob("outputs_*")
+        # single-process pickles carry the bare run label (no _P<n>_<id> suffix)
+        assert (output_dir / "checkpoints" / "run_1_1_1_120.0.pickle").is_file()
+
+        result, output = self._cli(small_test_copy, "--batch-number", "2", "--checkpoint-time", "120")
+        assert "TypeError" not in output, output[-3000:]
+        assert result.returncode == 0, output[-3000:]
+        assert "load_checkpoint_file succeeded" in (output_dir / "run_anuga_2.log").read_text()
+        model = json.loads((output_dir / "run_summary_2.json").read_text())["model"]
+        assert model["final_sim_time_s"] == 240.0
+        # resumed at 120 s, not rerun from 0 s (that would record 5 yields: 0, 60, ... 240)
+        assert model["n_yieldsteps"] < 5
 
 
 def _make_domain_mock():
