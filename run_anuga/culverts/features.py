@@ -22,6 +22,15 @@ class CulvertBuildError(ValueError):
     """A culvert cannot be built into the model; the message says why, in plain words."""
 
 
+#: The multi-process refusal (raised by run_sim and by the coupler, TASK-3642). It starts with
+#: the stable "Cannot build the culverts:" prefix that hydrata's Run.user_message passes
+#: through verbatim (TASK-3739); without it the user saw the generic failure sentence.
+MPI_REFUSAL_MESSAGE = (
+    "Cannot build the culverts: culverts are not supported in multi-process (MPI) runs yet; "
+    "run this scenario on a single process."
+)
+
+
 @dataclass
 class Culvert:
     feature_id: object

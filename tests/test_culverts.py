@@ -863,8 +863,41 @@ class TestCouplerGuards:
         from run_anuga.culverts.operator import attach_culvert_coupler
 
         monkeypatch.setattr(anuga, "numprocs", 2, raising=False)
-        with pytest.raises(CulvertBuildError, match="multi-process"):
+        with pytest.raises(CulvertBuildError, match="multi-process") as refused:
             attach_culvert_coupler(types.SimpleNamespace(numproc=2), [], "/nonexistent", 60)
+        # TASK-3739: hydrata's Run.user_message passes a message through only when it
+        # starts with its CULVERT_BUILD_ERROR_PREFIX; otherwise the user sees the generic text.
+        assert str(refused.value).startswith("Cannot build the culverts:")
+
+    def test_run_sim_multi_process_refusal_starts_with_the_build_error_prefix(self, small_test_copy, tmp_path):
+        """TASK-3739: run_sim's own MPI refusal (before any paid compute) carries the stable
+        'Cannot build the culverts:' prefix, so Run.user_message shows it verbatim. numprocs is
+        faked to 2 inside a subprocess (the refusal ends in MPI Abort)."""
+        _add_culvert_layer(small_test_copy, collection(SMALL_TEST_CULVERT))
+        record = tmp_path / "terminal_errors.json"
+        result = _run_python(f"""
+            import json
+            import anuga
+            anuga.numprocs = 2
+            from run_anuga.run import run_sim
+
+            class Client:
+                errors = []
+                def error(self, message):
+                    self.errors.append(message)
+                    open({str(record)!r}, "w").write(json.dumps(self.errors))
+                    return True
+                def __getattr__(self, name):
+                    return lambda *a, **k: True
+            try:
+                run_sim({str(small_test_copy)!r}, telemetry_client=Client())
+            except BaseException:
+                pass
+        """, timeout=900)
+        assert record.exists(), result.stdout + result.stderr
+        [message] = json.loads(record.read_text())
+        assert message.startswith("Cannot build the culverts:"), message
+        assert "multi-process (MPI)" in message and "single process" in message
 
     def test_culvert_package_refused_on_checkpoint_resume(self, small_test_copy, tmp_path):
         """TASK-3693 (operator AC0 15-10-26 = REFUSE): the coupler and SWMM state are not in

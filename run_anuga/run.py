@@ -16,6 +16,7 @@ from run_anuga import defaults
 from run_anuga import phase_tracker
 from run_anuga.peaks import attach_peak_operator
 from run_anuga.culverts import CulvertBuildError, MeshView, prepare_culverts
+from run_anuga.culverts.features import MPI_REFUSAL_MESSAGE
 from run_anuga.callbacks import NullCallback
 from run_anuga.rain_check import run_rain_check
 from run_anuga.diagnostics import (
@@ -364,7 +365,10 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
                     "resume; rerun this scenario from the start."
                 )
             logger.info("Building domain...")
-            sub_domain_name = None
+            # TASK-3739: ANUGA names a single-process checkpoint after the domain itself
+            # (anuga/shallow_water/checkpoint.py); only MPI ranks add _P<n>_<id>. This was
+            # None on one process, so every single-process resume died in os.path.join.
+            sub_domain_name = domain_name
             if anuga.numprocs > 1:
                 sub_domain_name = domain_name + "_P{}_{}".format(anuga.numprocs, anuga.myid)
             pickle_name = (os.path.join(checkpoint_directory, sub_domain_name) + "_" + str(checkpoint_time) + ".pickle")
@@ -447,10 +451,7 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
             if input_data.get('culverts'):
                 if anuga.numprocs > 1:
                     # The SWMM coupler runs on one process (TASK-3642); fail before any paid compute.
-                    raise CulvertBuildError(
-                        "Culverts are not supported in multi-process (MPI) runs yet; "
-                        "run this scenario on a single process."
-                    )
+                    raise CulvertBuildError(MPI_REFUSAL_MESSAGE)
                 culvert_results = prepare_culverts(input_data, MeshView.from_domain(domain), log=logger)
             # Fallback feature source for the pre-existing-mesh path (a checkpoint
             # rebuild reuses the .msh, so create_anuga_mesh is skipped): read the

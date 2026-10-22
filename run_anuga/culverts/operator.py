@@ -16,7 +16,7 @@ import os
 from run_anuga._imports import import_optional
 from run_anuga.culverts import constants
 from run_anuga.culverts.checks import ENDS, buried_invert_warning
-from run_anuga.culverts.features import CulvertBuildError
+from run_anuga.culverts.features import MPI_REFUSAL_MESSAGE, CulvertBuildError
 from run_anuga.culverts.metrics import write_culvert_metrics
 from run_anuga.culverts.regions import carve_to_invert
 
@@ -163,9 +163,7 @@ def attach_culvert_coupler(domain, results, output_directory, duration_s, log=No
     anuga = import_optional("anuga")
     drainage = import_optional("anuga_drainage.culverts", extra="sim")
     if getattr(anuga, "numprocs", 1) > 1 or getattr(domain, "numproc", 1) > 1:
-        raise CulvertBuildError(
-            "Culverts are not supported in multi-process (MPI) runs yet; run this scenario on a single process."
-        )
+        raise CulvertBuildError(MPI_REFUSAL_MESSAGE)
     # D34: carve BEFORE the coupler is built (it measures each region's mean ground once).
     carves = carve_exchange_regions(anuga, domain, results, log=log)
     if any(carve.buried_by_m > constants.BURIED_INVERT_WARN_M for _, carve in carves):
