@@ -46,8 +46,8 @@ class TestMPIParallel:
 
     def test_parallel_checkpoint_per_rank(self, small_test_copy):
         """MPI run creates checkpoint files for each rank."""
-        from run_anuga.run import run_sim
         import anuga
+        from run_anuga.run import run_sim
 
         run_sim(str(small_test_copy), batch_number=1)
 

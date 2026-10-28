@@ -30,7 +30,6 @@ from pathlib import Path
 from unittest import mock
 
 import pytest
-
 from run_anuga import phase_tracker
 from run_anuga._handoff import (
     ALLOW_UNREPORTED_ENV,

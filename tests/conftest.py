@@ -25,8 +25,8 @@ def pytest_configure(config):
         config._anuga_available = False
 
     try:
-        import shapely  # noqa: F401
         import rasterio  # noqa: F401
+        import shapely  # noqa: F401
         config._geo_available = True
     except ImportError:
         config._geo_available = False

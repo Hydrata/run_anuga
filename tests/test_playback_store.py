@@ -14,7 +14,6 @@ from unittest import mock
 
 import numpy as np
 import pytest
-
 from run_anuga import playback_store as ps
 
 try:
@@ -483,8 +482,9 @@ class TestExportAgainstFixtureSww:
         mock_upload.assert_not_called()
 
     def test_domain_minimum_allowed_height_used_when_domain_passed(self, tmp_path):
-        import zarr
         from types import SimpleNamespace
+
+        import zarr
 
         fake_domain = SimpleNamespace(minimum_allowed_height=1.23e-12, flow_algorithm="DE1")
         result = self._export(tmp_path, domain=fake_domain)
@@ -1090,7 +1090,6 @@ class TestEngineEnvelopes:
         import shutil
 
         import netCDF4
-
         from run_anuga import peaks
 
         sww_copy = tmp_path / "stamped.sww"
@@ -1124,7 +1123,6 @@ class TestEngineEnvelopes:
     ])
     def test_store_declares_envelope_source_and_validates(self, request, tmp_path, which, expected):
         import zarr
-
         from run_anuga.validate_playback_store import validate_store
 
         sww_path = request.getfixturevalue(which)
@@ -1766,7 +1764,10 @@ class TestTemporalDeltaCodec:
 
     @staticmethod
     def _fns():
-        from run_anuga.playback_codecs import decode_temporal_delta, encode_temporal_delta
+        from run_anuga.playback_codecs import (
+            decode_temporal_delta,
+            encode_temporal_delta,
+        )
 
         return encode_temporal_delta, decode_temporal_delta
 
@@ -1802,9 +1803,8 @@ class TestTemporalDeltaCodec:
 
     def test_registered_in_zarrs_own_registry(self):
         import run_anuga.playback_codecs as pc  # noqa: F401
-        from zarr.registry import get_codec_class
-
         from run_anuga.playback_codecs import TemporalDeltaCodec
+        from zarr.registry import get_codec_class
 
         assert get_codec_class("temporal_delta") is TemporalDeltaCodec
 
@@ -1877,7 +1877,6 @@ class TestTemporalDeltaByteGain:
         """The chunk as the exporter will actually write it after TASK-3014 —
         Morton node order. Both the baseline and the delta are measured on it."""
         import zarr
-
         from run_anuga.playback_order import morton_node_order
 
         root = zarr.open_group(str(PLAYBACK_FIXTURE_ROOT / "813_417_1412"), mode="r")
@@ -2150,7 +2149,6 @@ class TestKillSwitchStoresAreValid:
 
     def test_delta_claim_below_chunk_length_five_is_refused(self, tmp_path):
         import zarr
-
         from run_anuga.validate_playback_store import validate_store
 
         _, result, _ = TestMergedStoreKeepsMainSemanticsUnderMortonAndDelta()._export(tmp_path, "d5")
@@ -2190,7 +2188,6 @@ class TestFormatVersion3Export:
 
     def test_small_mesh_store_declares_and_carries_the_codec(self):
         import zarr
-
         from run_anuga.playback_codecs import TEMPORAL_DELTA_NAME
 
         # This fixture's mesh is tiny, so derive_chunk_length_t gives the CAP
@@ -2227,7 +2224,6 @@ class TestFormatVersion3Export:
         exists, and it is why this store must be byte-identical to what a
         pre-TASK-2989 export wrote."""
         import zarr
-
         from run_anuga.playback_codecs import TEMPORAL_DELTA_NAME
 
         n_node = 2_796_203  # the D5 floor crossover -> chunk_length_t == 2
@@ -2285,7 +2281,6 @@ class TestValidatorCodecChain:
         codec — which is what happens on any box where run_anuga is not
         installed. It must be reported, not raised."""
         import zarr.registry as zreg
-
         from run_anuga.validate_playback_store import validate_store
 
         result = self._export(tmp_path, 2)
@@ -2299,7 +2294,6 @@ class TestValidatorCodecChain:
 
     def test_v3_store_missing_the_codec_where_the_rule_requires_it(self, tmp_path):
         import zarr
-
         from run_anuga.validate_playback_store import validate_store
 
         result = self._export(tmp_path, 3, temporal_delta=False)
@@ -2312,7 +2306,6 @@ class TestValidatorCodecChain:
 
     def test_v2_store_carrying_the_codec_is_a_violation(self, tmp_path):
         import zarr
-
         from run_anuga.validate_playback_store import validate_store
 
         result = self._export(tmp_path, 4)

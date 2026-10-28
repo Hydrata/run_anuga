@@ -6,7 +6,6 @@ store + several deliberately-broken ones) — this file covers only the CLI
 argument handling / exit codes.
 """
 import pytest
-
 from run_anuga.validate_playback_store import main
 
 try:
@@ -70,7 +69,6 @@ def test_envelope_source_is_accepted_and_an_unknown_value_is_caught(tmp_path, fi
     """TASK-3772 — envelope_source is optional; when present it must be one of
     engine_per_step / saved_frames."""
     import zarr
-
     from run_anuga import playback_store as ps
     from run_anuga.validate_playback_store import validate_store
 

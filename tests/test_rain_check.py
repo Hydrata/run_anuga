@@ -11,7 +11,6 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
-
 from run_anuga import defaults
 from run_anuga.rain_check import (
     RAIN_OPERATOR_ROLE,
@@ -265,8 +264,9 @@ def test_negative_control_real_sim_dropping_one_rain_polygon_is_not_ok(tmp_path,
 # --- run_summary integration ----------------------------------------------------------
 
 def _monitor(tmp_path):
-    from tests.test_diagnostics import _make_mock_domain
     from run_anuga.diagnostics import SimulationMonitor
+
+    from tests.test_diagnostics import _make_mock_domain
 
     return SimulationMonitor(_make_mock_domain(), str(tmp_path), 1, 10.0, duration_s=10.0,
                              run_label="r", scenario_config={})
@@ -292,6 +292,7 @@ def test_run_summary_has_no_rain_block_when_no_check_ran(tmp_path):
 
 def test_run_sim_runs_the_rain_check_after_evolve_on_every_rank():
     import inspect
+
     import run_anuga.run as run_module
 
     src = inspect.getsource(run_module.run_sim)

@@ -6,7 +6,6 @@ domain — only the callable contract (f(t_seconds) -> [stage, xmom, ymom]).
 """
 
 import pytest
-
 from run_anuga.run_utils import build_time_boundary_function
 
 

@@ -77,8 +77,8 @@ def _refuse_unsupported_capabilities(package_dir):
 def cmd_run(args):
     """Run an ANUGA flood simulation."""
     _refuse_unsupported_capabilities(args.package_dir)
-    from run_anuga.run import run_sim
     from run_anuga.callbacks import LoggingCallback
+    from run_anuga.run import run_sim
 
     if args.username:
         run_sim(
@@ -184,7 +184,7 @@ def cmd_viz(args):
     `post-process --legacy-per-timestep-tifs`.
     """
     print(_LEGACY_TIFS_DEPRECATION_WARNING.format(cmd="viz"), file=sys.stderr)
-    from run_anuga.run_utils import make_video, make_comparison_video
+    from run_anuga.run_utils import make_comparison_video, make_video
 
     if args.compare:
         make_comparison_video(args.output_dir, args.compare, args.result_type)
@@ -198,7 +198,7 @@ def cmd_upload(args):
     See _LEGACY_TIFS_DEPRECATION_WARNING — still runs, does not hard-fail.
     """
     print(_LEGACY_TIFS_DEPRECATION_WARNING.format(cmd="upload"), file=sys.stderr)
-    from run_anuga.run_utils import generate_stac, _load_package_data
+    from run_anuga.run_utils import _load_package_data, generate_stac
 
     input_data = _load_package_data(args.output_dir)
     generate_stac(

@@ -18,12 +18,17 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+from run_anuga.peaks import ENVELOPE_SOURCES
+
 # TASK-2752 (W8.2, epic 2706) — imported (not re-declared) so the producer's
 # and the validator's idea of "which quantities can have an envelope" can
 # never drift apart. Safe: playback_store.py's only module-level import is
 # numpy, and it never imports this module (no cycle).
-from run_anuga.playback_store import COORDINATE_SOURCES, ENVELOPE_QUANTITIES, STAGE_MAX_C
-from run_anuga.peaks import ENVELOPE_SOURCES
+from run_anuga.playback_store import (
+    COORDINATE_SOURCES,
+    ENVELOPE_QUANTITIES,
+    STAGE_MAX_C,
+)
 
 # name -> (expected dtype kind+itemsize via numpy dtype string, expected ndim)
 # Node-shaped static geometry — (nNode,). NOT inradius, which is per-FACE

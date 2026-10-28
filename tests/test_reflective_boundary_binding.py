@@ -11,7 +11,6 @@ import os
 import tempfile
 
 import pytest
-
 from run_anuga.run import bind_boundary_tags, make_default_boundary_maps
 from run_anuga.run_utils import make_interior_holes_and_tags
 

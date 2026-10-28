@@ -3,7 +3,6 @@
 import sys
 
 import pytest
-
 from run_anuga._imports import import_optional
 
 
@@ -66,7 +65,7 @@ def test_import_config_succeeds():
 
 def test_import_callbacks_succeeds():
     """callbacks module has no heavy deps."""
-    from run_anuga.callbacks import NullCallback, LoggingCallback, SimulationCallback
+    from run_anuga.callbacks import LoggingCallback, NullCallback, SimulationCallback
     assert NullCallback is not None
     assert LoggingCallback is not None
     assert SimulationCallback is not None

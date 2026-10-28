@@ -47,7 +47,7 @@ def main():
     xs = np.array(ds.variables["x"][:], dtype=float)
     ys = np.array(ds.variables["y"][:], dtype=float)
     stage = np.array(ds.variables["stage"][:], dtype=float)  # (ntimes, nvertices)
-    elevation = np.array(ds.variables["elevation"][:], dtype=float)  # (nvertices,)
+    elevation = np.array(ds.variables["elevation"][:], dtype=float)  # (nvertices,)  # noqa: F841 - read to fail fast if the SWW lacks it
     times = np.array(ds.variables["time"][:], dtype=float)
     ds.close()
 

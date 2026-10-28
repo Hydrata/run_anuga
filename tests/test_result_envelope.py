@@ -23,7 +23,6 @@ from pathlib import Path
 from unittest import mock
 
 import pytest
-
 from run_anuga import _handoff
 from run_anuga._handoff import run_and_report
 

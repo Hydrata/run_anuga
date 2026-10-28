@@ -6,7 +6,6 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-
 # Module-top dependency gates. shapely + pandas live in the [dev] extras so
 # any environment running the test suite has them. Failing fast here yields
 # a SKIPPED module (rather than a collection error) on a leaner install.
@@ -104,8 +103,8 @@ class TestMakeFrictionsEmptyAndNone:
         assert result[0][0] == []
 
     def test_friction_no_features_returns_only_default_all(self):
-        from run_anuga.run_utils import make_frictions
         from run_anuga import defaults
+        from run_anuga.run_utils import make_frictions
         result = make_frictions({})
         assert result == [['All', defaults.DEFAULT_MANNINGS_N]]
 

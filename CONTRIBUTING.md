@@ -40,12 +40,19 @@ Tests that need more are marked, and CI runs them in their own jobs:
 
 A test that skips or xfails must say why: `.github/scripts/marker_lint.py` rejects bare skips and bare xfails.
 
-## Lint
+## `make check`
+
+`make check` is the static gate, and CI's `lint` job runs it:
 
 ```bash
-pip install ruff==0.15.2     # CI pins this exact version
-ruff check run_anuga/ tests/
+pip install ruff==0.15.2     # CI pins this exact version; or: make check RUFF="uvx ruff@0.15.2"
+make check
 ```
+
+It runs `make lint` (ruff with the fleet rule set E4, E7, E9, F, I over the whole repo; the tree is clean, so there is
+no ignore list) and `make marker-lint` (the skip/xfail taxonomy lint described above). The lint step runs from outside the
+repo on its absolute path, because ruff groups `run_anuga` imports differently when the working directory is the repo
+root. The unit tests are `make test`, the same pytest line as above.
 
 Bump ruff deliberately, together with a fix sweep in its own commit.
 
@@ -53,6 +60,6 @@ Bump ruff deliberately, together with a fix sweep in its own commit.
 
 - Branch from `main`; open the pull request against `main`. One logical change per pull request.
 - Add or update a test with every behaviour change, and show it fails without the fix.
-- Run the unit tests and the lint above before pushing.
+- Run `make check` and the unit tests before pushing.
 - Do not commit simulation outputs, logs, keys, or customer data.
 - Changes under `.github/` are reviewed by the code owners (see `.github/CODEOWNERS`).

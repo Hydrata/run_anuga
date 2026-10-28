@@ -37,7 +37,6 @@ import types
 from unittest import mock
 
 import pytest
-
 from run_anuga import phase_tracker
 from run_anuga.run import (
     _MULTIPROCESSOR_GPU,

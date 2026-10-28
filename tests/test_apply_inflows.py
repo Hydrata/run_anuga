@@ -10,9 +10,7 @@ from datetime import datetime, timezone
 from unittest.mock import MagicMock
 
 import pytest
-
 from run_anuga.run_utils import apply_inflows_to_domain
-
 
 BOUNDARY_POLYGON = [(0.0, 0.0), (100.0, 0.0), (100.0, 100.0), (0.0, 100.0)]
 

@@ -15,9 +15,7 @@ from datetime import datetime, timezone
 from unittest.mock import MagicMock
 
 import pytest
-
 from run_anuga.run_utils import apply_inflows_to_domain
-
 
 # A 100x100 square boundary, big enough to wholly contain the tiny catchments
 # / inflows we construct below.

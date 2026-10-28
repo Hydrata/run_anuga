@@ -28,7 +28,6 @@ import types
 from pathlib import Path
 from unittest import mock
 
-
 from run_anuga._handoff import (
     RESOURCE_REPORT_TOOL,
     _make_resource_sampler,

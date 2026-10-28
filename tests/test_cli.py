@@ -6,7 +6,6 @@ import sys
 import textwrap
 from unittest import mock
 
-
 FIXTURE_DIR = os.path.join(os.path.dirname(__file__), "data", "minimal_package")
 
 # Optional modules the light CI unit job ([dev] extra) does NOT have. The

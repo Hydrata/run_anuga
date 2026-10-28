@@ -986,8 +986,10 @@ def _export_playback_store_impl(
     time_series_filters: list = []
     apply_temporal_delta = False
     if temporal_delta:
-        from run_anuga.playback_codecs import (TEMPORAL_DELTA_MIN_CHUNK_LENGTH,
-                                               TemporalDeltaCodec)
+        from run_anuga.playback_codecs import (
+            TEMPORAL_DELTA_MIN_CHUNK_LENGTH,
+            TemporalDeltaCodec,
+        )
 
         apply_temporal_delta = chunk_length_t >= TEMPORAL_DELTA_MIN_CHUNK_LENGTH
         if apply_temporal_delta:

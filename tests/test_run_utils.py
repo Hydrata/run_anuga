@@ -5,7 +5,6 @@ import logging
 import os
 
 import pytest
-
 from run_anuga.run_utils import (
     _extract_polygon_outer_ring,
     _flatten_line_coordinates,

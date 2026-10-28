@@ -11,7 +11,6 @@ import re
 import subprocess
 
 import pytest
-
 import run_anuga
 from run_anuga.diagnostics import resolve_run_anuga_sha
 
@@ -87,9 +86,10 @@ def test_a_package_inside_some_other_repo_does_not_report_that_repos_sha(tmp_pat
 
 @pytest.mark.parametrize("baked", [BAKED, "a1374f2"])
 def test_environment_block_carries_the_sha_next_to_the_version(tmp_path, monkeypatch, baked):
-    from tests.test_diagnostics import _make_mock_domain
     from run_anuga import _handoff
     from run_anuga.diagnostics import SimulationMonitor
+
+    from tests.test_diagnostics import _make_mock_domain
 
     monkeypatch.setattr(_handoff, "BUILD_PROVENANCE_PATH", _manifest(tmp_path, baked))
     mon = SimulationMonitor(_make_mock_domain(), str(tmp_path), 1, 10.0, duration_s=10.0,
@@ -102,9 +102,10 @@ def test_environment_block_carries_the_sha_next_to_the_version(tmp_path, monkeyp
 
 
 def test_environment_sha_is_40_hex_or_unknown_without_a_manifest(tmp_path, monkeypatch):
-    from tests.test_diagnostics import _make_mock_domain
     from run_anuga import _handoff
     from run_anuga.diagnostics import SimulationMonitor
+
+    from tests.test_diagnostics import _make_mock_domain
 
     monkeypatch.setattr(_handoff, "BUILD_PROVENANCE_PATH", str(tmp_path / "absent.json"))
     mon = SimulationMonitor(_make_mock_domain(), str(tmp_path), 1, 10.0, duration_s=10.0,

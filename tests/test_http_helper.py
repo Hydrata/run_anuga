@@ -20,7 +20,6 @@ from unittest.mock import MagicMock, patch
 import pytest
 import requests
 from requests.auth import HTTPBasicAuth
-
 from run_anuga._http import post_to_control_server
 
 

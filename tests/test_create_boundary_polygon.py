@@ -14,7 +14,6 @@ pytest.importorskip("shapely")
 
 from run_anuga.run_utils import create_boundary_polygon_from_boundaries
 
-
 CRS_EPSG_32616 = {
     'type': 'name',
     'properties': {'name': 'urn:ogc:def:crs:EPSG::32616'},

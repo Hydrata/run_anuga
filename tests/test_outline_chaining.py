@@ -14,16 +14,15 @@ be built. Made-up shapes only (no customer geometry).
 import itertools
 
 import pytest
-from shapely.geometry import Polygon
-
 from run_anuga import run_utils
 from run_anuga.run_utils import (
+    FEATURE_OUTSIDE_ERROR,
     OUTLINE_DUPLICATE_ERROR,
     OUTLINE_GAP_ERROR,
     OUTLINE_INVALID_ERROR,
-    FEATURE_OUTSIDE_ERROR,
     create_boundary_polygon_from_boundaries,
 )
+from shapely.geometry import Polygon
 
 CRS = {'type': 'name', 'properties': {'name': 'urn:ogc:def:crs:EPSG::32616'}}
 LEGACY_NO_EXTERNAL = (

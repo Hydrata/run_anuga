@@ -11,7 +11,6 @@ import json
 import logging
 
 import pytest
-
 from run_anuga.config import ScenarioConfig
 from run_anuga.run_utils import (
     LEGACY_INPUT_KEYS,

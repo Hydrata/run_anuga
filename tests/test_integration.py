@@ -14,12 +14,11 @@ must go in this file, since those modules require heavy dependencies.
 """
 
 import fnmatch
+import os
+from pathlib import Path
+from shutil import unpack_archive
 
 import pytest
-import os
-
-from shutil import unpack_archive
-from pathlib import Path
 
 
 @pytest.mark.requires_anuga

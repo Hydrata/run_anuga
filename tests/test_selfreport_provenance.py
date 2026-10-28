@@ -17,7 +17,6 @@ import sys
 import types
 from unittest import mock
 
-
 # ---------------------------------------------------------------------------
 # diagnostics: anuga_core sha parse + installed-version corroboration
 # ---------------------------------------------------------------------------
@@ -80,8 +79,7 @@ def _write_manifest(tmp_path, payload):
 
 class TestLoadBuildProvenance:
     def test_reads_manifest_and_stamps_container_source(self, tmp_path):
-        from run_anuga import diagnostics
-        from run_anuga import _handoff
+        from run_anuga import _handoff, diagnostics
         path = _write_manifest(tmp_path, _FORK_MANIFEST)
         # corroboration is best-effort; pin it so this test asserts only the
         # read + stamp (a match, no warning).
@@ -97,7 +95,7 @@ class TestLoadBuildProvenance:
         # per-component {git_url, sha, source='container'} + top-level complete,
         # identical to build_code_provenance so the projected Run copy needs no
         # special-casing.
-        from run_anuga import diagnostics, _handoff
+        from run_anuga import _handoff, diagnostics
         path = _write_manifest(tmp_path, _FORK_MANIFEST)
         with mock.patch.object(diagnostics, "installed_anuga_core_sha", return_value="8abd3ae"):
             prov = _handoff.load_build_provenance(path=path)
@@ -107,7 +105,7 @@ class TestLoadBuildProvenance:
         assert prov["complete"] is True
 
     def test_incomplete_when_a_component_sha_missing(self, tmp_path):
-        from run_anuga import diagnostics, _handoff
+        from run_anuga import _handoff, diagnostics
         partial = {"run_anuga": {"git_url": "u", "sha": "ra"},
                    "anuga_core": {"git_url": "u"},  # no sha
                    "hydrata": {"git_url": "u", "sha": "hy"}}
@@ -123,7 +121,7 @@ class TestLoadBuildProvenance:
         # crash the corroboration .lower() — the "never raises / never block a
         # sim" contract (epic 2280 §6; W3 adversarial-review P2). The sha is
         # coerced to str and the result is still a usable code_provenance dict.
-        from run_anuga import diagnostics, _handoff
+        from run_anuga import _handoff, diagnostics
         bad = {"run_anuga": {"git_url": "u", "sha": ["not", "a", "string"]},
                "anuga_core": {"git_url": "u", "sha": 123},
                "hydrata": {"git_url": "u", "sha": "hy"}}
@@ -147,8 +145,7 @@ class TestLoadBuildProvenance:
         assert _handoff.load_build_provenance(path=str(bad)) is None
 
     def test_corroboration_match_no_warning(self, tmp_path, caplog):
-        from run_anuga import diagnostics
-        from run_anuga import _handoff
+        from run_anuga import _handoff, diagnostics
         path = _write_manifest(tmp_path, _FORK_MANIFEST)
         # installed short-sha is a PREFIX of the baked full sha -> corroborated.
         with mock.patch.object(diagnostics, "installed_anuga_core_sha",
@@ -159,8 +156,7 @@ class TestLoadBuildProvenance:
         assert not any("does not match" in r.getMessage() for r in caplog.records)
 
     def test_corroboration_mismatch_warns_and_keeps_manifest(self, tmp_path, caplog):
-        from run_anuga import diagnostics
-        from run_anuga import _handoff
+        from run_anuga import _handoff, diagnostics
         path = _write_manifest(tmp_path, _FORK_MANIFEST)
         with mock.patch.object(diagnostics, "installed_anuga_core_sha",
                                return_value="ffffffffdeadbeef"):
@@ -172,8 +168,7 @@ class TestLoadBuildProvenance:
         assert any("does not match" in r.getMessage() for r in caplog.records)
 
     def test_never_raises_when_corroboration_lookup_explodes(self, tmp_path):
-        from run_anuga import diagnostics
-        from run_anuga import _handoff
+        from run_anuga import _handoff, diagnostics
         path = _write_manifest(tmp_path, _FORK_MANIFEST)
         with mock.patch.object(diagnostics, "installed_anuga_core_sha",
                                side_effect=RuntimeError("boom")):

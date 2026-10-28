@@ -4,7 +4,6 @@ import math
 
 from hypothesis import given
 from hypothesis import strategies as st
-
 from run_anuga import defaults
 from run_anuga.run_utils import compute_yieldstep
 

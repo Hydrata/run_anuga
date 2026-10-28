@@ -22,7 +22,6 @@ from pathlib import Path
 from unittest import mock
 
 import pytest
-
 from run_anuga import _handoff
 
 from tests.test_events_dialect import (  # noqa: F401 — _clean_listener is an autouse fixture

@@ -5,7 +5,6 @@ import sys
 from unittest import mock
 
 import pytest
-
 from run_anuga.logging_setup import (
     _HANDLER_TAG,
     configure_simulation_logging,

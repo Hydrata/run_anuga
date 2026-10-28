@@ -1488,7 +1488,11 @@ def build_and_report(
                 # TASK-3638: fail the BUILD job (before the paid run) when a
                 # culvert cannot be placed on this mesh; warnings are logged.
                 # The run writes culverts/metrics.json, not the build.
-                from run_anuga.culverts import MeshView, analyse_culverts, culvert_warning_records
+                from run_anuga.culverts import (
+                    MeshView,
+                    analyse_culverts,
+                    culvert_warning_records,
+                )
                 culvert_results = analyse_culverts(
                     input_data['culverts'], MeshView.from_pmesh(anuga_mesh), log=logger)
                 # TASK-3932: the coarse-mesh warnings ride the build result so the

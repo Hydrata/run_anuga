@@ -6,9 +6,13 @@ culverts/metrics.json contract and a stub operator. Importing this package is
 pure Python; numpy/shapely/anuga load lazily inside the functions that use them.
 """
 
+from run_anuga.culverts.checks import (
+    analyse_culverts,
+    check_culvert_placement,
+    culvert_warning_records,
+)
 from run_anuga.culverts.constants import CULVERT_CAPABILITY
 from run_anuga.culverts.features import Culvert, CulvertBuildError, load_culverts
-from run_anuga.culverts.checks import analyse_culverts, check_culvert_placement, culvert_warning_records
 from run_anuga.culverts.metrics import write_culvert_metrics
 from run_anuga.culverts.regions import MeshView, write_exchange_regions
 

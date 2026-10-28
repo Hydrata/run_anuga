@@ -4,7 +4,6 @@ import json
 import os
 
 import pytest
-
 from run_anuga.config import ScenarioConfig
 
 
