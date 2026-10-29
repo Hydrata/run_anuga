@@ -5,7 +5,6 @@ import math
 import pytest
 from hypothesis import given
 from hypothesis import strategies as st
-
 from run_anuga.run_utils import correction_for_polar_quadrants
 
 

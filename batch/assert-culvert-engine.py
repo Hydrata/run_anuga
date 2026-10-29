@@ -54,8 +54,11 @@ def main(argv) -> int:
         if not commit or not (commit.lower().startswith(sha) or sha.startswith(commit.lower())):
             problems.append(f"anuga_drainage was not built from commit {sha} (direct_url commit_id={commit!r})")
     try:
-        from anuga_drainage.culverts import HeadwallCulvert, attach_culverts  # noqa: F401
         import pyswmm  # noqa: F401
+        from anuga_drainage.culverts import (  # noqa: F401
+            HeadwallCulvert,
+            attach_culverts,
+        )
         from swmm import toolkit  # noqa: F401
     except Exception as error:  # noqa: BLE001 - any import failure is the finding
         problems.append(f"the culvert engine does not import: {error!r}")

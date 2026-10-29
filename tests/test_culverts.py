@@ -14,7 +14,6 @@ import sys
 import textwrap
 
 import pytest
-
 from run_anuga.config import (
     ScenarioConfig,
     UnsupportedCapabilityError,
@@ -25,11 +24,14 @@ from run_anuga.culverts import (
     MeshView,
     analyse_culverts,
     check_culvert_placement,
+    constants,
     load_culverts,
     prepare_culverts,
 )
-from run_anuga.culverts import constants
-from run_anuga.culverts.checks import coarse_mesh_warning, suggested_max_triangle_area_m2
+from run_anuga.culverts.checks import (
+    coarse_mesh_warning,
+    suggested_max_triangle_area_m2,
+)
 from run_anuga.culverts.metrics import metrics_document
 from run_anuga.culverts.regions import build_exchange_region
 from run_anuga.run_utils import _load_package_data
@@ -948,7 +950,6 @@ class TestCarveToInvert:
         """TASK-3771: region cells 0-1 (ground 6.0 / 5.5 m, lowest 5.5) over an invert of 5.0 m:
         the sill is 0.5 m, so both drop 0.5 m and the lowest cell meets the invert."""
         import numpy
-
         from run_anuga.culverts.regions import carve_to_invert
 
         domain = fake_domain(self.GROUND, self.VERTICES)
@@ -982,7 +983,6 @@ class TestCarveToInvert:
 
     def test_no_water_is_made_dry_cells_stay_dry_and_wet_cells_keep_their_depth(self):
         import numpy
-
         from run_anuga.culverts.regions import carve_to_invert
 
         for depth in (0.0, 0.3):
@@ -1175,6 +1175,7 @@ class TestCouplerEqualisationOverride:
     @pytest.mark.requires_anuga  # anuga_drainage is in [sim], not [dev]
     def test_the_kwargs_are_accepted_by_the_fork(self):
         import inspect
+
         import anuga_drainage.culverts.coupler as drainage
         params = inspect.signature(drainage.HeadwallCulvertCoupler.__init__).parameters
         assert {"equalisation_factor", "equalisation_strict"} <= set(params)

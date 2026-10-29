@@ -4,7 +4,6 @@ TASK-1260: Robust CRS/UTM-zone derivation via pyproj.
 """
 import pytest
 
-
 # --------------------------------------------------------------------------- #
 # TASK-1259: make_frictions with raster + building Manning's overlay          #
 # --------------------------------------------------------------------------- #
@@ -98,10 +97,10 @@ class TestMakeFrictionsRasterPlusStructure:
         the building patch must precede the raster Extent for the building
         centroid to read BUILDING_MANNINGS_N (and outside it, the raster n)."""
         import anuga
+        import anuga.utilities.quantity_setting_functions as qs
         import numpy as np
         import rasterio
         from rasterio.transform import from_origin
-        import anuga.utilities.quantity_setting_functions as qs
         from run_anuga import defaults
         from run_anuga.run_utils import make_frictions
 

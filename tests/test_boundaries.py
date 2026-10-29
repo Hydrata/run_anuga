@@ -7,7 +7,6 @@ import json
 import os
 
 import pytest
-
 from run_anuga.run_utils import create_boundary_polygon_from_boundaries
 
 FIXTURE_DIR = os.path.join(os.path.dirname(__file__), "data", "minimal_package")

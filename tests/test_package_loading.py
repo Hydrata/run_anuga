@@ -4,7 +4,6 @@ import json
 import os
 
 import pytest
-
 from run_anuga.run_utils import _load_package_data
 
 

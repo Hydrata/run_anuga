@@ -24,7 +24,6 @@ from dataclasses import dataclass, field
 from run_anuga._imports import import_optional
 from run_anuga.culverts import constants
 
-
 #: containing_triangle tests this many nearest centroids before a full scan.
 _NEAREST_CANDIDATES = 64
 #: Triangles per block in the full-scan fallback (bounds the temporary arrays).

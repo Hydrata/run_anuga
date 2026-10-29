@@ -20,7 +20,6 @@ import logging
 from unittest import mock
 
 import requests  # noqa: F401 — asserts requests is importable in the test env
-
 from run_anuga.run_utils import _TelemetryLogHandler, setup_logger
 
 
@@ -167,8 +166,8 @@ class _MnameRootHandler(logging.Handler):
 
 def test_mname_filter_installed_on_all_run_anuga_loggers():
     """Every run_anuga logger that emits carries the mname/lnum filter."""
+    from run_anuga import _http, callbacks, run, run_utils
     from run_anuga._logging import MnameLnumFilter
-    from run_anuga import run, run_utils, callbacks, _http
     for module in (run, run_utils, callbacks, _http):
         assert any(isinstance(f, MnameLnumFilter) for f in module.logger.filters), \
             f"{module.__name__}.logger is missing MnameLnumFilter"

@@ -4,7 +4,6 @@ import argparse
 import os
 
 import pytest
-
 from run_anuga.cli import resolve_package_dir
 
 

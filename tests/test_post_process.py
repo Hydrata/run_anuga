@@ -212,7 +212,6 @@ class TestPostProcessTruePeaks:
 
     def test_xyz_path_used_once_per_quantity_when_engine_arrays_exist(self, scenario_package, fixture_sww):
         import numpy as np
-
         from run_anuga import peaks
 
         pkg = self._package(scenario_package, fixture_sww)

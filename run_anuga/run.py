@@ -5,24 +5,36 @@ import sys
 import time
 import traceback
 
+from run_anuga import defaults, phase_tracker
 from run_anuga._imports import import_optional
-from run_anuga.run_utils import setup_input_data, create_anuga_mesh, \
-    make_frictions, post_process_sww, setup_logger, RunContext, \
-    build_time_boundary_function, apply_inflows_to_domain, \
-    assert_raster_has_no_nodata_inside_boundary, make_raised_elevation_pairs, \
-    apply_raised_elevation_correction, apply_negative_depth_protection, \
-    compute_mesh_qa, extract_boundary_condition_types, compute_yieldstep  # W3 (TASK-1923)
-from run_anuga import defaults
-from run_anuga import phase_tracker
-from run_anuga.peaks import attach_peak_operator
+from run_anuga._logging import install_mname_filter
+from run_anuga.callbacks import NullCallback
 from run_anuga.culverts import CulvertBuildError, MeshView, prepare_culverts
 from run_anuga.culverts.features import MPI_REFUSAL_MESSAGE
-from run_anuga.callbacks import NullCallback
-from run_anuga.rain_check import run_rain_check
 from run_anuga.diagnostics import (
-    SimulationMonitor, collect_flow_scalars, finalize_monitor_safely,
+    SimulationMonitor,
+    collect_flow_scalars,
+    finalize_monitor_safely,
 )
-from run_anuga._logging import install_mname_filter
+from run_anuga.peaks import attach_peak_operator
+from run_anuga.rain_check import run_rain_check
+from run_anuga.run_utils import (
+    RunContext,
+    apply_inflows_to_domain,
+    apply_negative_depth_protection,
+    apply_raised_elevation_correction,
+    assert_raster_has_no_nodata_inside_boundary,
+    build_time_boundary_function,
+    compute_mesh_qa,  # W3 (TASK-1923)
+    compute_yieldstep,
+    create_anuga_mesh,
+    extract_boundary_condition_types,
+    make_frictions,
+    make_raised_elevation_pairs,
+    post_process_sww,
+    setup_input_data,
+    setup_logger,
+)
 
 try:
     from celery.utils.log import get_task_logger
@@ -316,9 +328,9 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
     anuga = import_optional("anuga")
     pickle = import_optional("dill")
     psutil = import_optional("psutil")
-    from anuga import distribute, finalize, barrier, Inlet_operator
-    from anuga.utilities import quantity_setting_functions as qs
+    from anuga import Inlet_operator, barrier, distribute, finalize
     from anuga.operators.rate_operators import Polygonal_rate_operator
+    from anuga.utilities import quantity_setting_functions as qs
 
     # Clear any phase/mesh-feature state from a prior run on this process — a
     # localhost celery-anuga worker is long-lived and reused (TASK-1910).

@@ -348,7 +348,7 @@ def main(argv=None):
             for e in parse_errors:
                 print(f"      {e}")
         print("\n  " + "-" * 64)
-        print(f"  totals: " + ", ".join(f"{c}={len(v)}" for c, v in sorted(by_class.items())) or "  totals: 0")
+        print("  totals: " + ", ".join(f"{c}={len(v)}" for c, v in sorted(by_class.items())) or "  totals: 0")
         if violations:
             print(f"  GOVERNANCE VIOLATIONS: {len(violations)} marker(s) missing required metadata")
         for cls, n, cap in over_cap:

@@ -33,8 +33,8 @@ def _build_domain(with_raised_building):
     -> friction -> stage=0.0."""
     import anuga
     from run_anuga.run_utils import (
-        make_raised_elevation_pairs,
         apply_raised_elevation_correction,
+        make_raised_elevation_pairs,
     )
 
     points, vertices, boundary = anuga.rectangular_cross(20, 20, len1=100.0, len2=100.0)

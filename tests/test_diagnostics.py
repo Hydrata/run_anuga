@@ -10,13 +10,11 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
-
 from run_anuga.diagnostics import (
     INSTABILITY_SPEED_THRESHOLD_MS,
-    SimulationMonitor,
     SUMMARY_SCHEMA_VERSION,
+    SimulationMonitor,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers — minimal mock of the ANUGA domain object
@@ -809,7 +807,6 @@ import sys  # noqa: E402
 import types  # noqa: E402
 
 import pytest  # noqa: E402
-
 from run_anuga.diagnostics import (  # noqa: E402
     _mpi_world_size_from_env,
     allreduce_flow_scalars,

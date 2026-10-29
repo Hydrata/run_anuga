@@ -14,18 +14,18 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import urlparse
 
-from run_anuga._imports import import_optional
 from run_anuga import defaults
-from run_anuga.breakline_conditioner import condition_breaklines
+from run_anuga._imports import import_optional
 from run_anuga._logging import install_mname_filter
+from run_anuga.breakline_conditioner import condition_breaklines
 from run_anuga.config import ScenarioConfig, check_required_capabilities
-from run_anuga.rain_check import tag_rain_operator
 from run_anuga.culverts import (
     CULVERT_CAPABILITY,
     CulvertBuildError,
     check_culvert_placement,
     load_culverts,
 )
+from run_anuga.rain_check import tag_rain_operator
 
 try:
     from celery.utils.log import get_task_logger
@@ -1935,7 +1935,10 @@ def post_process_sww(
     # zarr or any export failure degrades to a logged warning, never a
     # failed run (see run_anuga.playback_store.export_playback_store).
     from run_anuga.playback_store import (
-        PLAYBACK_SPATIAL_ORDER_ENV, PLAYBACK_TEMPORAL_DELTA_ENV, export_playback_store, playback_feature_enabled,
+        PLAYBACK_SPATIAL_ORDER_ENV,
+        PLAYBACK_TEMPORAL_DELTA_ENV,
+        export_playback_store,
+        playback_feature_enabled,
     )
     # Epic 2981 kill switches: a Batch jobdef env var turns either feature off
     # without a rebake (see playback_store.PLAYBACK_*_ENV).

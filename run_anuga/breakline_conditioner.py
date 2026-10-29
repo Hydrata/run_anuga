@@ -124,8 +124,9 @@ def condition_breaklines(breakline_geojson, boundary_polygon,
         return []
 
     try:
-        from shapely.geometry import shape as _shape, Polygon as _Polygon, \
-            MultiLineString as _MultiLineString
+        from shapely.geometry import MultiLineString as _MultiLineString
+        from shapely.geometry import Polygon as _Polygon
+        from shapely.geometry import shape as _shape
         from shapely.ops import unary_union
     except ImportError:
         logger.warning("shapely not available — breakline conditioning skipped")

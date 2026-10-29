@@ -8,14 +8,12 @@ Marked requires_geo because the parent module imports shapely lazily.
 """
 
 import pytest
-
 from run_anuga import defaults
 from run_anuga.run_utils import (
     make_frictions,
     make_interior_holes_and_tags,
     make_interior_regions,
 )
-
 
 # These tests duplicate some from test_data_transforms but with
 # more realistic GeoJSON structures matching real scenarios.

@@ -14,9 +14,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
-
 from run_anuga import defaults, peaks
-
 
 # ---------------------------------------------------------------------------
 # attach_peak_operator — env toggle, update frequency, D39 velocity height
@@ -181,7 +179,6 @@ def test_pulse_between_yields_is_caught_by_the_engine_not_the_frames(tmp_path, m
     run_anuga's own helper, CPU update_frequency=10) catches it, and the
     playback envelope built from it sits above every saved frame."""
     import anuga
-
     from run_anuga import playback_store as ps
 
     monkeypatch.delenv(peaks.TRUE_PEAKS_ENV, raising=False)

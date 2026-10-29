@@ -27,9 +27,9 @@ anuga = pytest.importorskip("anuga", reason="anuga not installed")
 pytest.importorskip("meshpy.triangle", reason="meshpy not installed")
 
 from run_anuga.run_utils import (  # noqa: E402
+    compute_mesh_qa,
     create_anuga_mesh,
     make_interior_holes_and_tags,
-    compute_mesh_qa,
 )
 
 # ---------------------------------------------------------------------------

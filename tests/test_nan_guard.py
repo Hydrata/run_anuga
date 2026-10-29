@@ -13,9 +13,7 @@ Operator decision (2147 W2): ERROR the run, NEVER warn-and-continue.
 from datetime import datetime, timezone
 
 import pytest
-
 from run_anuga.run_utils import apply_inflows_to_domain
-
 
 BOUNDARY_POLYGON = [(0.0, 0.0), (100.0, 0.0), (100.0, 100.0), (0.0, 100.0)]
 

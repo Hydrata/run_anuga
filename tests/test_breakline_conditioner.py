@@ -13,9 +13,9 @@ import pytest
 pytest.importorskip("shapely", reason="shapely not installed")
 
 from run_anuga.breakline_conditioner import (  # noqa: E402
-    condition_breaklines,
     _dedupe_and_drop_short,
     _line_length,
+    condition_breaklines,
 )
 
 # A simple 100 x 100 square domain in planar (CRS-agnostic) coords.

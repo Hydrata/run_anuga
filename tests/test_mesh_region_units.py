@@ -19,7 +19,6 @@ import os
 import tempfile
 
 import pytest
-
 from run_anuga.run_utils import (
     MESH_REGION_UNITS_KEY,
     MESH_REGION_UNITS_LENGTH_M,

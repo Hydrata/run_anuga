@@ -3,17 +3,16 @@
 import argparse
 
 import pytest
-
+from run_anuga import defaults
 from run_anuga.run_utils import (
     RunContext,
     is_dir_check,
     lookup_boundary_tag,
-    make_new_inflow,
     make_frictions,
-    make_interior_regions,
     make_interior_holes_and_tags,
+    make_interior_regions,
+    make_new_inflow,
 )
-from run_anuga import defaults
 
 
 class TestRunContext:

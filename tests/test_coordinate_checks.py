@@ -6,7 +6,6 @@ Requires shapely (marked requires_geo).
 import pytest
 from hypothesis import given
 from hypothesis import strategies as st
-
 from run_anuga.run_utils import check_coordinates_are_in_polygon
 
 
