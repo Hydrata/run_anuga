@@ -37,12 +37,15 @@ on:
       - "pyproject.toml"
       - ".github/workflows/batch-image-sha-lock.yml"
 
+permissions:
+  contents: read
+
 jobs:
   dockerfile-structure:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Single-pin + shared-src structure lint
         run: |
@@ -87,7 +90,7 @@ jobs:
     timeout-minutes: 60
     needs: dockerfile-structure
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Build cpu target with SHA args
         run: |
