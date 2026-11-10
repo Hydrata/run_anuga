@@ -4,7 +4,7 @@ Simulation diagnostics — per-yieldstep metrics collection and run summary.
 Produces two output files:
 
 ``run_diagnostics_N.csv``
-    Per-yieldstep timeseries — 14 columns, one row per yieldstep.
+    Per-yieldstep timeseries — one row per yieldstep (``CSV_FIELDS``).
     Useful for plotting timestep evolution and spotting instability onset
     during or after a single run.
 
@@ -18,7 +18,12 @@ Stability diagnostics
 ---------------------
 The key instability signal is ``implied_max_speed_ms``:
 
-    implied = CFL * min_inradius_wet / last_dt
+    implied = CFL * min_inradius_wet / cfl_dt
+
+where ``cfl_dt`` is the engine's CFL step BEFORE it is clipped to land on the
+yield time (TASK-4316; recorded as ``flux_timestep_ms``). Dividing by the
+clipped last step (``last_dt_ms``) made every short remainder read as a
+blow-up: run 1613's "407.9 m/s" was 3.26 m / 8 ms.
 
 What it tells you:
 
@@ -28,6 +33,12 @@ What it tells you:
   ``optimise_dry_cells``).
 * ``implied`` growing exponentially — numerical blowup (e.g. Manning's
   n=10 building instability forcing supercritical jets through gaps).
+
+The run summary grades it (``classify_stability``, TASK-4316): clip_artefact,
+local_transient, localised_persistent, propagating, or boundary_fed (water
+entering through an open boundary), from the per-record honest speed, the
+timestep trend and the engine's exact volume accounting (V, boundary flux and
+fractional-step integrals, recorded per yield).
 
 Usage (inside run.py)::
 
@@ -232,7 +243,7 @@ def compute_local_flow_scalars(domain) -> dict:
             peak_speed_x = peak_speed_y = 0.0
             min_r_wet = float("inf")
 
-        return {
+        out = {
             "n_wet": n_wet,
             "n_full": n_full,
             "volume_m3": volume_m3,
@@ -244,11 +255,87 @@ def compute_local_flow_scalars(domain) -> dict:
         }
     except Exception as exc:
         logger.debug("Diagnostics: could not compute flow quantities: %s", exc)
-        return {
+        out = {
             "n_wet": 0, "n_full": 0, "volume_m3": 0.0, "max_depth_m": 0.0,
             "max_speed_ms": 0.0, "peak_speed_x": 0.0, "peak_speed_y": 0.0,
             "min_r_wet": float("inf"),
         }
+    out.update(_local_cfl_peak(domain))
+    return out
+
+
+#: The CFL-peak location fields (TASK-4316 (e)); None when not known.
+CFL_PEAK_FIELDS = ("cfl_peak_x", "cfl_peak_y", "cfl_peak_depth_m", "cfl_peak_boundary_dist_m")
+
+#: Boundary tags that let no water through (everything else is open).
+CLOSED_BOUNDARY_TAGS = frozenset({"Reflective", "reflective", "ghost"})
+
+
+def _cfl_location_mode(domain) -> str:
+    """'gpu' (mode 2: the host max_speed is never synced, so no location),
+    'none' (no max_speed array yet, e.g. the t=0 yield) or 'cpu'. Decided from
+    state that is the same on every rank, because it gates a collective."""
+    if getattr(domain, "multiprocessor_mode", None) == 2:
+        return "gpu"
+    if getattr(domain, "max_speed", None) is None:
+        return "none"
+    return "cpu"
+
+
+def _local_cfl_peak(domain) -> dict:
+    """This rank's fastest triangle by the engine's per-triangle CFL speed
+    (``domain.max_speed``, the wave speed the timestep is limited by): its
+    centroid, depth and distance to the nearest boundary edge midpoint.
+
+    TASK-4316 (e). CPU path only: in GPU mode 2 the device never copies
+    max_speed back (fork comment, shallow_water_domain.py:2756-2765), so the
+    location is None there, never a guess (the device-to-host copy is on the
+    epic 3754 YAGNI ledger). ``cfl_peak_speed`` is -inf when unknown so a MAXLOC
+    reduction ignores this rank.
+    """
+    mode = _cfl_location_mode(domain)
+    unknown = {"cfl_location_mode": mode, "cfl_peak_speed": float("-inf"),
+               **{k: None for k in CFL_PEAK_FIELDS}}
+    if mode != "cpu":
+        return unknown
+    try:
+        speeds = np.asarray(domain.max_speed, dtype=float)
+        try:
+            full = np.asarray(domain.tri_full_flag, dtype=bool)
+        except AttributeError:
+            full = np.ones(len(speeds), dtype=bool)
+        if not full.any():
+            return unknown
+        k = int(np.argmax(np.where(full, speeds, -np.inf)))
+        centroids = np.asarray(domain.mesh.centroid_coordinates, dtype=float)
+        stage = np.asarray(domain.quantities["stage"].centroid_values, dtype=float)
+        elev = np.asarray(domain.quantities["elevation"].centroid_values, dtype=float)
+        x, y = float(centroids[k, 0]), float(centroids[k, 1])
+        return {
+            "cfl_location_mode": mode,
+            "cfl_peak_speed": float(speeds[k]),
+            "cfl_peak_x": x,
+            "cfl_peak_y": y,
+            "cfl_peak_depth_m": float(stage[k] - elev[k]),
+            "cfl_peak_boundary_dist_m": _distance_to_boundary(domain, x, y),
+        }
+    except Exception as exc:
+        logger.debug("Diagnostics: could not locate the CFL peak: %s", exc)
+        return unknown
+
+
+def _distance_to_boundary(domain, x: float, y: float):
+    """Distance from (x, y) to the nearest non-ghost boundary edge midpoint
+    (within half an edge length of the edge itself); None if unknown."""
+    edges = [key for key, tag in getattr(domain, "boundary", {}).items() if tag != "ghost"]
+    if not edges:
+        return None
+    mids = getattr(domain.mesh, "edge_midpoint_coordinates", None)
+    if mids is None:
+        return None
+    mids = np.asarray(mids, dtype=float)
+    idx = np.array([3 * vol + edge for vol, edge in edges], dtype=int)
+    return float(np.min(np.hypot(mids[idx, 0] - x, mids[idx, 1] - y)))
 
 
 def allreduce_flow_scalars(local: dict) -> dict:
@@ -296,20 +383,137 @@ def allreduce_flow_scalars(local: dict) -> dict:
     out["peak_speed_x"], out["peak_speed_y"] = comm.bcast(
         (local["peak_speed_x"], local["peak_speed_y"]), root=winner,
     )
+    # TASK-4316 (e): the fastest CFL triangle, same MAXLOC + bcast pattern.
+    # The mode is the same on every rank, so all ranks take or skip this.
+    if local.get("cfl_location_mode") == "cpu":
+        cfl_speed, cfl_winner = comm.allreduce(
+            (local["cfl_peak_speed"], comm.Get_rank()), op=MPI.MAXLOC,
+        )
+        out["cfl_peak_speed"] = cfl_speed
+        location = comm.bcast(tuple(local[k] for k in CFL_PEAK_FIELDS), root=cfl_winner)
+        out.update(zip(CFL_PEAK_FIELDS, location))
+    return out
+
+
+def collect_volume_accounting(domain) -> dict:
+    """The engine's exact volume accounting (TASK-4316 (b)): the water volume
+    V, the boundary flux integral BF (+ = net inflow since the start) and the
+    fractional-step volume integral FS (rain, inflow and catchment operators),
+    so V - BF - FS - V0 closes to round-off on a healthy run.
+
+    COLLECTIVE: each getter allreduces across ranks inside anuga_core, so this
+    must run on EVERY rank at the same point (it rides collect_flow_scalars,
+    the TASK-2675 pattern). A getter that raises (get_boundary_flux_integral
+    on a non-DE flux method) raises before its reduction on every rank alike;
+    its value is None.
+    """
+    out = {}
+    for key, getter in (
+        ("water_volume_m3", "get_water_volume"),
+        ("boundary_flux_integral_m3", "get_boundary_flux_integral"),
+        ("fractional_step_volume_m3", "get_fractional_step_volume_integral"),
+    ):
+        try:
+            out[key] = float(getattr(domain, getter)())
+        except Exception as exc:
+            logger.debug("Diagnostics: %s unavailable: %s", getter, exc)
+            out[key] = None
     return out
 
 
 def collect_flow_scalars(domain) -> dict:
-    """Local flow scalars + global reduction — call on EVERY rank, then hand
-    the result to ``SimulationMonitor.record`` on rank 0 (TASK-2675)."""
-    return allreduce_flow_scalars(compute_local_flow_scalars(domain))
+    """Local flow scalars + global reduction + the engine's volume accounting
+    — call on EVERY rank, then hand the result to ``SimulationMonitor.record``
+    on rank 0 (TASK-2675, TASK-4316)."""
+    out = allreduce_flow_scalars(compute_local_flow_scalars(domain))
+    out.update(collect_volume_accounting(domain))
+    return out
+
+
+def unclipped_cfl_step_s(domain):
+    """The engine's CFL-limited step BEFORE the yield clip, in seconds; None
+    when the domain does not expose it (legacy mocks).
+
+    TASK-4316 (a). generic_domain.update_timestep sets timestep = min(CFL *
+    flux_timestep, evolve_max_timestep), records it in recorded_min_timestep,
+    THEN clips it to land on the yield time and stores that in
+    domain.timestep. flux_timestep is the step before the CFL factor.
+    GPU mode 2's C step loops never write the host flux_timestep; they keep the
+    CFL step (already CFL-scaled and capped, before the clip) in
+    gpu_dom.recorded_flux_timestep. The Python-orchestrated GPU fallback loops
+    write the host flux_timestep instead, so that is read when the device
+    value is not set. MPI: both are global minima already.
+    """
+    if getattr(domain, "multiprocessor_mode", None) == 2:
+        gpu_dom = getattr(getattr(domain, "gpu_interface", None), "gpu_dom", None)
+        device_step = _positive(getattr(gpu_dom, "recorded_flux_timestep", None))
+        if device_step is not None:
+            return device_step
+    fixed = _positive(getattr(domain, "fixed_flux_timestep", None))
+    if fixed is not None:
+        return fixed
+    flux = _positive(getattr(domain, "flux_timestep", None))
+    cfl = _positive(getattr(domain, "CFL", None))
+    if flux is None or cfl is None:
+        return None
+    step = cfl * flux
+    cap = _positive(getattr(domain, "evolve_max_timestep", None))
+    return min(step, cap) if cap is not None else step
+
+
+def _positive(value):
+    """float(value) when it is a finite number > 0, else None."""
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return None
+    return value if np.isfinite(value) and value > 0 else None
 
 #: Implied max speed above this (m/s) flags a run as numerically unstable.
 #: Urban floods peak at ~5 m/s; 20 m/s is physically impossible for shallow water.
 INSTABILITY_SPEED_THRESHOLD_MS = 20.0
 
 #: Schema version for the run_summary JSON — bump when fields are added/removed.
-SUMMARY_SCHEMA_VERSION = "1"
+#: "2" (TASK-4316): honest implied speed, graded stability class, volume closure.
+SUMMARY_SCHEMA_VERSION = "2"
+
+# ---------------------------------------------------------------------------
+# TASK-4316 graded stability classes. Every threshold below is PROVISIONAL: an
+# INFERRED proposal from the research note (docs/reports/2026-11-09-task-4103-
+# instability-classification.html, section 4: TUFLOW/HEC-RAS/ARR practice),
+# to be calibrated on the CSVs of the last 50 production runs. Not facts.
+# ---------------------------------------------------------------------------
+
+#: Net boundary inflow above this fraction of rain plus inflow means the model
+#: is being filled from outside (gn_anuga's OPEN_BOUNDARY_NOISE, TASK-4290).
+OPEN_BOUNDARY_NOISE = 0.05
+#: PROVISIONAL. Clip screen: a last step under this fraction of the window's
+#: own minimum CFL step was shortened to land on the yield time.
+CLIP_SCREEN_RATIO = 0.5
+#: PROVISIONAL. ...and the window's step count within this factor of its
+#: neighbours' median (the flow did not change; only the remainder did).
+CLIP_SCREEN_STEPS_RATIO = 1.5
+#: PROVISIONAL. Local transient: at most this many consecutive records over
+#: the threshold, and under TRANSIENT_MAX_FRACTION of the stepped records.
+TRANSIENT_MAX_CONSECUTIVE = 2
+TRANSIENT_MAX_FRACTION = 0.05
+#: PROVISIONAL. Propagating: after onset the honest min step falls under this
+#: fraction of the pre-onset median, or the step count exceeds this multiple.
+COLLAPSE_RATIO_PROPAGATING = 0.1
+STEPS_RATIO_PROPAGATING = 3.0
+#: PROVISIONAL. Propagating: |closure| over this % of the inputs (TUFLOW's
+#: "values exceeding 3% usually indicate there are significant problems").
+CLOSURE_FAIL_PCT = 3.0
+#: Records forming the collapse-ratio baseline (median of the first stepped).
+COLLAPSE_BASELINE_RECORDS = 3
+#: Inputs have ended once FS reaches this fraction of its final value.
+INPUTS_END_FRACTION = 0.999
+
+#: Most severe first: the summary's ``class`` is the first that applies.
+STABILITY_CLASSES = (
+    "boundary_fed", "propagating", "localised_persistent", "local_transient",
+    "clip_artefact",
+)
 
 
 class SimulationMonitor:
@@ -337,6 +541,9 @@ class SimulationMonitor:
     scenario_config : dict, optional
         Scenario configuration dict from ``scenario.json``.  Fields used:
         ``name``, ``project``, ``id``, ``run_id``, ``epsg``, ``resolution``.
+    boundary_tags : iterable of str, optional
+        The scenario's boundary tags (TASK-4316: the open ones are named when
+        the run is boundary_fed). Defaults to the domain's own tags.
     """
 
     CSV_FIELDS = [
@@ -355,6 +562,15 @@ class SimulationMonitor:
         "peak_speed_x",
         "peak_speed_y",
         "mem_mb",
+        # TASK-4316: appended, so the first 15 columns keep their positions.
+        "flux_timestep_ms",
+        "boundary_flux_integral_m3",
+        "fractional_step_volume_m3",
+        "closure_m3",
+        "cfl_peak_x",
+        "cfl_peak_y",
+        "cfl_peak_depth_m",
+        "cfl_peak_boundary_dist_m",
     ]
 
     def __init__(
@@ -367,6 +583,7 @@ class SimulationMonitor:
         duration_s=None,
         run_label=None,
         scenario_config=None,
+        boundary_tags=None,
     ):
         self.domain = domain
         self.output_dir = output_dir
@@ -381,6 +598,13 @@ class SimulationMonitor:
         self._json_path = os.path.join(output_dir, f"run_summary_{batch_number}.json")
         self._records = []
         self._rain = None  # TASK-3775: set_rain_check() after evolve
+        # TASK-4316: V0 for the closure column (set at the first full record)
+        self._closure_base = None
+        # The scenario's boundary tags (all ranks' view); rank 0's partition
+        # is the fallback, which may miss a tag on a multi-rank run.
+        if boundary_tags is None:
+            boundary_tags = set(getattr(domain, "boundary", {}).values())
+        self.open_boundary_tags = sorted(set(boundary_tags) - CLOSED_BOUNDARY_TAGS)
 
         self._start_wall_time = time.time()
         self._started_at = datetime.now(tz=timezone.utc)
@@ -519,7 +743,8 @@ class SimulationMonitor:
 
         # --- Flow state (global when a reduced `flow` dict is handed in) ---
         if flow is None:
-            flow = compute_local_flow_scalars(domain)
+            # Serial callers only: the engine getters reduce nothing here.
+            flow = {**compute_local_flow_scalars(domain), **collect_volume_accounting(domain)}
         n_wet = flow["n_wet"]
         wet_fraction = n_wet / max(1, flow["n_full"])
         volume_m3 = flow["volume_m3"]
@@ -531,15 +756,33 @@ class SimulationMonitor:
         # Implied max speed from the CFL condition:
         #   dt = CFL * min_inradius_wet / max_speed
         #   => implied = CFL * min_inradius_wet / dt
-        # domain.timestep is already globally reduced by parallel ANUGA;
-        # min_r_wet arrives globally reduced (MIN) in `flow`. Only meaningful
-        # when wet somewhere; at t=0 (all dry) domain.timestep≈0 causes a
-        # spurious divide-near-zero result, so report 0 when n_wet==0.
+        # TASK-4316 (a): dt is the engine's CFL step BEFORE the yield clip
+        # (unclipped_cfl_step_s); domain.timestep is the clipped remainder
+        # and stays only as the fallback for domains that do not expose it.
+        # Both are globally reduced by parallel ANUGA; min_r_wet arrives
+        # globally reduced (MIN) in `flow`. Only meaningful when wet
+        # somewhere; at t=0 (all dry) dt≈0 causes a spurious divide-near-zero
+        # result, so report 0 when n_wet==0.
+        cfl_dt = unclipped_cfl_step_s(domain)
         min_r_wet = flow["min_r_wet"]
         if n_wet > 0 and np.isfinite(min_r_wet):
-            implied_max_speed_ms = self.cfl * min_r_wet / max(domain.timestep, 1e-12)
+            divisor = cfl_dt if cfl_dt is not None else domain.timestep
+            implied_max_speed_ms = self.cfl * min_r_wet / max(divisor, 1e-12)
         else:
             implied_max_speed_ms = 0.0
+
+        # TASK-4316 (b): closure = V - BF - FS - V0. V0 is fixed at the first
+        # record carrying all three (V - BF - FS there), so a fresh run's
+        # closure starts at 0 and so does a resumed one's (whose BF and FS
+        # already hold the earlier part of the run).
+        volume = flow.get("water_volume_m3")
+        bf = flow.get("boundary_flux_integral_m3")
+        fs = flow.get("fractional_step_volume_m3")
+        closure_m3 = None
+        if None not in (volume, bf, fs):
+            if self._closure_base is None:
+                self._closure_base = volume - bf - fs
+            closure_m3 = volume - bf - fs - self._closure_base
 
         rec = {
             "sim_time_s": round(sim_time, 1),
@@ -557,6 +800,15 @@ class SimulationMonitor:
             "peak_speed_x": round(peak_speed_x, 1),
             "peak_speed_y": round(peak_speed_y, 1),
             "mem_mb": round(mem_mb, 1),
+            "flux_timestep_ms": _round_or_none(
+                cfl_dt * 1000.0 if cfl_dt is not None else None, 2),
+            "boundary_flux_integral_m3": _round_or_none(bf, 1),
+            "fractional_step_volume_m3": _round_or_none(fs, 1),
+            "closure_m3": _round_or_none(closure_m3, 1),
+            "cfl_peak_x": _round_or_none(flow.get("cfl_peak_x"), 1),
+            "cfl_peak_y": _round_or_none(flow.get("cfl_peak_y"), 1),
+            "cfl_peak_depth_m": _round_or_none(flow.get("cfl_peak_depth_m"), 3),
+            "cfl_peak_boundary_dist_m": _round_or_none(flow.get("cfl_peak_boundary_dist_m"), 1),
         }
         self._records.append(rec)
         self._writer.writerow(rec)
@@ -722,21 +974,22 @@ class SimulationMonitor:
         peak_speed_rec = max(self._records, key=lambda r: r["max_speed_ms"], default={})
         final_rec = self._records[-1] if self._records else {}
 
-        # Stability. TASK-3840: only windows that took an internal step count.
-        # ANUGA yields once at the start time (t=0, or the checkpoint time on a
-        # resume) before any step, with domain.timestep ~0, so that record's
-        # CFL-implied speed is a divide-by-~0 artefact (3.8e11 m/s on prod
-        # runs 1591-1594) that made every run read stable=False.
-        stepped_recs = [r for r in self._records if r["n_steps"] > 0]
-        peak_implied_rec = max(
-            stepped_recs, key=lambda r: r["implied_max_speed_ms"], default=None
+        # Stability. TASK-3840: only windows that took an internal step count
+        # (the t=0 / resume yield has no step and a ~0 dt). TASK-4316: graded
+        # from the HONEST per-record speed (old-schema clipped records are
+        # screened), plus the volume accounting; see classify_stability.
+        rain = self._rain or {}
+        has_fs = any(r.get("fractional_step_volume_m3") is not None for r in self._records)
+        graded = classify_stability(
+            self._records,
+            inputs_m3=None if has_fs else rain.get("applied_m3"),
+            open_boundary_tags=self.open_boundary_tags,
         )
-        max_implied_ms = peak_implied_rec["implied_max_speed_ms"] if peak_implied_rec else 0.0
-        max_implied_at = peak_implied_rec["sim_time_s"] if peak_implied_rec else 0.0
-        collapse_ratio = (min_dt_ms / first_dt_ms) if first_dt_ms > 0 else 1.0
+        max_implied_ms = graded.pop("max_implied_speed_ms")
+        max_implied_at = graded.pop("max_implied_speed_at_sim_s")
         # bool() because max_implied_ms may be a numpy scalar (prod domains),
         # making this comparison an np.bool that json.dump refuses (run 1284).
-        stable = bool(max_implied_ms < INSTABILITY_SPEED_THRESHOLD_MS)
+        stable = bool(graded["n_records_over"] == 0)
 
         # Outcome
         completed = (
@@ -744,7 +997,7 @@ class SimulationMonitor:
         ) or (self.duration_s is None and n_yieldsteps > 0)
         if completed:
             outcome = "completed"
-        elif max_implied_ms >= INSTABILITY_SPEED_THRESHOLD_MS:
+        elif not stable:
             outcome = "unstable"
         else:
             outcome = "incomplete"
@@ -820,8 +1073,9 @@ class SimulationMonitor:
                 "stable": stable,
                 "max_implied_speed_ms": round(max_implied_ms, 2),
                 "max_implied_speed_at_sim_s": max_implied_at,
-                "timestep_collapse_ratio": round(collapse_ratio, 4),
+                "timestep_collapse_ratio": round(graded.pop("timestep_collapse_ratio"), 4),
                 "instability_threshold_ms": INSTABILITY_SPEED_THRESHOLD_MS,
+                **graded,
             },
             "environment": self._collect_environment(),
         }
@@ -861,6 +1115,203 @@ class SimulationMonitor:
         self._write_summary()
         self._csv_file.close()
         logger.info("Diagnostics written to: %s", self._csv_path)
+
+
+def _round_or_none(value, ndigits):
+    return None if value is None else round(float(value), ndigits)
+
+
+def _num(value):
+    """A CSV cell or record value as float; None when empty or missing."""
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def load_diagnostics_csv(path) -> list:
+    """Read a run_diagnostics_N.csv (either schema: the 15 pre-TASK-4316
+    columns or the current CSV_FIELDS) into numeric record dicts, so a saved
+    run can be re-graded with classify_stability. Empty cells are None."""
+    with open(path, newline="") as f:
+        rows = list(csv.DictReader(line for line in f if not line.startswith("#")))
+    return [{k: _num(v) for k, v in row.items()} for row in rows]
+
+
+def _honest_implied(rec: dict, neighbour_steps: list) -> tuple:
+    """(honest implied speed, screened as a clip?) for one stepped record.
+
+    A record written since TASK-4316 (flux_timestep_ms present) already holds
+    the speed from the unclipped step. An older record held CFL * r / last_dt;
+    when its last step is far shorter than the window's own minimum CFL step
+    (min_dt_ms, which the engine records before the clip) the last step was
+    the yield clip, and the speed from the window's step is CFL * r / min_dt
+    = recorded * last / min. It is labelled a clip artefact only when the
+    step count also sits on its neighbours' (the flow did not change).
+    """
+    implied = _num(rec.get("implied_max_speed_ms")) or 0.0
+    if _num(rec.get("flux_timestep_ms")) is not None:
+        return implied, False
+    last, min_dt = _num(rec.get("last_dt_ms")), _num(rec.get("min_dt_ms"))
+    if not last or not min_dt or last >= CLIP_SCREEN_RATIO * min_dt:
+        return implied, False
+    honest = implied * last / min_dt
+    steps = _num(rec.get("n_steps")) or 0.0
+    steady = not neighbour_steps or steps <= CLIP_SCREEN_STEPS_RATIO * float(np.median(neighbour_steps))
+    return honest, steady
+
+
+def _longest_run(indices: list) -> int:
+    best = run = 0
+    prev = None
+    for i in indices:
+        run = run + 1 if prev is not None and i == prev + 1 else 1
+        best = max(best, run)
+        prev = i
+    return best
+
+
+def classify_stability(records, *, threshold=INSTABILITY_SPEED_THRESHOLD_MS,
+                       inputs_m3=None, inputs_end_s=None, open_boundary_tags=None) -> dict:
+    """Grade a run from its per-yield records (TASK-4316 (c)(d)).
+
+    ``records`` are SimulationMonitor records or load_diagnostics_csv rows of
+    either schema. ``inputs_m3`` (rain plus inflow volume) and
+    ``inputs_end_s`` (when they stopped) are derived from the
+    fractional_step_volume_m3 column when it is present; pass them for an
+    older CSV (the rain check's applied_m3, the storm's end). Returns the
+    graded stability fields of the run summary plus max_implied_speed_ms,
+    max_implied_speed_at_sim_s and timestep_collapse_ratio.
+
+    Classes (STABILITY_CLASSES, most severe first; thresholds PROVISIONAL):
+
+    * clip_artefact — only yield-clip spikes, no honest record over threshold.
+    * local_transient — honest speed over threshold for at most
+      TRANSIENT_MAX_CONSECUTIVE consecutive records, under
+      TRANSIENT_MAX_FRACTION of the stepped records.
+    * localised_persistent — over for longer, with no collapse.
+    * propagating — after onset the honest step collapses (or the step count
+      explodes) against the pre-onset median, or |closure| > CLOSURE_FAIL_PCT.
+    * boundary_fed — net boundary inflow above OPEN_BOUNDARY_NOISE of the
+      inputs AND the volume rises by more than that after the inputs end.
+      From the boundary_flux_integral_m3 column when recorded, otherwise by
+      difference (V_end - V_start - inputs). Not graded with no inputs (a
+      model driven only by its boundary is meant to be fed by it).
+
+    ``class`` is the most severe that applies, or None; ``speed_class`` is
+    the numerical class alone. ``onset_sim_s`` belongs to ``class``.
+    """
+    records = list(records)
+    stepped = [r for r in records if (_num(r.get("n_steps")) or 0) > 0]
+    steps = [_num(r.get("n_steps")) or 0.0 for r in stepped]
+
+    honest, artefacts = [], []
+    for i, rec in enumerate(stepped):
+        neighbours = steps[max(0, i - 2):i] + steps[i + 1:i + 3]
+        value, is_clip = _honest_implied(rec, neighbours)
+        honest.append(value)
+        if is_clip and (_num(rec.get("implied_max_speed_ms")) or 0.0) >= threshold > value:
+            artefacts.append(i)
+    over = [i for i, v in enumerate(honest) if v >= threshold]
+    peak = int(np.argmax(honest)) if honest else None
+
+    # TASK-4024: the collapse ratio's baseline is the median honest min step
+    # of the first stepped records, never the t=0 record (dt 0 -> ratio 1.0).
+    min_dts = [_num(r.get("min_dt_ms")) or 0.0 for r in stepped]
+    baseline = float(np.median(min_dts[:COLLAPSE_BASELINE_RECORDS])) if min_dts else 0.0
+    collapse_ratio = min(min_dts) / baseline if baseline > 0 else 1.0
+
+    # --- volume accounting ---------------------------------------------
+    def series(col):
+        vals = [(r, _num(r.get(col))) for r in records]
+        return [(r, v) for r, v in vals if v is not None]
+
+    fs = series("fractional_step_volume_m3")
+    if inputs_m3 is None and len(fs) >= 2:
+        inputs_m3 = fs[-1][1] - fs[0][1]
+    if inputs_end_s is None and len(fs) >= 2 and fs[-1][1] - fs[0][1] > 0:
+        target = fs[0][1] + INPUTS_END_FRACTION * (fs[-1][1] - fs[0][1])
+        inputs_end_s = next(_num(r["sim_time_s"]) for r, v in fs if v >= target)
+    closure = series("closure_m3")
+    closure_pct = (
+        round(100.0 * max(abs(v) for _, v in closure) / inputs_m3, 3)
+        if closure and inputs_m3 else None
+    )
+    bf = series("boundary_flux_integral_m3")
+    vol = series("volume_m3")
+    if len(bf) >= 2:
+        net_in, basis = bf[-1][1] - bf[0][1], "boundary_flux_integral"
+    elif len(vol) >= 2 and inputs_m3 is not None:
+        net_in, basis = vol[-1][1] - vol[0][1] - inputs_m3, "by_difference"
+    else:
+        net_in, basis = None, None
+
+    boundary_onset = None
+    if net_in is not None and inputs_m3 and inputs_m3 > 0 and inputs_end_s is not None:
+        noise = OPEN_BOUNDARY_NOISE * inputs_m3
+        before = [v for r, v in vol if _num(r.get("sim_time_s")) <= inputs_end_s]
+        if net_in > noise and before and vol[-1][1] - before[-1] > noise:
+            boundary_onset = next(
+                _num(r.get("sim_time_s")) for r, v in vol
+                if _num(r.get("sim_time_s")) > inputs_end_s and v - before[-1] > noise
+            )
+
+    # --- numerical class ------------------------------------------------
+    speed_class, speed_onset = None, None
+    if over:
+        first = over[0]
+        speed_onset = _num(stepped[first].get("sim_time_s"))
+        pre_dt = min_dts[:first] or min_dts[:COLLAPSE_BASELINE_RECORDS]
+        pre_steps = steps[:first] or steps[:COLLAPSE_BASELINE_RECORDS]
+        dt_base, steps_base = float(np.median(pre_dt)), float(np.median(pre_steps))
+        collapsed = any(
+            (dt_base > 0 and min_dts[i] < COLLAPSE_RATIO_PROPAGATING * dt_base)
+            or (steps_base > 0 and steps[i] > STEPS_RATIO_PROPAGATING * steps_base)
+            for i in range(first, len(stepped))
+        )
+        if collapsed or (closure_pct is not None and closure_pct > CLOSURE_FAIL_PCT):
+            speed_class = "propagating"
+        elif (_longest_run(over) <= TRANSIENT_MAX_CONSECUTIVE
+              and len(over) < TRANSIENT_MAX_FRACTION * len(stepped)):
+            speed_class = "local_transient"
+        else:
+            speed_class = "localised_persistent"
+    elif artefacts:
+        speed_class = "clip_artefact"
+        speed_onset = _num(stepped[artefacts[0]].get("sim_time_s"))
+
+    if boundary_onset is not None:
+        klass, onset = "boundary_fed", boundary_onset
+    else:
+        klass, onset = speed_class, speed_onset
+    location = None
+    if peak is not None:
+        loc = {k: _num(stepped[peak].get(k)) for k in CFL_PEAK_FIELDS}
+        if None not in loc.values():
+            location = {
+                "x": loc["cfl_peak_x"], "y": loc["cfl_peak_y"],
+                "depth_m": loc["cfl_peak_depth_m"],
+                "boundary_distance_m": loc["cfl_peak_boundary_dist_m"],
+                "at_sim_s": _num(stepped[peak].get("sim_time_s")),
+            }
+    return {
+        "max_implied_speed_ms": honest[peak] if peak is not None else 0.0,
+        "max_implied_speed_at_sim_s": _num(stepped[peak].get("sim_time_s")) if peak is not None else 0.0,
+        "timestep_collapse_ratio": collapse_ratio,
+        "class": klass,
+        "speed_class": speed_class,
+        "onset_sim_s": onset,
+        "n_records_over": len(over),
+        "n_clip_artefacts": len(artefacts),
+        "closure_pct": closure_pct,
+        "boundary_net_in_m3": round(net_in, 1) if net_in is not None else None,
+        "boundary_basis": basis,
+        "boundary_tag": ",".join(sorted(open_boundary_tags)) if klass == "boundary_fed" and open_boundary_tags else None,
+        "location": location,
+        "thresholds_provisional": True,
+    }
 
 
 def _json_default(o):
