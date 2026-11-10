@@ -6,6 +6,7 @@ No ANUGA installation required — a lightweight mock domain is used.
 import csv
 import json
 import math
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -371,8 +372,14 @@ class TestCSVOutput:
             lines = [line for line in f.readlines() if not line.startswith("#")]
         reader = csv.DictReader(lines)
         row = next(reader)
-        # All values should parse as float without raising
+        # All values should parse as float without raising. TASK-4316's
+        # columns are empty when the engine cannot supply them (this mock has
+        # no flux_timestep, volume getters or max_speed; a GPU run has no
+        # CFL-peak location), never a made-up number.
+        nullable = set(SimulationMonitor.CSV_FIELDS[15:])
         for key, val in row.items():
+            if key in nullable and val == "":
+                continue
             float(val)
 
 
@@ -1114,3 +1121,390 @@ class TestStabilityIgnoresStartupFrame:
         stab, _ = self._stab(tmp_path, mon)
         assert stab["stable"] is True
         assert stab["max_implied_speed_ms"] == 0.0
+
+
+# ---------------------------------------------------------------------------
+# TASK-4316 (epic 3754 W3, decision D3): an honest stability detector and a
+# graded run summary (folds TASK-4024, the collapse ratio pinned at 1.0).
+#
+# ROOT CAUSE (proven 09-11-26): the implied speed divided by domain.timestep,
+# which the engine has already CLIPPED to land on the yield time
+# (generic_domain.update_timestep). Run 1613's log: every spike coincides with
+# a last step of 8-60 ms while n_steps per 144 s window stays 135/136, and
+# v_impl x last_dt = 3.20-3.26 m in every window. The honest step is the
+# engine's CFL step before the clip: CFL * domain.flux_timestep on the CPU
+# path, gpu_dom.recorded_flux_timestep in GPU mode 2 (whose C step loops never
+# update the host flux_timestep).
+# ---------------------------------------------------------------------------
+
+from run_anuga.diagnostics import (  # noqa: E402
+    OPEN_BOUNDARY_NOISE,
+    classify_stability,
+    load_diagnostics_csv,
+)
+
+INRADIUS = math.sqrt(3) / 3  # every mock triangle; the wet minimum too
+
+
+def _flux_domain(timestep=0.002, flux_timestep=1.0, cfl=0.9, **extra):
+    """A CPU-mode mock whose last step was CLIPPED to `timestep` while the
+    engine's own CFL step is CFL * flux_timestep."""
+    d = _make_mock_domain(n=4, timestep=timestep, number_of_steps=136)
+    d.flux_timestep = flux_timestep
+    d.CFL = cfl
+    d.evolve_max_timestep = 1000.0
+    d.fixed_flux_timestep = None
+    d.recorded_min_timestep = cfl * flux_timestep
+    d.multiprocessor_mode = 1
+    for k, v in extra.items():
+        setattr(d, k, v)
+    return d
+
+
+class TestHonestImpliedSpeed:
+    def test_implied_speed_uses_flux_timestep_not_clipped_step(self, tmp_path):
+        """AC1. Last step clipped to 2 ms, CFL step 0.9 s: honest implied is
+        CFL * r / (CFL * flux) = 0.58 m/s. The pre-fix formula, CFL * r /
+        domain.timestep, reads 260 m/s (negative control below)."""
+        d = _flux_domain(timestep=0.002, flux_timestep=1.0)
+        mon = SimulationMonitor(d, str(tmp_path), 1, yieldstep=144, cfl=0.9)
+        rec = mon.record(144.0, wall_time_s=1.0)
+
+        assert rec["implied_max_speed_ms"] == pytest.approx(INRADIUS, abs=0.01)
+        assert rec["implied_max_speed_ms"] < INSTABILITY_SPEED_THRESHOLD_MS
+        assert rec["flux_timestep_ms"] == pytest.approx(900.0)
+        assert rec["last_dt_ms"] == pytest.approx(2.0)  # kept, still the clipped step
+        pre_fix = 0.9 * INRADIUS / d.timestep
+        assert pre_fix > 200.0  # what the clipped divisor reported
+
+    def test_gpu_mode_reads_the_device_cfl_step_not_the_stale_host_value(self, tmp_path):
+        """Mode 2's C step loops never write the host domain.flux_timestep
+        (it stays 0.0); the CFL step lives in gpu_dom.recorded_flux_timestep
+        (already CFL-scaled, before the yield clip)."""
+        gpu_dom = SimpleNamespace(recorded_flux_timestep=0.9)
+        d = _flux_domain(timestep=0.002, flux_timestep=0.0,
+                         multiprocessor_mode=2,
+                         gpu_interface=SimpleNamespace(gpu_dom=gpu_dom))
+        mon = SimulationMonitor(d, str(tmp_path), 1, yieldstep=144, cfl=0.9)
+        rec = mon.record(144.0, wall_time_s=1.0)
+        assert rec["flux_timestep_ms"] == pytest.approx(900.0)
+        assert rec["implied_max_speed_ms"] == pytest.approx(INRADIUS, abs=0.01)
+
+    def test_gpu_python_fallback_loops_use_the_host_flux_step(self, tmp_path):
+        """The Python-orchestrated GPU loops write the host flux_timestep and
+        leave the device value unset: the host step is read then."""
+        gpu_dom = SimpleNamespace(recorded_flux_timestep=0.0)
+        d = _flux_domain(timestep=0.002, flux_timestep=1.0, multiprocessor_mode=2,
+                         gpu_interface=SimpleNamespace(gpu_dom=gpu_dom))
+        mon = SimulationMonitor(d, str(tmp_path), 1, yieldstep=144, cfl=0.9)
+        assert mon.record(144.0, wall_time_s=1.0)["flux_timestep_ms"] == pytest.approx(900.0)
+
+    def test_legacy_domain_without_flux_timestep_keeps_last_step(self, tmp_path):
+        """Mocks/engines without flux_timestep fall back to domain.timestep."""
+        d = _make_mock_domain(n=4, timestep=0.125, number_of_steps=480)
+        mon = SimulationMonitor(d, str(tmp_path), 1, yieldstep=60, cfl=0.9)
+        rec = mon.record(60.0, wall_time_s=1.0)
+        assert rec["implied_max_speed_ms"] == pytest.approx(0.9 * INRADIUS / 0.125, abs=0.01)
+        assert rec["flux_timestep_ms"] is None
+
+
+class TestCollapseRatio:
+    def test_collapse_ratio_ignores_t0_record(self, tmp_path):
+        """AC2 (TASK-4024). The t=0 record (no steps, dt 0) used to be the
+        baseline, so the ratio read 1.0 on every run. Rebased on stepped
+        records, a genuine collapse from 125 ms to 10 ms reads 0.08."""
+        d = _make_mock_domain(n=4, timestep=0.0, number_of_steps=0)
+        d.recorded_min_timestep = 0.0
+        mon = SimulationMonitor(d, str(tmp_path), 1, yieldstep=60, duration_s=240.0)
+        mon.record(0.0, wall_time_s=0.0)
+        for t, dt in ((60.0, 0.125), (120.0, 0.125), (180.0, 0.125), (240.0, 0.010)):
+            d.number_of_steps = 480
+            d.timestep = dt
+            d.recorded_min_timestep = dt
+            mon.record(t, wall_time_s=1.0)
+        mon.finalize()
+        stab = json.loads((tmp_path / "run_summary_1.json").read_text())["stability"]
+        assert stab["timestep_collapse_ratio"] == pytest.approx(0.08)
+        assert stab["timestep_collapse_ratio"] < 1.0
+
+
+class TestVolumeAccounting:
+    def test_closure_and_boundary_flux_columns_recorded(self, tmp_path):
+        """AC3. V, BF and FS come from the engine getters; closure = V - BF
+        - FS - V0 with V0 taken at the first record (V - BF - FS there), so a
+        resumed run's closure starts at zero too."""
+        state = {"V": 100.0, "BF": 0.0, "FS": 0.0}
+        d = _flux_domain(timestep=0.9, flux_timestep=1.0,
+                         get_water_volume=lambda: state["V"],
+                         get_boundary_flux_integral=lambda: state["BF"],
+                         get_fractional_step_volume_integral=lambda: state["FS"])
+        mon = SimulationMonitor(d, str(tmp_path), 1, yieldstep=144, cfl=0.9)
+        r1 = mon.record(0.0, wall_time_s=0.0)
+        state.update(V=150.0, BF=20.0, FS=25.0)
+        r2 = mon.record(144.0, wall_time_s=1.0)
+        mon.finalize()
+
+        assert (r1["boundary_flux_integral_m3"], r1["fractional_step_volume_m3"], r1["closure_m3"]) == (0.0, 0.0, 0.0)
+        assert r2["boundary_flux_integral_m3"] == 20.0
+        assert r2["fractional_step_volume_m3"] == 25.0
+        assert r2["closure_m3"] == pytest.approx(5.0)
+        rows = load_diagnostics_csv(tmp_path / "run_diagnostics_1.csv")
+        for col in ("flux_timestep_ms", "boundary_flux_integral_m3",
+                    "fractional_step_volume_m3", "closure_m3"):
+            assert col in SimulationMonitor.CSV_FIELDS
+            assert rows[-1][col] is not None, col
+        assert rows[-1]["closure_m3"] == pytest.approx(5.0)
+
+    def test_boundary_flux_getter_failure_leaves_columns_empty(self, tmp_path):
+        """Non-DE flux methods raise in get_boundary_flux_integral; the record
+        must not die, and closure is not computed from half the terms."""
+        def boom():
+            raise Exception("Boundary flux integral only supported for DE fluxes")
+        d = _flux_domain(timestep=0.9, flux_timestep=1.0,
+                         get_water_volume=lambda: 1.0,
+                         get_boundary_flux_integral=boom,
+                         get_fractional_step_volume_integral=lambda: 0.0)
+        mon = SimulationMonitor(d, str(tmp_path), 1, yieldstep=144, cfl=0.9)
+        rec = mon.record(144.0, wall_time_s=1.0)
+        assert rec["boundary_flux_integral_m3"] is None
+        assert rec["closure_m3"] is None
+
+
+class TestPeakLocation:
+    def _with_speeds(self, **extra):
+        d = _flux_domain(timestep=0.9, flux_timestep=1.0, **extra)
+        d.max_speed = np.array([1.0, 7.5, 2.0, 0.0])
+        # one boundary edge: triangle 3 edge 0, midpoint at (7, 0)
+        d.boundary = {(3, 0): "Transmissive"}
+        mids = np.zeros((12, 2))
+        mids[3 * 3 + 0] = (7.0, 0.0)
+        d.mesh.edge_midpoint_coordinates = mids
+        return d
+
+    def test_cpu_records_the_fastest_triangle_location(self, tmp_path):
+        """(e) CPU path: argmax(domain.max_speed) -> centroid, depth and the
+        distance to the nearest boundary edge (midpoint)."""
+        d = self._with_speeds()
+        mon = SimulationMonitor(d, str(tmp_path), 1, yieldstep=144, cfl=0.9)
+        rec = mon.record(144.0, wall_time_s=1.0)
+        assert (rec["cfl_peak_x"], rec["cfl_peak_y"]) == (3.0, 0.0)  # triangle 1
+        assert rec["cfl_peak_depth_m"] == pytest.approx(0.5)
+        assert rec["cfl_peak_boundary_dist_m"] == pytest.approx(4.0)
+
+    def test_gpu_location_is_null_never_a_guess(self, tmp_path):
+        """AC6. Mode 2 never syncs max_speed to the host: the host array is
+        stale, so the location fields are null in the CSV and the summary."""
+        gpu_dom = SimpleNamespace(recorded_flux_timestep=0.9)
+        d = self._with_speeds(multiprocessor_mode=2,
+                              gpu_interface=SimpleNamespace(gpu_dom=gpu_dom))
+        mon = SimulationMonitor(d, str(tmp_path), 1, yieldstep=144, cfl=0.9)
+        rec = mon.record(144.0, wall_time_s=1.0)
+        for k in ("cfl_peak_x", "cfl_peak_y", "cfl_peak_depth_m", "cfl_peak_boundary_dist_m"):
+            assert rec[k] is None, k
+        mon.finalize()
+        stab = json.loads((tmp_path / "run_summary_1.json").read_text())["stability"]
+        assert stab["location"] is None
+
+
+# --- graded classes ---------------------------------------------------------
+
+def _rec(t, n_steps=136, last=1060.0, min_dt=1060.0, implied=3.0, vol=0.0, **cols):
+    r = {"sim_time_s": t, "wall_time_s": 1.0, "n_steps": n_steps,
+         "mean_dt_ms": 1060.0, "last_dt_ms": last, "min_dt_ms": min_dt,
+         "implied_max_speed_ms": implied, "wet_cells": 3, "wet_fraction": 0.75,
+         "volume_m3": vol, "max_depth_m": 1.0, "max_speed_ms": 1.2,
+         "peak_speed_x": 1.0, "peak_speed_y": 0.0, "mem_mb": 100.0}
+    r.update(cols)
+    return r
+
+
+def _t0():
+    return _rec(0.0, n_steps=0, last=0.0, min_dt=0.0, implied=0.0)
+
+
+#: Saved production diagnostics, scrubbed (tests/fixtures/stability/README.md).
+STABILITY_FIXTURES = Path(__file__).parent / "fixtures" / "stability"
+
+
+def _fixture(run_id):
+    """(records, summary) of a saved production run: the run's own CSV (the
+    15-column schema these runs were written with) and its run summary."""
+    recs = load_diagnostics_csv(STABILITY_FIXTURES / f"run_{run_id}_diagnostics_1.csv")
+    summary = json.loads((STABILITY_FIXTURES / f"run_{run_id}_summary_1.json").read_text())
+    return recs, summary
+
+
+def _fixture_inputs(summary, storm_end_s=3600.0):
+    """Rain applied (the run's own rain check) and the storm end: both runs
+    are 1 h design bursts with no inflows."""
+    return {"inputs_m3": summary["rain"]["applied_m3"], "inputs_end_s": storm_end_s}
+
+
+class TestStabilityClasses:
+    def test_stability_class_from_fixtures(self):
+        """AC4 on the REAL saved runs (tests/fixtures/stability/). Run 1608
+        (project 1121 / scenario 502, 6 h, yieldstep 216 s, tags Dirichlet +
+        Transmissive) reported 1,122 m/s at sim 15,552 s = yield 72 from a
+        2.16 ms clipped last step: every spike is a yield clip and its volume
+        falls after the storm. Run 1613 (project 1135 / scenario 508, 4 h,
+        yieldstep 144 s, all-Transmissive edge) reported 407.9 m/s at 5,472 s
+        from a 7.88 ms clipped step, and its volume rose from 1.41 M m3 at rain
+        end to 5.10 M m3 with no inflows: the edge filled the model."""
+        recs, summary = _fixture(1608)
+        assert summary["stability"]["max_implied_speed_ms"] == 1122.04  # what it said
+        s1608 = classify_stability(recs, **_fixture_inputs(summary),
+                                   open_boundary_tags=["Dirichlet", "Transmissive"])
+        assert s1608["class"] == "clip_artefact"
+        assert s1608["speed_class"] == "clip_artefact"
+        assert s1608["n_records_over"] == 0
+        assert s1608["n_clip_artefacts"] >= 1
+        assert s1608["max_implied_speed_ms"] < INSTABILITY_SPEED_THRESHOLD_MS
+        assert s1608["boundary_net_in_m3"] < OPEN_BOUNDARY_NOISE * summary["rain"]["applied_m3"]
+        assert s1608["boundary_tag"] is None
+        spike = next(r for r in recs if r["sim_time_s"] == 15552.0)
+        assert spike["implied_max_speed_ms"] == 1122.04 and spike["last_dt_ms"] == 2.16
+
+        recs, summary = _fixture(1613)
+        assert summary["stability"]["max_implied_speed_ms"] == 407.9
+        s1613 = classify_stability(recs, **_fixture_inputs(summary),
+                                   open_boundary_tags=["Transmissive"])
+        assert s1613["class"] == "boundary_fed"
+        assert s1613["speed_class"] == "clip_artefact"
+        assert s1613["n_records_over"] == 0
+        assert s1613["max_implied_speed_ms"] < INSTABILITY_SPEED_THRESHOLD_MS
+        assert s1613["boundary_tag"] == "Transmissive"
+        assert s1613["boundary_basis"] == "by_difference"
+        net = summary["flow"]["final_volume_m3"] - summary["rain"]["applied_m3"]
+        assert s1613["boundary_net_in_m3"] == pytest.approx(net, abs=0.1)
+        assert s1613["boundary_net_in_m3"] > OPEN_BOUNDARY_NOISE * summary["rain"]["applied_m3"]
+        assert 3600.0 < s1613["onset_sim_s"] <= 7200.0
+        for key in ("class", "onset_sim_s", "n_records_over", "closure_pct",
+                    "boundary_net_in_m3", "boundary_tag"):
+            assert key in s1613
+
+    def test_collapse_ratio_on_real_runs_skips_dry_and_wetting_records(self):
+        """TASK-4024 on the real CSVs. A dry domain still steps (n_steps 1)
+        with min_dt_ms at the engine's 1,000 s 'no CFL step yet' value, and
+        the first wet window holds the wetting transient (25 ms, 18.93 ms).
+        Neither is a collapse: on the stepped-only rule the ratio read
+        6.9e-3 (1613) and 1.9e-5 (1608). Both runs' steps shrink only as the
+        water deepens, well above the 0.1 propagating line."""
+        for run_id, lo, hi in ((1613, 0.15, 0.3), (1608, 0.3, 0.6)):
+            recs, summary = _fixture(run_id)
+            ratio = classify_stability(recs, **_fixture_inputs(summary))["timestep_collapse_ratio"]
+            assert lo < ratio < hi, (run_id, ratio)
+
+    def test_boundary_flux_column_names_the_inflow_exactly(self):
+        """With the new columns the boundary volume is the engine's integral,
+        and closure_pct is |V - BF - FS - V0| over the inputs."""
+        recs = [_t0() | {"boundary_flux_integral_m3": 0.0, "fractional_step_volume_m3": 0.0,
+                         "closure_m3": 0.0, "flux_timestep_ms": 0.0}]
+        for i in range(1, 11):
+            fs = min(i, 4) * 250.0                       # 1,000 m3 of rain by t=4
+            bf = 0.0 if i <= 4 else (i - 4) * 400.0       # then the edge feeds
+            recs.append(_rec(i * 60.0, vol=fs + bf, flux_timestep_ms=1000.0,
+                             boundary_flux_integral_m3=bf, fractional_step_volume_m3=fs,
+                             closure_m3=5.0))
+        s = classify_stability(recs, open_boundary_tags=["Transmissive", "Time"])
+        assert s["class"] == "boundary_fed"
+        assert s["boundary_basis"] == "boundary_flux_integral"
+        assert s["boundary_net_in_m3"] == pytest.approx(2400.0)
+        assert s["closure_pct"] == pytest.approx(0.5)
+        assert s["boundary_tag"] == "Time,Transmissive"
+
+    def test_rain_only_run_with_falling_volume_is_not_boundary_fed(self):
+        recs = [_t0()] + [_rec(i * 60.0, vol=1000.0 - max(0, i - 4) * 50.0) for i in range(1, 11)]
+        s = classify_stability(recs, inputs_m3=1000.0, inputs_end_s=240.0)
+        assert s["class"] is None
+        assert s["boundary_net_in_m3"] < 0
+
+    def test_single_honest_spike_is_a_local_transient(self):
+        recs = [_t0()] + [_rec(i * 60.0) for i in range(1, 41)]
+        recs[20] = _rec(1200.0, implied=45.0, min_dt=300.0, last=300.0)
+        s = classify_stability(recs)
+        assert s["class"] == "local_transient"
+        assert s["n_records_over"] == 1
+        assert s["onset_sim_s"] == 1200.0
+
+    def test_three_consecutive_honest_records_are_localised_persistent(self):
+        recs = [_t0()] + [_rec(i * 60.0) for i in range(1, 41)]
+        for i in (20, 21, 22):
+            recs[i] = _rec(i * 60.0, implied=30.0, min_dt=200.0, last=200.0)
+        assert classify_stability(recs)["class"] == "localised_persistent"
+
+    def test_collapse_after_onset_is_propagating(self):
+        recs = [_t0()] + [_rec(i * 60.0) for i in range(1, 41)]
+        for i in range(30, 41):
+            recs[i] = _rec(i * 60.0, n_steps=136 * 20, implied=300.0, min_dt=10.0, last=10.0)
+        s = classify_stability(recs)
+        assert s["class"] == "propagating"
+        assert s["onset_sim_s"] == 1800.0
+
+    def test_clean_run_has_no_class(self):
+        recs = [_t0()] + [_rec(i * 60.0) for i in range(1, 41)]
+        s = classify_stability(recs)
+        assert s["class"] is None
+        assert s["n_records_over"] == 0
+
+
+class TestSummarySchema:
+    def test_summary_schema_bumped_and_new_stability_keys_pinned(self, tmp_path):
+        """AC5: SUMMARY_SCHEMA_VERSION moves to "2" and the stability dict
+        carries the graded fields beside the old ones."""
+        assert SUMMARY_SCHEMA_VERSION == "2"
+        mon = _make_monitor_with_records(tmp_path)
+        mon.finalize()
+        stab = json.loads((tmp_path / "run_summary_1.json").read_text())["stability"]
+        for key in ("stable", "max_implied_speed_ms", "max_implied_speed_at_sim_s",
+                    "timestep_collapse_ratio", "instability_threshold_ms",
+                    "class", "speed_class", "onset_sim_s", "n_records_over",
+                    "n_clip_artefacts", "closure_pct", "boundary_net_in_m3",
+                    "boundary_basis", "boundary_tag", "location",
+                    "thresholds_provisional"):
+            assert key in stab, key
+        assert stab["class"] is None
+        assert stab["thresholds_provisional"] is True
+
+    def test_clipped_spike_no_longer_marks_the_run_unstable(self, tmp_path):
+        """Run 1613's real first 5,760 s through the monitor: its old-style
+        clipped spikes (234.5 m/s at 3,888 s, 407.9 m/s at 5,472 s from last
+        steps of 13.7 and 7.88 ms, window min ~1,066 ms, steps steady) read
+        stable."""
+        domain = _make_mock_domain(n=4, number_of_steps=0)
+        mon = SimulationMonitor(domain, str(tmp_path), 1, yieldstep=144, duration_s=5760.0)
+        mon._records.extend(_fixture(1613)[0][:41])
+        assert mon._records[38]["implied_max_speed_ms"] == 407.9
+        mon.finalize()
+        data = json.loads((tmp_path / "run_summary_1.json").read_text())
+        assert data["stability"]["stable"] is True
+        assert data["stability"]["class"] == "clip_artefact"
+        assert data["stability"]["max_implied_speed_ms"] < INSTABILITY_SPEED_THRESHOLD_MS
+        assert data["run"]["outcome"] == "completed"
+
+
+class TestCflPeakAllreduce:
+    def test_cfl_peak_location_comes_from_the_winning_rank(self, monkeypatch):
+        """TASK-4316 (e) under MPI: the fastest CFL triangle is a MAXLOC over
+        ranks and its location is broadcast from the winner, the TASK-2675
+        pattern; a 'none'/'gpu' mode (the same on every rank) skips it."""
+        monkeypatch.setenv("OMPI_COMM_WORLD_SIZE", "4")
+        local = dict(RANK0_DRY_LOCAL, cfl_location_mode="cpu", cfl_peak_speed=1.5,
+                     cfl_peak_x=1.0, cfl_peak_y=2.0, cfl_peak_depth_m=0.1,
+                     cfl_peak_boundary_dist_m=9.0)
+        script = TestAllreduceFlowScalars()._global_script() + [
+            {"method": "allreduce", "op": "MAXLOC", "sendobj": (1.5, 0), "ret": (8.0, 3)},
+            {"method": "bcast", "root": 3, "ret": (500.0, 600.0, 0.02, 1.5)},
+        ]
+        comm = ScriptedComm(script)
+        _install_fake_mpi(monkeypatch, comm)
+        out = allreduce_flow_scalars(local)
+        assert out["cfl_peak_speed"] == 8.0
+        assert (out["cfl_peak_x"], out["cfl_peak_y"], out["cfl_peak_depth_m"],
+                out["cfl_peak_boundary_dist_m"]) == (500.0, 600.0, 0.02, 1.5)
+        assert comm.script == []
+
+        comm = ScriptedComm(TestAllreduceFlowScalars()._global_script())
+        _install_fake_mpi(monkeypatch, comm)
+        out = allreduce_flow_scalars(dict(local, cfl_location_mode="gpu", cfl_peak_x=None))
+        assert out["cfl_peak_x"] is None
+        assert comm.script == []

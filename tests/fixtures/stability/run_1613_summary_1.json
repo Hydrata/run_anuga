@@ -1,0 +1,88 @@
+{
+  "schema_version": "1",
+  "run": {
+    "run_label": "run_1135_508_1613",
+    "project": 1135,
+    "scenario": 508,
+    "run_id": 1613,
+    "name": "Sullivans Creek - Barry Drive - 1h 1% AEP rainfall - draft",
+    "batch_number": 1,
+    "started_at": "2026-11-05T11:18:56.119257+00:00",
+    "finished_at": "2026-11-05T11:19:28.123350+00:00",
+    "total_wall_time_s": 32.0,
+    "outcome": "completed"
+  },
+  "model": {
+    "duration_s": 14400.0,
+    "final_sim_time_s": 14400.0,
+    "n_yieldsteps": 101,
+    "yieldstep_s": 144.0,
+    "epsg": "EPSG:28355",
+    "resolution_m": 40.0,
+    "flow_algorithm": "DE0",
+    "cfl": 0.9
+  },
+  "mesh": {
+    "n_triangles": 94855,
+    "inradius_min_m": 3.5697,
+    "inradius_p5_m": 6.1844,
+    "inradius_median_m": 8.6481,
+    "min_angle_deg": 28.02,
+    "worst_triangle_x": 694167.1,
+    "worst_triangle_y": 6101059.8
+  },
+  "performance": {
+    "total_wall_time_s": 32.0,
+    "sim_per_wall_ratio": 449.942,
+    "total_internal_steps": 19249,
+    "mean_steps_per_yieldstep": 190.6,
+    "max_steps_per_yieldstep": 312,
+    "mean_dt_ms": 748.09,
+    "first_dt_ms": 0.0,
+    "min_dt_ms": 0.0,
+    "min_dt_at_sim_s": 0.0,
+    "peak_mem_mb": 3092.1
+  },
+  "flow": {
+    "final_wet_fraction": 0.2386,
+    "final_volume_m3": 5098453.9,
+    "max_depth_m": 9.009,
+    "max_speed_ms": 6.289,
+    "peak_speed_x": 693394.7,
+    "peak_speed_y": 6099313.2,
+    "max_basis": "max over saved frames"
+  },
+  "stability": {
+    "stable": false,
+    "max_implied_speed_ms": 407.9,
+    "max_implied_speed_at_sim_s": 5472.0,
+    "timestep_collapse_ratio": 1.0,
+    "instability_threshold_ms": 20.0
+  },
+  "environment": {
+    "hostname": "<redacted>",
+    "os": "Linux-6.1.176-220.360.amzn2023.x86_64-x86_64",
+    "python_version": "3.12.3",
+    "cpu_model": "x86_64",
+    "cpu_count_logical": 16,
+    "cpu_count_physical": 8,
+    "cpu_freq_max_mhz": 0.0,
+    "total_ram_gb": 124.12,
+    "run_anuga_version": "1.1.0",
+    "anuga_version": "0.0.0+g1a496176daad29ec32cb284ca2d45af2797f9a11",
+    "anuga_core_sha": "1a496176daad29ec32cb284ca2d45af2797f9a11",
+    "run_anuga_sha": "7c944bb",
+    "run_anuga_sha_source": "build_provenance"
+  },
+  "rain": {
+    "expected_m3": 1409594.957,
+    "applied_m3": 1410691.726,
+    "diff_pct": 0.0778,
+    "ok": true,
+    "tolerance_pct": 2.0,
+    "n_polygons": 1,
+    "n_polygons_skipped": 0,
+    "rain_area_m2": 49441979.5,
+    "applied_method": "rate_operator_cumulative_influx"
+  }
+}

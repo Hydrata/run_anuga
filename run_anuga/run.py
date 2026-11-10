@@ -759,6 +759,9 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
                 duration_s=duration,
                 run_label=input_data['run_label'],
                 scenario_config=input_data['scenario_config'],
+                # TASK-4316: every tag in the scenario (rank 0's partition may
+                # not touch them all); a boundary_fed class names the open ones.
+                boundary_tags=list(input_data.get('boundary_tags') or {}) or None,
             )
         # `start` is the per-tick wall-clock reference reset every iteration.
         # (The old `simulation_start` ETA anchor is gone — see D7 note below.)
@@ -770,7 +773,9 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
         for t in domain.evolve(yieldstep=yieldstep, finaltime=duration, skip_initial_step=skip_initial_step):
             # TASK-2675 — honest MPI diagnostics: the flow scalars are
             # reduced across ALL ranks (SUM wet/vol, MAX depth/speed, MIN
-            # wet inradius), so this COLLECTIVE must run on every rank at
+            # wet inradius; TASK-4316 adds the engine's volume, boundary-flux
+            # and fractional-step integrals and the CFL-peak MAXLOC), so this
+            # COLLECTIVE must run on every rank at
             # the yieldstep boundary. Calling it inside the myid==0 block
             # would deadlock rank 0's allreduce against the other ranks'
             # evolve-internal collectives. Serial runs skip MPI entirely

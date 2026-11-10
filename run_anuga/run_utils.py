@@ -1507,6 +1507,37 @@ def build_time_boundary_function(time_boundary_features, defaults=None):
     return _time_function
 
 
+def describe_empty_merge(name, stamps, values, window_start, window_end):
+    """The TASK-2155 guard's message for a series that merged to all-NaN,
+    naming the REAL cause (TASK-2947 (c)): the series has no values, its
+    stamps carry fractional seconds that land on no whole-second row of the
+    model's per-second index, or it has no overlap with the model window.
+
+    ``stamps`` are the parsed (UTC) series timestamps and ``values`` the
+    numeric values (None already coerced to NaN); both pandas Series.
+    """
+    series_start, series_end = stamps.min(), stamps.max()
+    spans = (
+        f"series spans [{series_start}, {series_end}] and the model window "
+        f"is [{window_start}, {window_end}]"
+    )
+    in_window = (stamps >= window_start) & (stamps <= window_end)
+    if values.isna().all() or (in_window.any() and values[in_window].isna().all()):
+        cause = "has no values inside the model window (every value is empty)"
+    elif in_window.any() and (stamps[in_window] != stamps[in_window].dt.floor('s')).all():
+        cause = (
+            "has fractional-second timestamps that land on no whole-second "
+            "step of the model"
+        )
+    else:
+        cause = "has no overlap with the model window"
+    return (
+        f"Series '{name}' {cause}: {spans}. Applying this series would "
+        f"silently yield zero rain/inflow for the entire simulation — "
+        f"aborting instead."
+    )
+
+
 def apply_inflows_to_domain(
     input_data,
     domain,
@@ -1589,15 +1620,55 @@ def apply_inflows_to_domain(
         series' own final interval (last_t - previous_t); after it ends the
         rate is 0 instead of the last value held to the end of the run. A
         one-row series has no interval to end on and stays a held rate.
+
+        Timezone contract (TASK-3802, epic 3801 D4; documented by TASK-2947):
+        naive stamps are UTC. Hydrata converts each series from its
+        TimeSeries.timezone to UTC before packaging and emits NAIVE UTC
+        stamps, and this function reads a naive stamp as UTC
+        (``tz_localize('UTC')``); 'Z' and '+00:00' stamps (TASK-4295) are
+        already UTC and merge identically.
+
+        Stamps are whole seconds on the model's index: fractional seconds are
+        rounded to the nearest second and a repeated stamp keeps its last
+        value, each with a warning naming the series (TASK-2947).
         """
         nonlocal inflow_dataframe
         new_dataframe = pd.DataFrame(rows)
-        new_dataframe['timestamp'] = pd.to_datetime(new_dataframe['timestamp'])
+        # TASK-2947 (b2): format='ISO8601' parses each stamp on its own, so a
+        # list mixing 'T00:00:00' and 'T00:05:00.5' no longer raises
+        # "unconverted data remains" (pandas infers one format from row 1).
+        new_dataframe['timestamp'] = pd.to_datetime(new_dataframe['timestamp'], format='ISO8601')
         new_dataframe[name] = pd.to_numeric(new_dataframe['value'])
+        # Naive stamps are UTC (TASK-3802; see the docstring). Pinned by
+        # test_naive_z_and_utc_offset_stamps_are_utc.
         if inflow_dataframe['timestamp'].dt.tz is None:
             inflow_dataframe['timestamp'] = inflow_dataframe['timestamp'].dt.tz_localize('UTC')
         if new_dataframe['timestamp'].dt.tz is None:
             new_dataframe['timestamp'] = new_dataframe['timestamp'].dt.tz_localize('UTC')
+        parsed_stamps, parsed_values = new_dataframe['timestamp'], new_dataframe[name]
+        # TASK-2947 (b): the merge below is an exact-equality join on a
+        # whole-second index, so a fractional-second stamp would match no
+        # row and its sample would be silently DROPPED. Round explicitly to
+        # the nearest whole second (pandas rounds a .5 tie to even) and say so.
+        fractional = new_dataframe['timestamp'] != new_dataframe['timestamp'].dt.floor('s')
+        if fractional.any():
+            logger.warning(
+                "Series '%s': %d of %d timestamps have fractional seconds; "
+                "rounded to the nearest whole second (the model steps on "
+                "whole seconds)", name, int(fractional.sum()), len(new_dataframe),
+            )
+            new_dataframe['timestamp'] = new_dataframe['timestamp'].dt.round('s')
+        # TASK-2947 (a): a DUPLICATE stamp would add a row to the per-second
+        # frame and shift every later positional lookup by one second. Keep
+        # the LAST value for a repeated stamp (also catches two stamps that
+        # rounding made equal).
+        duplicated = new_dataframe['timestamp'].duplicated(keep='last')
+        if duplicated.any():
+            logger.warning(
+                "Series '%s': %d duplicate timestamps; kept the last value "
+                "for each", name, int(duplicated.sum()),
+            )
+            new_dataframe = new_dataframe[~duplicated]
         # TASK-2816 — narrow to the merge keys before merging. The raw
         # 'value' column otherwise leaks into inflow_dataframe on every
         # merge and collides across series: merge 2 suffixes it to
@@ -1616,18 +1687,13 @@ def apply_inflows_to_domain(
         # Operator decision: ERROR the run, NEVER warn-and-continue. A
         # PARTIAL lead-in gap (series starts partway through the window) is
         # NOT this failure mode and must not raise — only ALL-NaN does.
+        # TASK-2947 (c): the message names the real cause (no values,
+        # fractional stamps, or no overlap), not always "ZERO overlap".
         if inflow_dataframe[name].isna().all():
-            series_start = new_dataframe['timestamp'].min()
-            series_end = new_dataframe['timestamp'].max()
-            window_start = inflow_dataframe['timestamp'].min()
-            window_end = inflow_dataframe['timestamp'].max()
-            raise ValueError(
-                f"Series '{name}' has ZERO overlap with the model window: "
-                f"series spans [{series_start}, {series_end}] but the model "
-                f"window is [{window_start}, {window_end}]. Applying this "
-                f"series would silently yield zero rain/inflow for the "
-                f"entire simulation — aborting instead."
-            )
+            raise ValueError(describe_empty_merge(
+                name, parsed_stamps, parsed_values,
+                inflow_dataframe['timestamp'].min(), inflow_dataframe['timestamp'].max(),
+            ))
 
         # TASK-2825 (epic 2815 W1.6) — a PARTIAL lead-in gap (series starts
         # partway through the window) passes the guard above with its lead-in

@@ -53,12 +53,16 @@
 # ---- the ONE engine pin, shared by BOTH targets ---------------------------
 # There is deliberately NO second pin anywhere in this file; both targets
 # move together.
-# Pin 7f1a4847 = Hydrata/anuga_core fork main, the TASK-2652 881-commit
+# Pin 3712ea6f = Hydrata/anuga_core fork main, merge of PR #15: upstream
+# anuga-community/anuga_core release 4.1.0 with the Hydrata deltas kept
+# (TASK-4320, epic 3754). 4.1.0 changes Inlet_operator line regions
+# (upstream #231). Prev: 1a496176 (fork PR #13, TASK-3772 true peaks).
+# Older: 7f1a4847 = Hydrata/anuga_core fork main, the TASK-2652 881-commit
 # upstream-develop merge — the SAME engine the live GPU image bakes
 # (TASK-2673 engine unification: cpu joins gpu on fork main; towradgi
 # parity gate on the cpu build is the acceptance evidence). Prev: 8abd3aef
 # (fork main @ upstream anuga-community/main 2d3696ea, epic 2147 W1.1).
-ARG ANUGA_CORE_SHA=1a496176daad29ec32cb284ca2d45af2797f9a11
+ARG ANUGA_CORE_SHA=3712ea6f8e37cbaa501b774b84c70a410f7c8c90
 
 # ---- BARE-TAG RULE: a `v`-prefixed anuga_core tag is a SILENT no-op --------
 # (TASK-2700. Recorded here and in deploy's install-anuga.yml pin comment —

@@ -1,0 +1,88 @@
+{
+  "schema_version": "1",
+  "run": {
+    "run_label": "run_1121_502_1608",
+    "project": 1121,
+    "scenario": 502,
+    "run_id": 1608,
+    "name": "1pct AEP 1hr - rain on grid - 10m",
+    "batch_number": 1,
+    "started_at": "2026-10-31T04:24:52.567974+00:00",
+    "finished_at": "2026-10-31T04:25:54.075581+00:00",
+    "total_wall_time_s": 61.5,
+    "outcome": "completed"
+  },
+  "model": {
+    "duration_s": 21600.0,
+    "final_sim_time_s": 21600.0,
+    "n_yieldsteps": 101,
+    "yieldstep_s": 216.0,
+    "epsg": "EPSG:32755",
+    "resolution_m": 30.0,
+    "flow_algorithm": "DE0",
+    "cfl": 0.9
+  },
+  "mesh": {
+    "n_triangles": 402915,
+    "inradius_min_m": 2.5645,
+    "inradius_p5_m": 4.6601,
+    "inradius_median_m": 6.4672,
+    "min_angle_deg": 28.01,
+    "worst_triangle_x": 691197.3,
+    "worst_triangle_y": 6094762.5
+  },
+  "performance": {
+    "total_wall_time_s": 61.5,
+    "sim_per_wall_ratio": 351.176,
+    "total_internal_steps": 26342,
+    "mean_steps_per_yieldstep": 260.8,
+    "max_steps_per_yieldstep": 364,
+    "mean_dt_ms": 819.98,
+    "first_dt_ms": 0.0,
+    "min_dt_ms": 0.0,
+    "min_dt_at_sim_s": 0.0,
+    "peak_mem_mb": 3396.6
+  },
+  "flow": {
+    "final_wet_fraction": 0.1,
+    "final_volume_m3": 1467153.1,
+    "max_depth_m": 3.568,
+    "max_speed_ms": 2.092,
+    "peak_speed_x": 696659.6,
+    "peak_speed_y": 6095070.6,
+    "max_basis": "max over saved frames"
+  },
+  "stability": {
+    "stable": false,
+    "max_implied_speed_ms": 1122.04,
+    "max_implied_speed_at_sim_s": 15552.0,
+    "timestep_collapse_ratio": 1.0,
+    "instability_threshold_ms": 20.0
+  },
+  "environment": {
+    "hostname": "<redacted>",
+    "os": "Linux-6.1.176-220.360.amzn2023.x86_64-x86_64",
+    "python_version": "3.12.3",
+    "cpu_model": "x86_64",
+    "cpu_count_logical": 16,
+    "cpu_count_physical": 8,
+    "cpu_freq_max_mhz": 0.0,
+    "total_ram_gb": 124.12,
+    "run_anuga_version": "1.1.0",
+    "anuga_version": "0.0.0+g1a496176daad29ec32cb284ca2d45af2797f9a11",
+    "anuga_core_sha": "1a496176daad29ec32cb284ca2d45af2797f9a11",
+    "run_anuga_sha": "7c944bb",
+    "run_anuga_sha_source": "build_provenance"
+  },
+  "rain": {
+    "expected_m3": 1529396.121,
+    "applied_m3": 1512500.743,
+    "diff_pct": -1.1047,
+    "ok": true,
+    "tolerance_pct": 2.0,
+    "n_polygons": 1,
+    "n_polygons_skipped": 0,
+    "rain_area_m2": 117653397.3,
+    "applied_method": "rate_operator_cumulative_influx"
+  }
+}
