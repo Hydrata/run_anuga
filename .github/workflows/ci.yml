@@ -127,7 +127,8 @@ jobs:
       # reds every run_anuga PR, with the fix landing in another repo and no blame signal
       # (TASK-1477's exact failure mode). Ratchet owner + cadence:
       # docs/fleet-enforcement/pin-ratchet.md in Hydrata/deploy. Pinned SHA = anuga_core's
-      # origin/main tip as of 2026-10-17 (fork PR #13, TASK-3772 true peaks; was ad1bfe7).
+      # origin/main tip as of 2026-11-10 (fork PR #15, upstream 4.1.0 sync, TASK-4320;
+      # was 1a496176, fork PR #13, TASK-3772 true peaks).
       - name: Install the Hydrata anuga_core fork (prod engine, not PyPI upstream)
         run: |
           # TASK-2863: Cython 3.3.0 (released 2026-08-22) rejects the fork's
@@ -140,7 +141,7 @@ jobs:
           # the constraint in the PR that bumps the pin past the fork-side fix
           # (TASK-2863 AC4).
           pip install "cython<3.3" meson-python meson ninja pybind11 setuptools wheel
-          pip install --force-reinstall --no-deps --no-build-isolation "anuga @ git+https://github.com/Hydrata/anuga_core.git@1a496176daad29ec32cb284ca2d45af2797f9a11"
+          pip install --force-reinstall --no-deps --no-build-isolation "anuga @ git+https://github.com/Hydrata/anuga_core.git@3712ea6f8e37cbaa501b774b84c70a410f7c8c90"
           python -c "import anuga; from osgeo import gdal, ogr; print('anuga', anuga.__version__, '| gdal/ogr import OK')"
 
       - name: Merewether ARR benchmark + ANUGA integration tests
