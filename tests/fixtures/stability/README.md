@@ -1,32 +1,34 @@
 # Stability fixtures (TASK-4316)
 
-Saved production diagnostics used to pin `run_anuga.diagnostics.classify_stability`.
+Saved production diagnostics that pin `run_anuga.diagnostics.classify_stability`
+(`tests/test_diagnostics.py::TestStabilityClasses`). Both runs were written
+with the 15-column CSV schema that predates TASK-4316, and both runs
+reported themselves "unstable" because the implied speed divided by the step
+that the engine had already clipped to land on the yield time.
 
-## Pending
+| Run | Project / scenario | Model | Reported | Expected class |
+|-----|--------------------|-------|----------|----------------|
+| 1613 | 1135 / 508 | 4 h, yieldstep 144 s, 1 h rain, all-Transmissive edge | 407.9 m/s at 5,472 s (last step 7.88 ms) | `boundary_fed`; speed spikes `clip_artefact` (volume 1.41 M m3 at rain end, 5.10 M m3 at 4 h, no inflows) |
+| 1608 | 1121 / 502 | 6 h, yieldstep 216 s, 1 h rain, Dirichlet + Transmissive | 1,122 m/s at 15,552 s = yield 72 (last step 2.16 ms) | `clip_artefact` |
 
-The real files for these two runs are not committed yet. Until they are,
-`tests/test_diagnostics.py::TestStabilityClasses::test_stability_class_from_fixtures`
-uses documented SYNTHETIC record sets that reproduce each run's signature:
+Files per run:
 
-| Run | Project / scenario | Expected class | Synthetic stand-in |
-|-----|--------------------|----------------|--------------------|
-| 1613 | 1135 / 508 | `boundary_fed`; its speed spikes `clip_artefact` | `_synthetic_1613_records()`: built from the run log's yield windows and volume figures |
-| 1608 | 1121 / 502 | `clip_artefact` | `_synthetic_1608_records()`: 1,122 m/s at sim 15,552 s (yield 72) from a 3 ms clipped last step |
+- `run_<id>_diagnostics_1.csv`: the run's `run_diagnostics_1.csv`, unchanged
+  apart from line endings.
+- `run_<id>_summary_1.json`: the run's `run_summary_1.json` (schema 1).
+- `run_<id>.log`: the run's `run_anuga_1.log`.
 
-To add the real files, take from each run's results zip the
-`run_diagnostics_1.csv`, `run_summary_1.json` and the run log, and commit them
-here as `run_<id>_diagnostics_1.csv`, `run_<id>_summary_1.json` and
-`run_<id>.log`.
+## Scrubbed (this repository is public)
 
-## Scrub before committing (this repository is public)
-
-Remove every S3 URI, bucket name, AWS account id, email address, user id and
-hostname from all three files, then check with a grep that none remain, for
-example:
+Taken from each run's results zip (Results > Download) on 10-11-26. Both
+projects belong to the operator's own accounts. Before committing, the
+environment hostname and the storage bucket name and prefix in the
+playback-export log line were replaced with `<redacted>`. Nothing else in the
+files names a storage location, account, email address or user. Check any
+change with:
 
 ```
-grep -nEi 's3://|arn:aws|amazonaws|@[a-z0-9.-]+\.[a-z]{2,}|[0-9]{12}|hostname' tests/fixtures/stability/*
+grep -nEi 's3://|arn:aws|amazonaws|anuga-result-storage|@[a-z0-9.-]+\.[a-z]{2,}|[0-9]{12}|ip-10-' tests/fixtures/stability/run_*
 ```
 
-Confirm on the run rows that the projects belong to the operator's own
-accounts before committing.
+which must print nothing.

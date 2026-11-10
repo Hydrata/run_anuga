@@ -1,0 +1,155 @@
+run_sim started with batch_number=1
+Building domain...
+No checkpoint file found. Starting new Simulation
+Applied pre-distribute negative-depth protection (run-1283 defense-in-depth, TASK-2226)
+------------------------------------------------
+Mesh statistics:
+  Number of triangles = 94855
+  Extent [m]:
+    x in [6.90143e+05, 6.99338e+05]
+    y in [6.09380e+06, 6.10418e+06]
+  Areas [m^2]:
+    A in [1.77875e+02, 7.99985e+02]
+    number of distinct areas: 94855
+    Histogram:
+      [1.77875e+02, 2.40086e+02[: 4
+      [2.40086e+02, 3.02297e+02[: 271
+      [3.02297e+02, 3.64508e+02[: 6828
+      [3.64508e+02, 4.26719e+02[: 17121
+      [4.26719e+02, 4.88930e+02[: 18138
+      [4.88930e+02, 5.51141e+02[: 15554
+      [5.51141e+02, 6.13352e+02[: 13924
+      [6.13352e+02, 6.75563e+02[: 11506
+      [6.75563e+02, 7.37774e+02[: 7275
+      [7.37774e+02, 7.99985e+02]: 4234
+    Percentiles (10 percent):
+      9485 triangles in [1.77875e+02, 3.75413e+02]
+      9485 triangles in [3.75413e+02, 4.08972e+02]
+      9485 triangles in [4.08972e+02, 4.40600e+02]
+      9485 triangles in [4.40600e+02, 4.72799e+02]
+      9485 triangles in [4.72799e+02, 5.08571e+02]
+      9485 triangles in [5.08571e+02, 5.46922e+02]
+      9485 triangles in [5.46922e+02, 5.87154e+02]
+      9485 triangles in [5.87154e+02, 6.32780e+02]
+      9485 triangles in [6.32780e+02, 6.90244e+02]
+      9485 triangles in [6.90244e+02, 7.99885e+02]
+      5 triangles in [7.99885e+02, 7.99985e+02]
+  Boundary:
+    Number of boundary segments == 1021
+    Boundary tags == ['Transmissive']
+------------------------------------------------
+
+true peaks: ON (update_frequency=1, velocity_zero_height=0.005 m)
+run_sim: multiprocessor_mode=2
+run_sim: checkpointing DISABLED on Batch path (RUN_ANUGA_CHECKPOINTS='(default)')
+0.0% | 0m 0s | mem: 2.4% | disk: 13.8% | 1970-01-01T00:00:00+00:00 | steps=0 dt=0ms vmax=0.00m/s v_impl=0.0m/s wet=0% vol=0m³
+1.0% | 0m 0s | mem: 2.4% | disk: 13.8% | 1970-01-01T00:02:24+00:00 | steps=1 dt=144000ms vmax=0.00m/s v_impl=0.0m/s wet=0% vol=0m³
+2.0% | 0m 0s | mem: 2.4% | disk: 13.8% | 1970-01-01T00:04:48+00:00 | steps=12 dt=4487ms vmax=0.75m/s v_impl=0.7m/s wet=70% vol=57975m³
+3.0% | 0m 0s | mem: 2.4% | disk: 13.8% | 1970-01-01T00:07:12+00:00 | steps=19 dt=2418ms vmax=0.58m/s v_impl=1.3m/s wet=71% vol=79972m³
+4.0% | 0m 0s | mem: 2.4% | disk: 13.8% | 1970-01-01T00:09:36+00:00 | steps=23 dt=3984ms vmax=5.05m/s v_impl=0.8m/s wet=72% vol=98423m³
+5.0% | 0m 0s | mem: 2.4% | disk: 13.8% | 1970-01-01T00:12:00+00:00 | steps=27 dt=1398ms vmax=0.88m/s v_impl=2.3m/s wet=83% vol=136508m³
+6.0% | 0m 0s | mem: 2.4% | disk: 13.8% | 1970-01-01T00:14:24+00:00 | steps=29 dt=967ms vmax=0.66m/s v_impl=3.3m/s wet=89% vol=176982m³
+7.0% | 0m 0s | mem: 2.4% | disk: 13.8% | 1970-01-01T00:16:48+00:00 | steps=32 dt=4283ms vmax=2.23m/s v_impl=0.8m/s wet=94% vol=227696m³
+8.0% | 0m 0s | mem: 2.4% | disk: 13.8% | 1970-01-01T00:19:12+00:00 | steps=38 dt=1849ms vmax=1.15m/s v_impl=1.7m/s wet=95% vol=280613m³
+9.0% | 0m 0s | mem: 2.4% | disk: 13.8% | 1970-01-01T00:21:36+00:00 | steps=44 dt=427ms vmax=1.32m/s v_impl=7.5m/s wet=99% vol=357556m³
+10.0% | 0m 0s | mem: 2.4% | disk: 13.8% | 1970-01-01T00:24:00+00:00 | steps=50 dt=161ms vmax=1.67m/s v_impl=19.9m/s wet=99% vol=444884m³
+11.0% | 0m 0s | mem: 2.4% | disk: 13.8% | 1970-01-01T00:26:24+00:00 | steps=56 dt=922ms vmax=1.78m/s v_impl=3.5m/s wet=99% vol=526052m³
+12.0% | 0m 0s | mem: 2.4% | disk: 13.8% | 1970-01-01T00:28:48+00:00 | steps=60 dt=1141ms vmax=1.84m/s v_impl=2.8m/s wet=98% vol=603056m³
+13.0% | 0m 0s | mem: 2.4% | disk: 13.8% | 1970-01-01T00:31:12+00:00 | steps=61 dt=546ms vmax=1.70m/s v_impl=5.9m/s wet=98% vol=680148m³
+14.0% | 0m 0s | mem: 2.4% | disk: 13.8% | 1970-01-01T00:33:36+00:00 | steps=63 dt=674ms vmax=2.03m/s v_impl=4.8m/s wet=99% vol=757259m³
+15.0% | 0m 0s | mem: 2.4% | disk: 13.8% | 1970-01-01T00:36:00+00:00 | steps=68 dt=1529ms vmax=1.73m/s v_impl=2.1m/s wet=97% vol=827048m³
+16.0% | 0m 0s | mem: 2.4% | disk: 13.8% | 1970-01-01T00:38:24+00:00 | steps=78 dt=1110ms vmax=1.76m/s v_impl=2.9m/s wet=97% vol=887278m³
+17.0% | 0m 0s | mem: 2.4% | disk: 13.8% | 1970-01-01T00:40:48+00:00 | steps=85 dt=1486ms vmax=1.78m/s v_impl=2.2m/s wet=96% vol=940301m³
+18.0% | 0m 0s | mem: 2.4% | disk: 13.8% | 1970-01-01T00:43:12+00:00 | steps=94 dt=844ms vmax=1.72m/s v_impl=3.8m/s wet=94% vol=977739m³
+19.0% | 0m 0s | mem: 2.4% | disk: 13.8% | 1970-01-01T00:45:36+00:00 | steps=102 dt=817ms vmax=1.62m/s v_impl=3.9m/s wet=96% vol=1023374m³
+20.0% | 0m 0s | mem: 2.4% | disk: 13.8% | 1970-01-01T00:48:00+00:00 | steps=109 dt=534ms vmax=1.57m/s v_impl=6.0m/s wet=97% vol=1091126m³
+21.0% | 0m 0s | mem: 2.4% | disk: 13.8% | 1970-01-01T00:50:24+00:00 | steps=115 dt=572ms vmax=1.66m/s v_impl=5.6m/s wet=97% vol=1158531m³
+22.0% | 0m 0s | mem: 2.4% | disk: 13.8% | 1970-01-01T00:52:48+00:00 | steps=120 dt=911ms vmax=1.76m/s v_impl=3.5m/s wet=98% vol=1225804m³
+23.0% | 0m 0s | mem: 2.4% | disk: 13.8% | 1970-01-01T00:55:12+00:00 | steps=123 dt=502ms vmax=1.82m/s v_impl=6.4m/s wet=97% vol=1292444m³
+24.0% | 0m 0s | mem: 2.4% | disk: 13.8% | 1970-01-01T00:57:36+00:00 | steps=125 dt=251ms vmax=1.83m/s v_impl=12.8m/s wet=97% vol=1352771m³
+25.0% | 0m 0s | mem: 2.4% | disk: 13.8% | 1970-01-01T01:00:00+00:00 | steps=126 dt=1009ms vmax=1.81m/s v_impl=3.2m/s wet=97% vol=1413394m³
+26.0% | 0m 0s | mem: 2.4% | disk: 13.8% | 1970-01-01T01:02:24+00:00 | steps=128 dt=571ms vmax=1.74m/s v_impl=5.6m/s wet=86% vol=1410156m³
+27.0% | 0m 0s | mem: 2.4% | disk: 13.8% | 1970-01-01T01:04:48+00:00 | steps=130 dt=14ms vmax=1.65m/s v_impl=234.5m/s wet=78% vol=1408823m³
+28.0% | 0m 0s | mem: 2.4% | disk: 13.8% | 1970-01-01T01:07:12+00:00 | steps=133 dt=666ms vmax=1.65m/s v_impl=4.8m/s wet=71% vol=1407976m³
+29.0% | 0m 0s | mem: 2.4% | disk: 13.8% | 1970-01-01T01:09:36+00:00 | steps=136 dt=35ms vmax=1.61m/s v_impl=92.9m/s wet=66% vol=1406878m³
+30.0% | 0m 0s | mem: 2.4% | disk: 13.8% | 1970-01-01T01:12:00+00:00 | steps=135 dt=1000ms vmax=1.56m/s v_impl=3.2m/s wet=62% vol=1405986m³
+31.0% | 0m 0s | mem: 2.4% | disk: 13.8% | 1970-01-01T01:14:24+00:00 | steps=135 dt=649ms vmax=1.55m/s v_impl=5.0m/s wet=58% vol=1405398m³
+32.0% | 0m 0s | mem: 2.4% | disk: 13.8% | 1970-01-01T01:16:48+00:00 | steps=135 dt=137ms vmax=1.54m/s v_impl=23.5m/s wet=55% vol=1404963m³
+33.0% | 0m 0s | mem: 2.4% | disk: 13.8% | 1970-01-01T01:19:12+00:00 | steps=135 dt=272ms vmax=1.52m/s v_impl=11.8m/s wet=52% vol=1404748m³
+34.0% | 0m 0s | mem: 2.4% | disk: 13.8% | 1970-01-01T01:21:36+00:00 | steps=136 dt=659ms vmax=1.50m/s v_impl=4.9m/s wet=50% vol=1404616m³
+35.0% | 0m 0s | mem: 2.4% | disk: 13.8% | 1970-01-01T01:24:00+00:00 | steps=136 dt=420ms vmax=1.47m/s v_impl=7.6m/s wet=48% vol=1404616m³
+36.0% | 0m 0s | mem: 2.4% | disk: 13.8% | 1970-01-01T01:26:24+00:00 | steps=135 dt=997ms vmax=1.44m/s v_impl=3.2m/s wet=47% vol=1404704m³
+37.0% | 0m 0s | mem: 2.4% | disk: 13.8% | 1970-01-01T01:28:48+00:00 | steps=135 dt=832ms vmax=1.42m/s v_impl=3.9m/s wet=45% vol=1404894m³
+38.0% | 0m 0s | mem: 2.4% | disk: 13.8% | 1970-01-01T01:31:12+00:00 | steps=136 dt=8ms vmax=1.38m/s v_impl=407.9m/s wet=44% vol=1405448m³
+39.0% | 0m 0s | mem: 2.4% | disk: 13.8% | 1970-01-01T01:33:36+00:00 | steps=136 dt=137ms vmax=1.33m/s v_impl=23.5m/s wet=43% vol=1406531m³
+40.0% | 0m 0s | mem: 2.4% | disk: 13.8% | 1970-01-01T01:36:00+00:00 | steps=136 dt=208ms vmax=1.32m/s v_impl=15.4m/s wet=42% vol=1407801m³
+41.0% | 0m 0s | mem: 2.4% | disk: 13.8% | 1970-01-01T01:38:24+00:00 | steps=136 dt=271ms vmax=1.34m/s v_impl=11.9m/s wet=41% vol=1409015m³
+42.0% | 0m 0s | mem: 2.4% | disk: 13.8% | 1970-01-01T01:40:48+00:00 | steps=136 dt=348ms vmax=1.36m/s v_impl=9.2m/s wet=40% vol=1410222m³
+43.0% | 0m 0s | mem: 2.4% | disk: 13.8% | 1970-01-01T01:43:12+00:00 | steps=136 dt=432ms vmax=1.37m/s v_impl=7.4m/s wet=39% vol=1411534m³
+44.0% | 0m 0s | mem: 2.4% | disk: 13.8% | 1970-01-01T01:45:36+00:00 | steps=136 dt=511ms vmax=1.37m/s v_impl=6.3m/s wet=38% vol=1412904m³
+45.0% | 0m 0s | mem: 2.4% | disk: 13.8% | 1970-01-01T01:48:00+00:00 | steps=136 dt=581ms vmax=1.37m/s v_impl=5.5m/s wet=38% vol=1414658m³
+46.0% | 0m 0s | mem: 2.4% | disk: 13.8% | 1970-01-01T01:50:24+00:00 | steps=136 dt=643ms vmax=1.35m/s v_impl=5.0m/s wet=37% vol=1418730m³
+47.0% | 0m 0s | mem: 2.4% | disk: 13.8% | 1970-01-01T01:52:48+00:00 | steps=136 dt=699ms vmax=1.91m/s v_impl=4.6m/s wet=36% vol=1427352m³
+48.0% | 0m 0s | mem: 2.4% | disk: 13.8% | 1970-01-01T01:55:12+00:00 | steps=137 dt=595ms vmax=2.47m/s v_impl=5.4m/s wet=36% vol=1445534m³
+49.0% | 0m 0s | mem: 2.4% | disk: 13.8% | 1970-01-01T01:57:36+00:00 | steps=152 dt=427ms vmax=2.66m/s v_impl=7.5m/s wet=35% vol=1471223m³
+50.0% | 0m 0s | mem: 2.4% | disk: 13.8% | 1970-01-01T02:00:00+00:00 | steps=181 dt=262ms vmax=2.67m/s v_impl=12.3m/s wet=35% vol=1501937m³
+51.0% | 0m 0s | mem: 2.4% | disk: 13.8% | 1970-01-01T02:02:24+00:00 | steps=198 dt=60ms vmax=2.72m/s v_impl=53.6m/s wet=34% vol=1536655m³
+52.0% | 0m 0s | mem: 2.4% | disk: 13.8% | 1970-01-01T02:04:48+00:00 | steps=215 dt=194ms vmax=2.49m/s v_impl=16.6m/s wet=34% vol=1574208m³
+53.0% | 0m 0s | mem: 2.4% | disk: 13.8% | 1970-01-01T02:07:12+00:00 | steps=228 dt=472ms vmax=2.32m/s v_impl=6.8m/s wet=33% vol=1613545m³
+54.0% | 0m 0s | mem: 2.4% | disk: 13.8% | 1970-01-01T02:09:36+00:00 | steps=239 dt=148ms vmax=2.17m/s v_impl=21.8m/s wet=33% vol=1653683m³
+55.0% | 0m 0s | mem: 2.4% | disk: 13.8% | 1970-01-01T02:12:00+00:00 | steps=247 dt=496ms vmax=2.02m/s v_impl=6.5m/s wet=32% vol=1693902m³
+56.0% | 0m 0s | mem: 2.4% | disk: 13.8% | 1970-01-01T02:14:24+00:00 | steps=254 dt=248ms vmax=1.85m/s v_impl=13.0m/s wet=32% vol=1731713m³
+57.0% | 0m 0s | mem: 2.4% | disk: 13.8% | 1970-01-01T02:16:48+00:00 | steps=258 dt=259ms vmax=2.28m/s v_impl=12.4m/s wet=31% vol=1762005m³
+58.0% | 0m 0s | mem: 2.4% | disk: 13.8% | 1970-01-01T02:19:12+00:00 | steps=260 dt=398ms vmax=2.58m/s v_impl=8.1m/s wet=31% vol=1782071m³
+59.0% | 0m 0s | mem: 2.4% | disk: 13.8% | 1970-01-01T02:21:36+00:00 | steps=261 dt=502ms vmax=2.60m/s v_impl=6.4m/s wet=31% vol=1789587m³
+60.0% | 0m 0s | mem: 2.4% | disk: 13.8% | 1970-01-01T02:24:00+00:00 | steps=262 dt=114ms vmax=2.53m/s v_impl=28.1m/s wet=30% vol=1790994m³
+61.0% | 0m 0s | mem: 2.4% | disk: 13.8% | 1970-01-01T02:26:24+00:00 | steps=262 dt=65ms vmax=2.49m/s v_impl=49.8m/s wet=30% vol=1795328m³
+62.0% | 0m 0s | mem: 2.4% | disk: 13.8% | 1970-01-01T02:28:48+00:00 | steps=262 dt=303ms vmax=2.53m/s v_impl=10.6m/s wet=30% vol=1803426m³
+63.0% | 0m 0s | mem: 2.4% | disk: 13.8% | 1970-01-01T02:31:12+00:00 | steps=262 dt=529ms vmax=2.57m/s v_impl=6.1m/s wet=29% vol=1812282m³
+64.0% | 0m 0s | mem: 2.4% | disk: 13.8% | 1970-01-01T02:33:36+00:00 | steps=263 dt=228ms vmax=2.61m/s v_impl=14.1m/s wet=29% vol=1821272m³
+65.0% | 0m 0s | mem: 2.4% | disk: 13.8% | 1970-01-01T02:36:00+00:00 | steps=263 dt=463ms vmax=2.64m/s v_impl=7.0m/s wet=29% vol=1830277m³
+66.0% | 0m 0s | mem: 2.4% | disk: 13.8% | 1970-01-01T02:38:24+00:00 | steps=264 dt=129ms vmax=2.67m/s v_impl=24.8m/s wet=28% vol=1839415m³
+67.0% | 0m 0s | mem: 2.4% | disk: 13.8% | 1970-01-01T02:40:48+00:00 | steps=264 dt=350ms vmax=2.70m/s v_impl=9.2m/s wet=28% vol=1848964m³
+68.0% | 0m 0s | mem: 2.4% | disk: 13.8% | 1970-01-01T02:43:12+00:00 | steps=265 dt=67ms vmax=2.73m/s v_impl=48.2m/s wet=28% vol=1859306m³
+69.0% | 0m 0s | mem: 2.4% | disk: 13.8% | 1970-01-01T02:45:36+00:00 | steps=265 dt=425ms vmax=2.78m/s v_impl=7.6m/s wet=27% vol=1870971m³
+70.0% | 0m 0s | mem: 2.4% | disk: 13.9% | 1970-01-01T02:48:00+00:00 | steps=266 dt=403ms vmax=2.85m/s v_impl=8.0m/s wet=27% vol=1885166m³
+71.0% | 0m 0s | mem: 2.4% | disk: 13.9% | 1970-01-01T02:50:24+00:00 | steps=268 dt=364ms vmax=3.08m/s v_impl=8.8m/s wet=27% vol=1906711m³
+72.0% | 0m 0s | mem: 2.4% | disk: 13.9% | 1970-01-01T02:52:48+00:00 | steps=275 dt=234ms vmax=3.59m/s v_impl=13.7m/s wet=27% vol=1960190m³
+73.0% | 0m 0s | mem: 2.4% | disk: 13.9% | 1970-01-01T02:55:12+00:00 | steps=280 dt=300ms vmax=3.90m/s v_impl=10.7m/s wet=26% vol=2026411m³
+74.0% | 0m 0s | mem: 2.4% | disk: 13.9% | 1970-01-01T02:57:36+00:00 | steps=287 dt=60ms vmax=4.36m/s v_impl=53.7m/s wet=26% vol=2098940m³
+75.0% | 0m 0s | mem: 2.4% | disk: 13.9% | 1970-01-01T03:00:00+00:00 | steps=292 dt=144ms vmax=4.75m/s v_impl=22.3m/s wet=26% vol=2178310m³
+76.0% | 0m 0s | mem: 2.4% | disk: 13.9% | 1970-01-01T03:02:24+00:00 | steps=296 dt=55ms vmax=4.92m/s v_impl=58.7m/s wet=26% vol=2263567m³
+77.0% | 0m 0s | mem: 2.4% | disk: 13.9% | 1970-01-01T03:04:48+00:00 | steps=298 dt=440ms vmax=5.07m/s v_impl=7.3m/s wet=26% vol=2354830m³
+78.0% | 0m 0s | mem: 2.4% | disk: 13.9% | 1970-01-01T03:07:12+00:00 | steps=301 dt=276ms vmax=5.35m/s v_impl=11.6m/s wet=26% vol=2452997m³
+79.0% | 0m 0s | mem: 2.4% | disk: 13.9% | 1970-01-01T03:09:36+00:00 | steps=303 dt=219ms vmax=5.53m/s v_impl=14.7m/s wet=25% vol=2554941m³
+80.0% | 0m 0s | mem: 2.4% | disk: 13.9% | 1970-01-01T03:12:00+00:00 | steps=304 dt=368ms vmax=5.66m/s v_impl=8.7m/s wet=25% vol=2659911m³
+81.0% | 0m 0s | mem: 2.4% | disk: 13.9% | 1970-01-01T03:14:24+00:00 | steps=305 dt=390ms vmax=5.75m/s v_impl=8.2m/s wet=25% vol=2767357m³
+82.0% | 0m 0s | mem: 2.4% | disk: 13.9% | 1970-01-01T03:16:48+00:00 | steps=306 dt=289ms vmax=5.82m/s v_impl=11.1m/s wet=25% vol=2876835m³
+83.0% | 0m 0s | mem: 2.4% | disk: 13.9% | 1970-01-01T03:19:12+00:00 | steps=307 dt=115ms vmax=5.86m/s v_impl=27.9m/s wet=25% vol=2988312m³
+84.0% | 0m 0s | mem: 2.4% | disk: 13.9% | 1970-01-01T03:21:36+00:00 | steps=307 dt=366ms vmax=5.91m/s v_impl=8.8m/s wet=25% vol=3101564m³
+85.0% | 0m 0s | mem: 2.4% | disk: 13.9% | 1970-01-01T03:24:00+00:00 | steps=308 dt=120ms vmax=5.96m/s v_impl=26.7m/s wet=25% vol=3216556m³
+86.0% | 0m 0s | mem: 2.4% | disk: 13.9% | 1970-01-01T03:26:24+00:00 | steps=308 dt=325ms vmax=5.99m/s v_impl=9.9m/s wet=25% vol=3333182m³
+87.0% | 0m 0s | mem: 2.4% | disk: 13.9% | 1970-01-01T03:28:48+00:00 | steps=309 dt=46ms vmax=6.03m/s v_impl=70.5m/s wet=25% vol=3451342m³
+88.0% | 0m 0s | mem: 2.4% | disk: 13.9% | 1970-01-01T03:31:12+00:00 | steps=309 dt=216ms vmax=6.06m/s v_impl=14.8m/s wet=24% vol=3570997m³
+89.0% | 0m 0s | mem: 2.4% | disk: 13.9% | 1970-01-01T03:33:36+00:00 | steps=309 dt=373ms vmax=6.09m/s v_impl=8.6m/s wet=24% vol=3692010m³
+90.0% | 0m 0s | mem: 2.4% | disk: 13.9% | 1970-01-01T03:36:00+00:00 | steps=310 dt=54ms vmax=6.11m/s v_impl=59.8m/s wet=24% vol=3814328m³
+91.0% | 0m 0s | mem: 2.4% | disk: 13.9% | 1970-01-01T03:38:24+00:00 | steps=310 dt=191ms vmax=6.13m/s v_impl=16.9m/s wet=24% vol=3937819m³
+92.0% | 0m 0s | mem: 2.4% | disk: 13.9% | 1970-01-01T03:40:48+00:00 | steps=310 dt=319ms vmax=6.16m/s v_impl=10.1m/s wet=24% vol=4062469m³
+93.0% | 0m 0s | mem: 2.4% | disk: 13.9% | 1970-01-01T03:43:12+00:00 | steps=310 dt=439ms vmax=6.18m/s v_impl=7.3m/s wet=24% vol=4188222m³
+94.0% | 0m 0s | mem: 2.4% | disk: 13.9% | 1970-01-01T03:45:36+00:00 | steps=311 dt=86ms vmax=6.20m/s v_impl=37.5m/s wet=24% vol=4315018m³
+95.0% | 0m 0s | mem: 2.4% | disk: 13.9% | 1970-01-01T03:48:00+00:00 | steps=311 dt=192ms vmax=6.21m/s v_impl=16.7m/s wet=24% vol=4442850m³
+96.0% | 0m 0s | mem: 2.4% | disk: 13.9% | 1970-01-01T03:50:24+00:00 | steps=311 dt=295ms vmax=6.23m/s v_impl=10.9m/s wet=24% vol=4571655m³
+97.0% | 0m 0s | mem: 2.4% | disk: 13.9% | 1970-01-01T03:52:48+00:00 | steps=311 dt=397ms vmax=6.24m/s v_impl=8.1m/s wet=24% vol=4701517m³
+98.0% | 0m 0s | mem: 2.4% | disk: 13.9% | 1970-01-01T03:55:12+00:00 | steps=312 dt=40ms vmax=6.26m/s v_impl=80.0m/s wet=24% vol=4832571m³
+99.0% | 0m 0s | mem: 2.4% | disk: 13.9% | 1970-01-01T03:57:36+00:00 | steps=312 dt=150ms vmax=6.27m/s v_impl=21.5m/s wet=24% vol=4964845m³
+100.0% | 0m 0s | mem: 2.4% | disk: 13.9% | 1970-01-01T04:00:00+00:00 | steps=312 dt=264ms vmax=6.29m/s v_impl=12.2m/s wet=24% vol=5098454m³
+rain check OK: applied 1410691.7 m3 vs expected 1409595.0 m3 (0.0778%)
+Processing results...
+Generating output rasters on 0...
+resolutions=[]
+raster output resolution: 40.0m
+true peaks: *_max.tif rebuilt from the engine per-step maxima
+Successfully generated depth, velocity, momentum outputs
+playback_store export: spatial_order=True temporal_delta=True
+playback_store export result: {'status': 'ok', 'local_path': '/tmp/simulation/outputs_1135_508_1613/run_1135_508_1613_playback.zarr', 'n_time': 101, 'n_node': 47939, 'has_dt': True, 's3_bucket': '<redacted>', 's3_prefix': '<redacted>'}
+finished run: run_1135_508_1613

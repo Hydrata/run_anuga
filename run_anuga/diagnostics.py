@@ -1218,10 +1218,19 @@ def classify_stability(records, *, threshold=INSTABILITY_SPEED_THRESHOLD_MS,
     peak = int(np.argmax(honest)) if honest else None
 
     # TASK-4024: the collapse ratio's baseline is the median honest min step
-    # of the first stepped records, never the t=0 record (dt 0 -> ratio 1.0).
+    # of the first WET stepped records, never the t=0 record (dt 0 -> ratio
+    # 1.0) nor a dry window: a dry domain still steps, with min_dt_ms at the
+    # engine's "no CFL step yet" value (1,000 s on runs 1608 and 1613). The
+    # ratio is the smallest later step over that baseline, so the wetting
+    # transient inside the baseline window (25 ms on run 1613) is not read as
+    # a collapse: on the real CSVs the stepped-only rule gave 6.9e-3 and 1.9e-5.
     min_dts = [_num(r.get("min_dt_ms")) or 0.0 for r in stepped]
-    baseline = float(np.median(min_dts[:COLLAPSE_BASELINE_RECORDS])) if min_dts else 0.0
-    collapse_ratio = min(min_dts) / baseline if baseline > 0 else 1.0
+    wet = [i for i, r in enumerate(stepped) if (_num(r.get("wet_cells")) is None
+                                                or _num(r.get("wet_cells")) > 0)]
+    base_idx = wet[:COLLAPSE_BASELINE_RECORDS]
+    baseline = float(np.median([min_dts[i] for i in base_idx])) if base_idx else 0.0
+    later = [min_dts[i] for i in wet[COLLAPSE_BASELINE_RECORDS:]] or [min_dts[i] for i in base_idx]
+    collapse_ratio = min(later) / baseline if baseline > 0 else 1.0
 
     # --- volume accounting ---------------------------------------------
     def series(col):
@@ -1263,8 +1272,9 @@ def classify_stability(records, *, threshold=INSTABILITY_SPEED_THRESHOLD_MS,
     if over:
         first = over[0]
         speed_onset = _num(stepped[first].get("sim_time_s"))
-        pre_dt = min_dts[:first] or min_dts[:COLLAPSE_BASELINE_RECORDS]
-        pre_steps = steps[:first] or steps[:COLLAPSE_BASELINE_RECORDS]
+        pre = [i for i in wet if i < first] or base_idx or [first]
+        pre_dt = [min_dts[i] for i in pre]
+        pre_steps = [steps[i] for i in pre]
         dt_base, steps_base = float(np.median(pre_dt)), float(np.median(pre_steps))
         collapsed = any(
             (dt_base > 0 and min_dts[i] < COLLAPSE_RATIO_PROPAGATING * dt_base)

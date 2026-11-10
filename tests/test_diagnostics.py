@@ -6,6 +6,7 @@ No ANUGA installation required — a lightweight mock domain is used.
 import csv
 import json
 import math
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -1143,12 +1144,6 @@ from run_anuga.diagnostics import (  # noqa: E402
 )
 
 INRADIUS = math.sqrt(3) / 3  # every mock triangle; the wet minimum too
-OLD_CSV_FIELDS = [  # the 15-column schema runs 1608 and 1613 were written with
-    "sim_time_s", "wall_time_s", "n_steps", "mean_dt_ms", "last_dt_ms",
-    "min_dt_ms", "implied_max_speed_ms", "wet_cells", "wet_fraction",
-    "volume_m3", "max_depth_m", "max_speed_ms", "peak_speed_x", "peak_speed_y",
-    "mem_mb",
-]
 
 
 def _flux_domain(timestep=0.002, flux_timestep=1.0, cfl=0.9, **extra):
@@ -1327,87 +1322,77 @@ def _t0():
     return _rec(0.0, n_steps=0, last=0.0, min_dt=0.0, implied=0.0)
 
 
-def _synthetic_1608_records():
-    """Run 1608 (project 1121 / scenario 502), SYNTHETIC: its results zip was
-    not available, so this reproduces the signature in TASK-4103: a 6 h run,
-    yieldstep 216 s, one record of 1,122 m/s at sim 15,552 s = yield 72
-    exactly, made by a 3 ms clipped last step while n_steps and min_dt_ms sit
-    on their neighbours' values (cfl * min_r_wet ~ 3.37 m on a 30 m mesh)."""
-    k = 3.366  # cfl * min_r_wet, metres
-    recs = [_t0()]
-    for i in range(1, 101):
-        t = 216.0 * i
-        rain_on = t <= 10800.0
-        vol = 5000.0 * min(i, 50) if rain_on else 250000.0 - 1500.0 * (i - 50)
-        last = 3.0 if i == 72 else 1000.0 - (i % 7) * 40.0
-        recs.append(_rec(t, n_steps=216, last=last, min_dt=1000.0 - 5.0 * (i % 3),
-                         implied=round(k / (last / 1000.0), 2), vol=vol))
-    return recs
+#: Saved production diagnostics, scrubbed (tests/fixtures/stability/README.md).
+STABILITY_FIXTURES = Path(__file__).parent / "fixtures" / "stability"
 
 
-#: Run 1613's log windows, read 09-11-26 (research note 2026-11-09-task-4103):
-#: (percent, last dt ms, v_impl m/s). n_steps 135/136, step ~1.06 s.
-RUN_1613_LOG_WINDOWS = [
-    (36, 997, 3.2), (37, 832, 3.9), (38, 8, 407.9), (39, 137, 23.5),
-    (40, 208, 15.4), (41, 271, 11.9), (42, 348, 9.2), (43, 432, 7.4),
-    (44, 511, 6.3),
-]
+def _fixture(run_id):
+    """(records, summary) of a saved production run: the run's own CSV (the
+    15-column schema these runs were written with) and its run summary."""
+    recs = load_diagnostics_csv(STABILITY_FIXTURES / f"run_{run_id}_diagnostics_1.csv")
+    summary = json.loads((STABILITY_FIXTURES / f"run_{run_id}_summary_1.json").read_text())
+    return recs, summary
 
 
-def _synthetic_1613_records():
-    """Run 1613 (project 1135 / scenario 508), SYNTHETIC from its log (the
-    results zip was not on this box): 4 h, yieldstep 144 s, rain ends at
-    3,600 s with 1,413,394 m3 in the model, rain applied 1,410,691.7 m3, no
-    inflows, one boundary tag 'Transmissive'; volume 1,501,937 at 2 h,
-    2,178,310 at 3 h, 5,098,454 at 4 h; speed spikes are yield clips."""
-    anchors = [(0.0, 0.0), (3600.0, 1413394.0), (7200.0, 1501937.0),
-               (10800.0, 2178310.0), (14400.0, 5098454.0)]
-    spikes = {pct: (last, v) for pct, last, v in RUN_1613_LOG_WINDOWS}
-    recs = [_t0()]
-    for i in range(1, 101):
-        t = 144.0 * i
-        vol = float(np.interp(t, [a for a, _ in anchors], [v for _, v in anchors]))
-        last, v = spikes.get(i, (1000.0, 3.25))
-        recs.append(_rec(t, n_steps=136 if i % 2 else 135, last=last,
-                         min_dt=1058.0, implied=v, vol=vol))
-    return recs
+def _fixture_inputs(summary, storm_end_s=3600.0):
+    """Rain applied (the run's own rain check) and the storm end: both runs
+    are 1 h design bursts with no inflows."""
+    return {"inputs_m3": summary["rain"]["applied_m3"], "inputs_end_s": storm_end_s}
 
 
 class TestStabilityClasses:
-    def test_stability_class_from_fixtures(self, tmp_path):
-        """AC4 on the documented synthetic sets (the real run CSVs are pending:
-        tests/fixtures/stability/README.md). Run 1608 round-trips through the
-        old 15-column CSV schema, as its real file will."""
-        path = tmp_path / "run_diagnostics_1.csv"
-        with path.open("w", newline="") as f:
-            f.write("# 12,345 triangles | synthetic run 1608\n")
-            w = csv.DictWriter(f, fieldnames=OLD_CSV_FIELDS, extrasaction="ignore",
-                               restval="0")
-            w.writeheader()
-            for r in _synthetic_1608_records():
-                w.writerow(r)
-        s1608 = classify_stability(load_diagnostics_csv(path),
-                                   inputs_m3=260000.0, inputs_end_s=10800.0,
-                                   open_boundary_tags=["Transmissive"])
+    def test_stability_class_from_fixtures(self):
+        """AC4 on the REAL saved runs (tests/fixtures/stability/). Run 1608
+        (project 1121 / scenario 502, 6 h, yieldstep 216 s, tags Dirichlet +
+        Transmissive) reported 1,122 m/s at sim 15,552 s = yield 72 from a
+        2.16 ms clipped last step: every spike is a yield clip and its volume
+        falls after the storm. Run 1613 (project 1135 / scenario 508, 4 h,
+        yieldstep 144 s, all-Transmissive edge) reported 407.9 m/s at 5,472 s
+        from a 7.88 ms clipped step, and its volume rose from 1.41 M m3 at rain
+        end to 5.10 M m3 with no inflows: the edge filled the model."""
+        recs, summary = _fixture(1608)
+        assert summary["stability"]["max_implied_speed_ms"] == 1122.04  # what it said
+        s1608 = classify_stability(recs, **_fixture_inputs(summary),
+                                   open_boundary_tags=["Dirichlet", "Transmissive"])
         assert s1608["class"] == "clip_artefact"
+        assert s1608["speed_class"] == "clip_artefact"
         assert s1608["n_records_over"] == 0
-        assert s1608["n_clip_artefacts"] == 1
-        assert s1608["onset_sim_s"] == 15552.0
+        assert s1608["n_clip_artefacts"] >= 1
+        assert s1608["max_implied_speed_ms"] < INSTABILITY_SPEED_THRESHOLD_MS
+        assert s1608["boundary_net_in_m3"] < OPEN_BOUNDARY_NOISE * summary["rain"]["applied_m3"]
+        assert s1608["boundary_tag"] is None
+        spike = next(r for r in recs if r["sim_time_s"] == 15552.0)
+        assert spike["implied_max_speed_ms"] == 1122.04 and spike["last_dt_ms"] == 2.16
 
-        s1613 = classify_stability(_synthetic_1613_records(),
-                                   inputs_m3=1410691.7, inputs_end_s=3600.0,
+        recs, summary = _fixture(1613)
+        assert summary["stability"]["max_implied_speed_ms"] == 407.9
+        s1613 = classify_stability(recs, **_fixture_inputs(summary),
                                    open_boundary_tags=["Transmissive"])
         assert s1613["class"] == "boundary_fed"
         assert s1613["speed_class"] == "clip_artefact"
         assert s1613["n_records_over"] == 0
+        assert s1613["max_implied_speed_ms"] < INSTABILITY_SPEED_THRESHOLD_MS
         assert s1613["boundary_tag"] == "Transmissive"
         assert s1613["boundary_basis"] == "by_difference"
-        assert s1613["boundary_net_in_m3"] == pytest.approx(5098454.0 - 1410691.7, rel=1e-6)
-        assert s1613["boundary_net_in_m3"] > OPEN_BOUNDARY_NOISE * 1410691.7
+        net = summary["flow"]["final_volume_m3"] - summary["rain"]["applied_m3"]
+        assert s1613["boundary_net_in_m3"] == pytest.approx(net, abs=0.1)
+        assert s1613["boundary_net_in_m3"] > OPEN_BOUNDARY_NOISE * summary["rain"]["applied_m3"]
         assert 3600.0 < s1613["onset_sim_s"] <= 7200.0
         for key in ("class", "onset_sim_s", "n_records_over", "closure_pct",
                     "boundary_net_in_m3", "boundary_tag"):
             assert key in s1613
+
+    def test_collapse_ratio_on_real_runs_skips_dry_and_wetting_records(self):
+        """TASK-4024 on the real CSVs. A dry domain still steps (n_steps 1)
+        with min_dt_ms at the engine's 1,000 s 'no CFL step yet' value, and
+        the first wet window holds the wetting transient (25 ms, 18.93 ms).
+        Neither is a collapse: on the stepped-only rule the ratio read
+        6.9e-3 (1613) and 1.9e-5 (1608). Both runs' steps shrink only as the
+        water deepens, well above the 0.1 propagating line."""
+        for run_id, lo, hi in ((1613, 0.15, 0.3), (1608, 0.3, 0.6)):
+            recs, summary = _fixture(run_id)
+            ratio = classify_stability(recs, **_fixture_inputs(summary))["timestep_collapse_ratio"]
+            assert lo < ratio < hi, (run_id, ratio)
 
     def test_boundary_flux_column_names_the_inflow_exactly(self):
         """With the new columns the boundary volume is the engine's integral,
@@ -1481,12 +1466,14 @@ class TestSummarySchema:
         assert stab["thresholds_provisional"] is True
 
     def test_clipped_spike_no_longer_marks_the_run_unstable(self, tmp_path):
-        """Run 1613's shape through the monitor: one old-style clipped spike
-        (last 8 ms, window min 1,058 ms, steps steady) reads stable."""
+        """Run 1613's real first 5,760 s through the monitor: its old-style
+        clipped spikes (234.5 m/s at 3,888 s, 407.9 m/s at 5,472 s from last
+        steps of 13.7 and 7.88 ms, window min ~1,066 ms, steps steady) read
+        stable."""
         domain = _make_mock_domain(n=4, number_of_steps=0)
-        mon = SimulationMonitor(domain, str(tmp_path), 1, yieldstep=144, duration_s=1440.0)
-        mon._records.extend(_synthetic_1613_records()[:11])
-        mon._records[10] = _rec(1440.0, last=8.0, min_dt=1058.0, implied=407.9)
+        mon = SimulationMonitor(domain, str(tmp_path), 1, yieldstep=144, duration_s=5760.0)
+        mon._records.extend(_fixture(1613)[0][:41])
+        assert mon._records[38]["implied_max_speed_ms"] == 407.9
         mon.finalize()
         data = json.loads((tmp_path / "run_summary_1.json").read_text())
         assert data["stability"]["stable"] is True
