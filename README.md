@@ -462,7 +462,7 @@ All simulation constants are defined in `run_anuga/defaults.py`:
 | `BUILDING_BURN_HEIGHT_M` | 5.0 | Height added to DEM for buildings |
 | `BUILDING_MANNINGS_N` | 10.0 | Manning's n for building footprints |
 | `DEFAULT_MANNINGS_N` | 0.04 | Default Manning's roughness |
-| `RAINFALL_FACTOR` | 1.0e-6 | mm/hr to m/s conversion factor |
+| `RAINFALL_FACTOR` | 2.7778e-7 (= 1/(1000*3600)) | mm/hr to m/s conversion factor |
 | `MINIMUM_STORABLE_HEIGHT_M` | 0.005 | Min depth stored in SWW |
 | `MIN_ALLOWED_HEIGHT_M` | 1.0e-5 | Min depth for velocity extrapolation |
 | `MAX_YIELDSTEPS` | 100 | Max yield steps per simulation |
