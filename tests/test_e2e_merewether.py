@@ -5,8 +5,10 @@ Requires ANUGA. Runs the full simulation and validates peak stage at
 5 ARR field observation points within ±0.3 m tolerance.
 
 TASK-2186 adds the origin-shift case: the same mesh, rigidly translated 0.5 m
-against the 1 m DEM, must still pass ARR and move peak stage at each point by
-less than 0.05 m (footprint-integrated bed seating, not a centroid coin flip).
+against the 1 m DEM, must pass ARR on both runs, with peak stage read at the
+containing triangle's engine max_stage_c (operator Decision 776, 12-11-26: a
+per-point stage bound is unattainable beside Merewether's 3 m walls for any
+seating; the continuity guarantee lives in tests/test_elevation_sampling.py).
 
 Run with:
     pytest -m requires_anuga -k merewether
@@ -24,9 +26,8 @@ import pytest
 MEREWETHER_DIR = Path(__file__).parent.parent / "examples" / "merewether"
 
 # TASK-2186 AC4: the mesh origin moves 0.5 m (along the diagonal, so both axes
-# cross DEM cell edges) and peak stage at each ARR point may move less than this.
+# cross DEM cell edges); both runs must still pass ARR.
 ORIGIN_SHIFT_M = 0.5
-ORIGIN_SHIFT_PEAK_STAGE_TOL_M = 0.05
 
 
 def _copy_merewether(dst):
@@ -58,8 +59,28 @@ def _prebuild_shifted_mesh(package_dir, shift_m):
     return mesh_filepath
 
 
-def _run_and_read_peak_stages(package_dir):
+def _containing_triangles(xs, ys, volumes, points):
+    """Index of the triangle containing each (x, y) point (barycentric test)."""
+    ax, ay = xs[volumes[:, 0]], ys[volumes[:, 0]]
+    bx, by = xs[volumes[:, 1]], ys[volumes[:, 1]]
+    cx, cy = xs[volumes[:, 2]], ys[volumes[:, 2]]
+    det = (by - cy) * (ax - cx) + (cx - bx) * (ay - cy)
+    out = []
+    for qx, qy in points:
+        l1 = ((by - cy) * (qx - cx) + (cx - bx) * (qy - cy)) / det
+        l2 = ((cy - ay) * (qx - cx) + (ax - cx) * (qy - cy)) / det
+        inside = np.flatnonzero((l1 >= -1e-9) & (l2 >= -1e-9) & (1.0 - l1 - l2 >= -1e-9))
+        assert inside.size, f"point ({qx}, {qy}) lies in no triangle"
+        out.append(int(inside[0]))
+    return out
+
+
+def _run_and_read_peak_stages(package_dir, reader="node"):
     """Run the package, assert it completed stably, return {point id: (peak stage, props)}.
+
+    ``reader="node"`` takes the max over frames of stage at the nearest smoothed SWW
+    node (the original ARR reader); ``reader="triangle"`` takes the engine's per-step
+    ``max_stage_c`` of the triangle containing the point (TASK-2186 AC4, Decision 776).
 
     Each run is its own process (``python -m run_anuga.cli run``, as test_culvert_e2e):
     run_sim finalizes MPI on the way out and aborts COMM_WORLD on failure, so a second
@@ -88,6 +109,18 @@ def _run_and_read_peak_stages(package_dir):
     # SWW x/y are relative to the file's geo_reference; the gauges are absolute UTM.
     xs = np.array(ds.variables["x"][:], dtype=float) + float(getattr(ds, "xllcorner", 0.0))
     ys = np.array(ds.variables["y"][:], dtype=float) + float(getattr(ds, "yllcorner", 0.0))
+    if reader == "triangle":
+        from run_anuga.peaks import engine_peaks_from_dataset
+
+        engine = engine_peaks_from_dataset(ds)
+        volumes = np.asarray(ds.variables["volumes"][:], dtype=np.int64)
+        ds.close()
+        assert engine is not None, "SWW has no engine max_stage_c (true peaks off?)"
+        feats = obs["features"]
+        tris = _containing_triangles(xs, ys, volumes, [f["geometry"]["coordinates"] for f in feats])
+        return {f["properties"]["id"]: (float(engine["max_stage_c"][t]), f["properties"])
+                for f, t in zip(feats, tris)}
+
     stage = np.array(ds.variables["stage"][:], dtype=float)
     ds.close()
 
@@ -123,11 +156,15 @@ def test_merewether_completes_and_validates(merewether_copy):
 @pytest.mark.requires_anuga
 @pytest.mark.slow
 def test_merewether_origin_shift_within_tolerance(tmp_path):
-    """TASK-2186 AC4: a 0.5 m mesh-origin shift keeps ARR and moves peak stage < 0.05 m."""
-    base = _run_and_read_peak_stages(_copy_merewether(tmp_path / "unshifted"))
+    """TASK-2186 AC4 (Decision 776): ARR passes on both the unshifted and a 0.5 m-shifted run.
+
+    Peak stage is read at the containing triangle's max_stage_c. The deltas are reported,
+    not bounded: beside a 3 m wall the bed itself moves with the shift under any seating.
+    """
+    base = _run_and_read_peak_stages(_copy_merewether(tmp_path / "unshifted"), reader="triangle")
     shifted_dir = _copy_merewether(tmp_path / "shifted")
     _prebuild_shifted_mesh(shifted_dir, ORIGIN_SHIFT_M)
-    shifted = _run_and_read_peak_stages(shifted_dir)
+    shifted = _run_and_read_peak_stages(shifted_dir, reader="triangle")
 
     deltas = {pid: shifted[pid][0] - base[pid][0] for pid in base}
     table = "\n".join(
@@ -135,10 +172,9 @@ def test_merewether_origin_shift_within_tolerance(tmp_path):
         f"(field {base[pid][1]['field_stage_m']} m), delta {deltas[pid]:+.3f} m"
         for pid in sorted(base)
     )
-    failures = [f"shifted {f}" for f in _arr_failures(shifted)] + [
-        f"ID {pid}: peak stage moved {d:+.3f} m (>= {ORIGIN_SHIFT_PEAK_STAGE_TOL_M} m)"
-        for pid, d in sorted(deltas.items()) if abs(d) >= ORIGIN_SHIFT_PEAK_STAGE_TOL_M
-    ]
+    failures = ([f"unshifted {f}" for f in _arr_failures(base)]
+                + [f"shifted {f}" for f in _arr_failures(shifted)])
+    print(f"{ORIGIN_SHIFT_M} m mesh-origin shift (containing-triangle max_stage_c):\n" + table)
     assert not failures, (
         f"{ORIGIN_SHIFT_M} m mesh-origin shift:\n" + "\n".join(failures) + "\n" + table
     )
