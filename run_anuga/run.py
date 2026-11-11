@@ -16,6 +16,7 @@ from run_anuga.diagnostics import (
     collect_flow_scalars,
     finalize_monitor_safely,
 )
+from run_anuga.elevation_sampling import coverage_index_path, seat_elevation
 from run_anuga.peaks import attach_peak_operator
 from run_anuga.rain_check import run_rain_check
 from run_anuga.run_utils import (
@@ -477,25 +478,26 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
                 logger.debug("domain.mesh.number_of_triangles unavailable", exc_info=True)
             # PRE-FLIGHT (TASK-1138): surface nodata-under-mesh as a clear,
             # actionable error here rather than as an opaque exception deep
-            # inside composite_quantity_setting_function. nan_treatment stays
-            # 'exception' — we never silently fabricate bed elevation.
+            # inside the seating. nan_treatment stays 'exception' — we never
+            # silently fabricate bed elevation.
             # Sub-phase attribution (TASK-1910): the elevation raster read window.
-            # assert_raster_has_no_nodata_inside_boundary + set_quantity both pull
-            # the full DEM into memory (spatialInputUtil.py full-DEM read — a named
+            # The pre-flight and the seating each read the full DEM band (a named
             # build-phase OOM consumer), so the sampler attributes its peak here.
+            # TASK-2186: each triangle's bed is the area-weighted mean of the DEM
+            # cells its footprint covers (not the one cell under its centroid),
+            # through a coverage index persisted beside the mesh and streamed in
+            # blocks; see run_anuga/elevation_sampling.py.
             with phase_tracker.phase(phase_tracker.PHASE_RASTER_READ):
                 assert_raster_has_no_nodata_inside_boundary(
                     input_data['elevation_filename'],
                     input_data['boundary_polygon'],
                     quantity_name='elevation',
                 )
-                poly_fun_pairs = [['Extent', input_data['elevation_filename']]]
-                elevation_function = qs.composite_quantity_setting_function(
-                    poly_fun_pairs,
+                seat_elevation(
                     domain,
-                    nan_treatment='exception',
+                    input_data['elevation_filename'],
+                    coverage_index_path(input_data['mesh_filepath']),
                 )
-                domain.set_quantity('elevation', elevation_function, verbose=False, alpha=0.99, location='centroids')
 
             # TASK-1299: post-mesh Raised building elevation correction.
             # Apply per-building height additions AFTER the base DEM is seated.
