@@ -33,6 +33,11 @@ Rules kept from the centroid seating:
 
 Footprint cells outside the raster extent (a triangle poking past the DEM edge while its
 centroid is inside) are left out of that triangle's mean, as no data exists there.
+
+TASK-4357: the method is a scenario option, ``elevation_sampling`` in scenario.json:
+``'footprint'`` (this module; the default when the key is absent) or ``'centroid'`` (the
+pre-2186 one-cell read, kept so a reviewer can reproduce a plain-ANUGA bed). See
+:func:`elevation_sampling_method` and :func:`seat_elevation_by_method`.
 """
 from __future__ import annotations
 
@@ -58,6 +63,54 @@ DEFAULT_MAX_PAIRS_PER_BLOCK = 20_000
 _ZERO_AREA_CELLS = 1e-9
 #: rasterValuesAtPoints' tolerance for matching the nodata tag (relative to the tag).
 _NODATA_REL_TOL = 1.0e-08
+
+
+#: TASK-4357: the scenario.json key that picks how each triangle's bed is read from the DEM.
+ELEVATION_SAMPLING_KEY = "elevation_sampling"
+#: The footprint mean of this module (TASK-2186), the default when the key is absent.
+FOOTPRINT = "footprint"
+#: The pre-2186 seating: the one DEM cell under each triangle's centroid (plain ANUGA's read).
+CENTROID = "centroid"
+ELEVATION_SAMPLING_METHODS = (FOOTPRINT, CENTROID)
+
+
+def elevation_sampling_method(scenario_config) -> str:
+    """The scenario's elevation sampling method: ``'footprint'`` when the key is absent or
+    null, else its value, which must be one of :data:`ELEVATION_SAMPLING_METHODS`."""
+    value = (scenario_config or {}).get(ELEVATION_SAMPLING_KEY)
+    if value is None:
+        return FOOTPRINT
+    if not isinstance(value, str) or value not in ELEVATION_SAMPLING_METHODS:
+        raise ValueError(
+            f"scenario {ELEVATION_SAMPLING_KEY!r} is {value!r}; use 'footprint' (the bed is the "
+            f"mean of the DEM cells each triangle covers, the default) or 'centroid' (the DEM "
+            f"cell under each triangle's centroid)."
+        )
+    return value
+
+
+def seat_elevation_by_method(domain, method: str, elevation_filename: str, coverage_path: str) -> str:
+    """Seat ``domain``'s bed with ``method`` (see :func:`elevation_sampling_method`); returns it.
+
+    ``'footprint'`` is :func:`seat_elevation` (persists the coverage index at
+    ``coverage_path``). ``'centroid'`` is the pre-2186 seating exactly as run_anuga cd78e08
+    ran it: ``composite_quantity_setting_function`` -> ``rasterValuesAtPoints``
+    (``interpolation='pixel'``) at the centroids; it writes no coverage index.
+    """
+    if method == FOOTPRINT:
+        seat_elevation(domain, elevation_filename, coverage_path)
+    elif method == CENTROID:
+        qs = import_optional("anuga.utilities.quantity_setting_functions")
+        poly_fun_pairs = [['Extent', elevation_filename]]
+        elevation_function = qs.composite_quantity_setting_function(
+            poly_fun_pairs,
+            domain,
+            nan_treatment='exception',
+        )
+        domain.set_quantity('elevation', elevation_function, verbose=False, alpha=0.99, location='centroids')
+    else:
+        raise ValueError(f"unknown elevation sampling method {method!r}")
+    return method
 
 
 def coverage_index_path(mesh_filepath: str) -> str:

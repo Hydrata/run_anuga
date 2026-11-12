@@ -384,3 +384,113 @@ def test_raised_buildings_still_apply_after_footprint_seating(tmp_path):
     assert apply_raised_elevation_correction(domain, [(poly, 4.0)]) == 1
     elev = domain.get_quantity("elevation").get_values(location="centroids")
     assert elev.max() == pytest.approx(14.0) and elev.min() == pytest.approx(10.0)
+
+
+# ── TASK-4357: the sampling method is a scenario option ──────────────────
+
+
+def test_elevation_sampling_defaults_to_footprint():
+    from run_anuga.elevation_sampling import elevation_sampling_method
+    assert elevation_sampling_method({}) == "footprint"
+    assert elevation_sampling_method(None) == "footprint"
+    assert elevation_sampling_method({"elevation_sampling": None}) == "footprint"
+    assert elevation_sampling_method({"elevation_sampling": "footprint"}) == "footprint"
+    assert elevation_sampling_method({"elevation_sampling": "centroid"}) == "centroid"
+
+
+@pytest.mark.parametrize("bad", ["", "Centroid", "bilinear", 1, ["centroid"]])
+def test_an_unknown_elevation_sampling_is_refused_naming_the_allowed_values(bad):
+    from run_anuga.elevation_sampling import elevation_sampling_method
+    with pytest.raises(ValueError) as err:
+        elevation_sampling_method({"elevation_sampling": bad})
+    assert "'footprint'" in str(err.value) and "'centroid'" in str(err.value)
+
+
+def _seat_like_cd78e08(domain, elevation_filename):
+    """The pre-2186 seating, copied from run_anuga cd78e08 run.py (the AC2 oracle)."""
+    from anuga.utilities import quantity_setting_functions as qs
+    poly_fun_pairs = [['Extent', elevation_filename]]
+    elevation_function = qs.composite_quantity_setting_function(
+        poly_fun_pairs,
+        domain,
+        nan_treatment='exception',
+    )
+    domain.set_quantity('elevation', elevation_function, verbose=False, alpha=0.99, location='centroids')
+
+
+@pytest.mark.requires_anuga
+def test_centroid_sampling_is_bit_identical_to_the_pre_2186_seating(tmp_path):
+    """AC2 + AC5: 'centroid' seats every triangle exactly as cd78e08 did (the one DEM cell
+    under its centroid) on a Triangle mesh over a rough DEM, and writes no coverage index."""
+    from run_anuga.elevation_sampling import seat_elevation_by_method
+
+    xll, yll = 382000.0, 6354000.0
+    grid = _grid(x_origin=xll - 5.0, y_top=yll + 40.0, width=45, height=45)
+    rough = (BASE_Z + np.random.default_rng(4357).normal(0.0, 0.5, (45, 45))).astype(np.float32)
+    tif = _write_tif(tmp_path / "rough.tif", rough, grid)
+    seated, mesh = _anuga_kerb_domain(xll, yll)
+    oracle, _ = _anuga_kerb_domain(xll, yll, mesh_from=mesh)
+    coverage = tmp_path / "seated.elevation_coverage.npz"
+    assert seat_elevation_by_method(seated, "centroid", tif, str(coverage)) == "centroid"
+    _seat_like_cd78e08(oracle, tif)
+    got = seated.get_quantity("elevation").get_values(location="centroids")
+    want = oracle.get_quantity("elevation").get_values(location="centroids")
+    assert np.array_equal(got, want)
+    np.testing.assert_array_equal(  # and it is the one cell under each centroid
+        got, _centroid_sample(seated.get_vertex_coordinates(absolute=True), grid, rough))
+    assert not coverage.exists() and not list(tmp_path.glob("*.npz"))
+
+
+@pytest.mark.requires_anuga
+def test_footprint_sampling_by_method_is_seat_elevation(tmp_path):
+    """AC1: 'footprint' is today's seat_elevation, unchanged (and it persists the index)."""
+    from run_anuga.elevation_sampling import seat_elevation, seat_elevation_by_method
+
+    xll, yll = 382000.0, 6354000.0
+    grid = _grid(x_origin=xll - 5.0, y_top=yll + 40.0, width=45, height=45)
+    tif = _write_tif(tmp_path / "kerb.tif", _kerb_band(grid, "x", xll + 15.0), grid)
+    by_method, mesh = _anuga_kerb_domain(xll, yll)
+    direct, _ = _anuga_kerb_domain(xll, yll, mesh_from=mesh)
+    coverage = tmp_path / "m.elevation_coverage.npz"
+    assert seat_elevation_by_method(by_method, "footprint", tif, str(coverage)) == "footprint"
+    seat_elevation(direct, tif, str(tmp_path / "d.elevation_coverage.npz"))
+    assert coverage.exists()
+    assert np.array_equal(by_method.get_quantity("elevation").get_values(location="centroids"),
+                          direct.get_quantity("elevation").get_values(location="centroids"))
+
+
+def _run_small_test(package, **scenario):
+    import json
+    import subprocess
+    import sys
+    path = package / "scenario.json"
+    path.write_text(json.dumps({**json.loads(path.read_text()), "duration": 60, **scenario}))
+    result = subprocess.run([sys.executable, "-m", "run_anuga.cli", "run", str(package)],
+                            capture_output=True, text=True, timeout=900)
+    return result, result.stdout + result.stderr
+
+
+@pytest.mark.requires_anuga
+@pytest.mark.parametrize("method", ["centroid", None])
+def test_a_run_logs_and_records_its_elevation_sampling(small_test_copy, method):
+    """AC4 + AC5 end to end: run_anuga_1.log states the method, run_summary_1.json records
+    it as terrain.elevation_sampling, and only the footprint run writes a coverage index."""
+    import json
+    extra = {} if method is None else {"elevation_sampling": method}
+    result, output = _run_small_test(small_test_copy, **extra)
+    assert result.returncode == 0, output[-3000:]
+    [out] = small_test_copy.glob("outputs_*")
+    expected = method or "footprint"
+    assert f"elevation sampling: {expected}" in (out / "run_anuga_1.log").read_text()
+    summary = json.loads((out / "run_summary_1.json").read_text())
+    assert summary["terrain"]["elevation_sampling"] == expected
+    assert bool(list(out.glob("*.elevation_coverage.npz"))) == (expected == "footprint")
+
+
+@pytest.mark.requires_anuga
+def test_an_unknown_elevation_sampling_stops_the_run_before_the_mesh(small_test_copy):
+    """AC3: refused before any mesh or DEM work, with the allowed values named."""
+    result, output = _run_small_test(small_test_copy, elevation_sampling="nearest")
+    assert result.returncode != 0
+    assert "'footprint'" in output and "'centroid'" in output
+    assert not list(small_test_copy.glob("outputs_*/*.msh"))
