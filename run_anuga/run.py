@@ -16,7 +16,11 @@ from run_anuga.diagnostics import (
     collect_flow_scalars,
     finalize_monitor_safely,
 )
-from run_anuga.elevation_sampling import coverage_index_path, seat_elevation
+from run_anuga.elevation_sampling import (
+    coverage_index_path,
+    elevation_sampling_method,
+    seat_elevation_by_method,
+)
 from run_anuga.peaks import attach_peak_operator
 from run_anuga.rain_check import run_rain_check
 from run_anuga.run_utils import (
@@ -365,6 +369,9 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
     if input_data['scenario_config'].get('model_start'):
         start = input_data['scenario_config'].get('model_start')
     try:
+        # TASK-4357: refuse an unknown scenario elevation_sampling before any mesh or DEM work.
+        elevation_sampling = elevation_sampling_method(input_data['scenario_config'])
+        logger.info(f"elevation sampling: {elevation_sampling}")
         domain_name = input_data['run_label']
         checkpoint_directory = input_data['checkpoint_directory']
         if batch_number > 1:
@@ -486,15 +493,17 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
             # TASK-2186: each triangle's bed is the area-weighted mean of the DEM
             # cells its footprint covers (not the one cell under its centroid),
             # through a coverage index persisted beside the mesh and streamed in
-            # blocks; see run_anuga/elevation_sampling.py.
+            # blocks; see run_anuga/elevation_sampling.py. TASK-4357: the scenario's
+            # elevation_sampling 'centroid' restores the one-cell read instead.
             with phase_tracker.phase(phase_tracker.PHASE_RASTER_READ):
                 assert_raster_has_no_nodata_inside_boundary(
                     input_data['elevation_filename'],
                     input_data['boundary_polygon'],
                     quantity_name='elevation',
                 )
-                seat_elevation(
+                seat_elevation_by_method(
                     domain,
+                    elevation_sampling,
                     input_data['elevation_filename'],
                     coverage_index_path(input_data['mesh_filepath']),
                 )
@@ -764,6 +773,7 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
                 # TASK-4316: every tag in the scenario (rank 0's partition may
                 # not touch them all); a boundary_fed class names the open ones.
                 boundary_tags=list(input_data.get('boundary_tags') or {}) or None,
+                elevation_sampling=elevation_sampling,  # TASK-4357
             )
         # `start` is the per-tick wall-clock reference reset every iteration.
         # (The old `simulation_start` ETA anchor is gone — see D7 note below.)

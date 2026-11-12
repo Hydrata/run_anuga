@@ -584,6 +584,7 @@ class SimulationMonitor:
         run_label=None,
         scenario_config=None,
         boundary_tags=None,
+        elevation_sampling=None,
     ):
         self.domain = domain
         self.output_dir = output_dir
@@ -598,6 +599,7 @@ class SimulationMonitor:
         self._json_path = os.path.join(output_dir, f"run_summary_{batch_number}.json")
         self._records = []
         self._rain = None  # TASK-3775: set_rain_check() after evolve
+        self.elevation_sampling = elevation_sampling  # TASK-4357: how the bed was read
         # TASK-4316: V0 for the closure column (set at the first full record)
         self._closure_base = None
         # The scenario's boundary tags (all ranks' view); rank 0's partition
@@ -1081,6 +1083,8 @@ class SimulationMonitor:
         }
         if self._rain is not None:
             summary["rain"] = self._rain  # TASK-3775
+        if self.elevation_sampling is not None:
+            summary["terrain"] = {"elevation_sampling": self.elevation_sampling}  # TASK-4357
         return summary
 
     def _write_summary(self) -> None:
