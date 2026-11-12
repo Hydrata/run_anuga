@@ -37,7 +37,7 @@ sim = [
     # fork commit (70583d2, W5b TASK-3771) is on GitHub once the fork epic branch is pushed.
     "pyswmm==2.2.0",
     "swmm-toolkit==0.17.0",
-    "anuga_drainage @ git+https://github.com/Hydrata/anuga_drainage@70583d2b8f7f157933992aef014e2bf881d01b04",
+    "anuga_drainage @ git+https://github.com/Hydrata/anuga_drainage@a7ed10ad4d684db102cbe8b3cad24a25529c73c9",
 ]
 viz = [
     "matplotlib>=3.6",
