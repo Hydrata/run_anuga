@@ -302,6 +302,9 @@ def _is_excluded_from_result(relative: Path, result_zip_name: str) -> bool:
       ``*.msh``        The mesh is persisted independently via
                        ``Run.msh_snapshot`` (AnugaMeshStorage); this copy is
                        redundant.
+      ``*.elevation_coverage.npz``  TASK-2186 triangle-to-DEM-cell coverage
+                       index written beside the ``.msh`` while seating the bed;
+                       build scratch, rebuilt by any rerun.
       ``videos/``      Already removed by ``post_process_sww`` before handoff;
                        listed here for defence in depth.
 
@@ -314,7 +317,9 @@ def _is_excluded_from_result(relative: Path, result_zip_name: str) -> bool:
     name = relative.name
     if name in ("package.zip", result_zip_name):
         return True
-    if name.endswith((".sww", ".msh")):
+    # The TASK-2186 elevation coverage index (elevation_sampling.COVERAGE_INDEX_SUFFIX)
+    # is build scratch beside the .msh; spelled out here to keep this module numpy-free.
+    if name.endswith((".sww", ".msh", ".elevation_coverage.npz")):
         return True
     if name.endswith(".tif") and "_Time_" in name:
         return True
