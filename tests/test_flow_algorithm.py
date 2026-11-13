@@ -2,7 +2,6 @@
 import json
 
 import pytest
-
 from run_anuga.config import UnsupportedCapabilityError, check_required_capabilities
 from run_anuga.flow_algorithm import FLOW_ALGORITHMS, resolve_flow_algorithm
 
@@ -61,7 +60,11 @@ def test_a_run_uses_and_records_its_flow_algorithm(small_test_copy, value):
     carries a culvert: a culvert run can pick DE1 and still moves water."""
     extra = {} if value is None else {"flow_algorithm": value}
     if value == "DE1":
-        from tests.test_culverts import SMALL_TEST_CULVERT, _add_culvert_layer, collection
+        from tests.test_culverts import (
+            SMALL_TEST_CULVERT,
+            _add_culvert_layer,
+            collection,
+        )
         _add_culvert_layer(small_test_copy, collection(SMALL_TEST_CULVERT))
         extra["duration"] = 120  # the culvert e2e's duration: long enough for the coupler to move water
     result, output = _run_small_test(small_test_copy, **extra)
