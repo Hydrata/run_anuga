@@ -21,6 +21,7 @@ from run_anuga.elevation_sampling import (
     elevation_sampling_method,
     seat_elevation_by_method,
 )
+from run_anuga.flow_algorithm import resolve_flow_algorithm
 from run_anuga.peaks import attach_peak_operator
 from run_anuga.rain_check import run_rain_check
 from run_anuga.run_utils import (
@@ -372,6 +373,9 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
         # TASK-4357: refuse an unknown scenario elevation_sampling before any mesh or DEM work.
         elevation_sampling = elevation_sampling_method(input_data['scenario_config'])
         logger.info(f"elevation sampling: {elevation_sampling}")
+        # TASK-4351: the scenario's solver; an unknown value stops the run before the mesh.
+        flow_algorithm = resolve_flow_algorithm(input_data)
+        logger.info(f"flow algorithm: {flow_algorithm}")
         domain_name = input_data['run_label']
         checkpoint_directory = input_data['checkpoint_directory']
         if batch_number > 1:
@@ -430,6 +434,15 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
             domain.communication_time = 0.0
             domain.communication_reduce_time = 0.0
             domain.communication_broadcast_time = 0.0
+            # TASK-4351: never set_flow_algorithm on a restored domain (it would reset the
+            # CFL, beta and ADER state the checkpoint carries); refuse a mismatch instead.
+            restored_algorithm = domain.get_flow_algorithm()
+            if restored_algorithm != flow_algorithm:
+                raise ValueError(
+                    f"Cannot resume: the checkpoint was written under flow algorithm "
+                    f"{restored_algorithm} but this scenario asks for {flow_algorithm}; "
+                    "rerun this scenario from the start."
+                )
             logger.info('load_checkpoint_file succeeded. Checkpoint domain set.')
         elif anuga.myid == 0:
             logger.info("Building domain...")
@@ -582,6 +595,11 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
                     f"pre-distribute negative-depth protection skipped: {e} "
                     "— continuing (evolve will still protect on the first step)"
                 )
+            # TASK-4351: before set_minimum_storable_height, distribute and the multiprocessor
+            # mode. It resets CFL, beta, minimum_allowed_height and optimise_dry_cells;
+            # optimise_dry_cells is re-set after distribute below. distribute copies the
+            # algorithm to every rank.
+            domain.set_flow_algorithm(flow_algorithm)
             domain.set_name(input_data['run_label'])
             domain.set_datadir(input_data['output_directory'])
             domain.set_minimum_storable_height(defaults.MINIMUM_STORABLE_HEIGHT_M)
@@ -774,6 +792,7 @@ def run_sim(package_dir, username=None, password=None, batch_number=1, checkpoin
                 # not touch them all); a boundary_fed class names the open ones.
                 boundary_tags=list(input_data.get('boundary_tags') or {}) or None,
                 elevation_sampling=elevation_sampling,  # TASK-4357
+                cfl=domain.get_cfl(),  # TASK-4351: 0.9 is wrong for DE1/DE_ader2 (1.0)
             )
         # `start` is the per-tick wall-clock reference reset every iteration.
         # (The old `simulation_start` ETA anchor is gone — see D7 note below.)

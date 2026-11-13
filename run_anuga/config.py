@@ -23,7 +23,7 @@ from pydantic import BaseModel, field_validator
 #: lacks one must refuse the package rather than silently drop the input (an
 #: older runner ignores unknown keys and would report a culvert-free run as a
 #: success).
-SUPPORTED_CAPABILITIES = frozenset({"culvert"})
+SUPPORTED_CAPABILITIES = frozenset({"culvert", "flow_algorithm"})  # TASK-4351: + flow_algorithm
 
 
 class UnsupportedCapabilityError(ValueError):
