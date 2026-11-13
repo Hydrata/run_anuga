@@ -89,6 +89,29 @@ class TestSingleProcessResume:
         # resumed at 120 s, not rerun from 0 s (that would record 5 yields: 0, 60, ... 240)
         assert model["n_yieldsteps"] < 5
 
+    def test_resume_refuses_a_flow_algorithm_mismatch(self, small_test_copy):
+        # TASK-4351: a checkpoint written under DE0, resumed with scenario flow_algorithm DE1,
+        # is refused (never re-set on the restored domain); a matching resume keeps its state.
+        self._set_duration(small_test_copy, 240)
+        result, output = self._cli(small_test_copy)
+        assert result.returncode == 0, output[-3000:]
+        [output_dir] = small_test_copy.glob("outputs_*")
+
+        path = small_test_copy / "scenario.json"
+        config = json.loads(path.read_text())
+        config["flow_algorithm"] = "DE1"
+        path.write_text(json.dumps(config))
+        result, output = self._cli(small_test_copy, "--batch-number", "2", "--checkpoint-time", "120")
+        assert result.returncode != 0
+        assert "Cannot resume" in output and "DE0" in output and "DE1" in output, output[-3000:]
+
+        config["flow_algorithm"] = "DE0"
+        path.write_text(json.dumps(config))
+        result, output = self._cli(small_test_copy, "--batch-number", "2", "--checkpoint-time", "120")
+        assert result.returncode == 0, output[-3000:]
+        model = json.loads((output_dir / "run_summary_2.json").read_text())["model"]
+        assert model["flow_algorithm"] == "DE0" and model["n_yieldsteps"] < 5
+
 
 def _make_domain_mock():
     """Return a mock domain that records set_checkpointing calls."""
