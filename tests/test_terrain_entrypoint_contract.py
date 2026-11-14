@@ -446,6 +446,15 @@ def test_verb_terrain_prep_runs_the_terrain_prep_verb(tmp_path):
     assert "stub merge ['terrain-prep'," in proc.stdout
 
 
+def test_verb_delineate_and_report_runs_the_delineation_verb(tmp_path):
+    # TASK-4413 follow-up (epic 4274 W3.5): the delineation job definition sets
+    # TERRAIN_COMPUTE_VERB=delineate-and-report; the allow-list must pass it on.
+    proc, _ = _run_entrypoint(tmp_path, process_id=None, aws_fails=False,
+                              extra_env={"TERRAIN_COMPUTE_VERB": "delineate-and-report"})
+    assert proc.returncode == 0, proc.stderr
+    assert "stub merge ['delineate-and-report'," in proc.stdout
+
+
 def test_verb_unknown_exits_2_before_any_download(tmp_path):
     proc, cap = _run_entrypoint(tmp_path, process_id=None, aws_fails=False,
                                 extra_env={"TERRAIN_COMPUTE_VERB": "rm -rf"})
