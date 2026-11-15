@@ -52,7 +52,7 @@ RUN pip install --no-cache-dir "numpy>=2.0" setuptools wheel && \
     pip install --no-cache-dir --no-binary GDAL --no-build-isolation \
     "GDAL==$(gdal-config --version).*" && \
     pip install --no-cache-dir \
-    rasterio scipy shapely whitebox networkx \
+    rasterio scipy shapely "whitebox==2.3.6" networkx \
     pyproj affine requests boto3 awscli
 
 # Air-gap WhiteboxTools: constructing WhiteboxTools() downloads the WBT binary
@@ -65,13 +65,28 @@ RUN pip install --no-cache-dir "numpy>=2.0" setuptools wheel && \
 # <exe_path>/<exe_name> (exe_name == "whitebox_tools"). Construct it, ensure the
 # exec bit (WBT only chmod+x's it on first tool run, not on construction), then
 # symlink it onto PATH so `whitebox_tools --version` resolves directly.
+#
+# TASK-4431 (epic 4274 W4.5): the wrapper is pinned above (whitebox==2.3.6, as in
+# hydrata requirements/base.txt), and the PROGRAM is pinned here to the same build
+# the web server's ansible task pins (ansible-geonode/tasks/whitebox-tools.yml):
+# version and sha256 of the linux amd64 binary, read from the binary on the dev
+# workstation 15-11-26 ("WhiteboxTools v2.4.0"). The wrapper downloads from an
+# UNVERSIONED URL, so the build FAILS unless the download is that build: a new
+# WhiteboxTools never enters the image silently. Each delineation result records
+# the version it ran with (result['wbt_version'], gn_anuga/delineation/wbt.py).
+# TODO(TASK-4431): no versioned download URL for v2.4.0 is recorded in the repos;
+# when whiteboxgeo.com's "latest" moves past it, point this at a versioned archive.
+ARG WBT_VERSION=2.4.0
+ARG WBT_SHA256=96bb47a9d1f0fe8a3cb46df524242c990eab9bc2ae1930e540e09328331172e4
 ENV WBT_WORKING_DIR=/tmp
 RUN set -eu && \
     python -c "import whitebox; whitebox.WhiteboxTools()" && \
     WBT_BIN="$(python -c 'import os, whitebox; w=whitebox.WhiteboxTools(); print(os.path.join(w.exe_path, w.exe_name))')" && \
     test -f "$WBT_BIN" && \
     chmod +x "$WBT_BIN" && \
+    echo "${WBT_SHA256}  ${WBT_BIN}" | sha256sum -c - && \
     ln -sf "$WBT_BIN" /usr/local/bin/whitebox_tools && \
+    whitebox_tools --version | grep -q "^WhiteboxTools v${WBT_VERSION} " && \
     whitebox_tools --version
 
 # Unbuffered stdout/stderr so CloudWatch shows every print/logger line live.
