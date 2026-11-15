@@ -74,8 +74,10 @@ RUN pip install --no-cache-dir "numpy>=2.0" setuptools wheel && \
 # UNVERSIONED URL, so the build FAILS unless the download is that build: a new
 # WhiteboxTools never enters the image silently. Each delineation result records
 # the version it ran with (result['wbt_version'], gn_anuga/delineation/wbt.py).
-# TODO(TASK-4431): no versioned download URL for v2.4.0 is recorded in the repos;
-# when whiteboxgeo.com's "latest" moves past it, point this at a versioned archive.
+# No versioned upstream archive of v2.4.0 exists (TASK-4432, checked 15-11-26:
+# the GitHub v2.4.0 release has no assets); whiteboxgeo.com serves only "latest",
+# which on 15-11-26 carried exactly this binary. When "latest" moves past v2.4.0
+# the build fails closed on WBT_SHA256 instead of baking another build.
 ARG WBT_VERSION=2.4.0
 ARG WBT_SHA256=96bb47a9d1f0fe8a3cb46df524242c990eab9bc2ae1930e540e09328331172e4
 ENV WBT_WORKING_DIR=/tmp
