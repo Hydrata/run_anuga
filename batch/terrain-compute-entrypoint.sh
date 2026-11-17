@@ -38,8 +38,10 @@ set -euo pipefail
 #                                       jobdef), `terrain-prep` (the terrain-prep jobdef
 #                                       and the box's submit both set it) or
 #                                       `delineate-and-report` (TASK-4413, epic 4274: the
-#                                       delineation jobdef). Anything else
-#                                       exits 2 before any download.
+#                                       delineation jobdef) or `drainage-analysis`
+#                                       (TASK-4452, epic 4445: a terrain's drainage
+#                                       analysis, the drainage-analysis jobdef).
+#                                       Anything else exits 2 before any download.
 #   The manifest location, ONE of:
 #     MANIFEST_S3_URI                 - full s3://bucket/key URI, OR
 #     MANIFEST_S3_BUCKET + MANIFEST_S3_KEY
@@ -62,9 +64,9 @@ WORK_DIR="/tmp/terrain_compute"
 # TASK-3232: which terrain_compute verb this job runs (allow-list).
 VERB="${TERRAIN_COMPUTE_VERB:-merge-and-report}"
 case "${VERB}" in
-  merge-and-report|terrain-prep|delineate-and-report) ;;
+  merge-and-report|terrain-prep|delineate-and-report|drainage-analysis) ;;
   *)
-    echo "[terrain-entrypoint] ERROR: unknown TERRAIN_COMPUTE_VERB '${VERB}' (expected merge-and-report, terrain-prep or delineate-and-report)" >&2
+    echo "[terrain-entrypoint] ERROR: unknown TERRAIN_COMPUTE_VERB '${VERB}' (expected merge-and-report, terrain-prep, delineate-and-report or drainage-analysis)" >&2
     exit 2
     ;;
 esac

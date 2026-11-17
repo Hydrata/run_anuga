@@ -455,6 +455,15 @@ def test_verb_delineate_and_report_runs_the_delineation_verb(tmp_path):
     assert "stub merge ['delineate-and-report'," in proc.stdout
 
 
+def test_verb_drainage_analysis_runs_the_drainage_analysis_verb(tmp_path):
+    # TASK-4452 (epic 4445 W2.3): the drainage-analysis job definition sets
+    # TERRAIN_COMPUTE_VERB=drainage-analysis; the allow-list must pass it on.
+    proc, _ = _run_entrypoint(tmp_path, process_id=None, aws_fails=False,
+                              extra_env={"TERRAIN_COMPUTE_VERB": "drainage-analysis"})
+    assert proc.returncode == 0, proc.stderr
+    assert "stub merge ['drainage-analysis'," in proc.stdout
+
+
 def test_verb_unknown_exits_2_before_any_download(tmp_path):
     proc, cap = _run_entrypoint(tmp_path, process_id=None, aws_fails=False,
                                 extra_env={"TERRAIN_COMPUTE_VERB": "rm -rf"})
