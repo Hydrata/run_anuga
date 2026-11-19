@@ -105,6 +105,10 @@ RUN chmod +x /app/terrain-compute-entrypoint.sh
 # entrypoint cd's to /tmp/terrain_compute before running `python -m
 # gn_anuga.terrain_compute`, so relying on CWD-on-sys.path alone would
 # ModuleNotFoundError. NO `pip install` of the monolith — only this leaf.
+# The verbs it carries (entrypoint allow-list): merge-and-report, terrain-prep,
+# delineate-and-report and drainage-analysis (TASK-4452, epic 4445: the terrain's
+# drainage analysis, which needs the staged gn_anuga/delineation/ package and boto3
+# to upload the kept rasters; both are already in the image).
 ENV PYTHONPATH=/app
 COPY gn_anuga /app/gn_anuga
 
