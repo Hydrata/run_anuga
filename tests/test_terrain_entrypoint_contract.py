@@ -464,6 +464,16 @@ def test_verb_drainage_analysis_runs_the_drainage_analysis_verb(tmp_path):
     assert "stub merge ['drainage-analysis'," in proc.stdout
 
 
+def test_verb_network_cut_runs_the_network_cut_verb(tmp_path):
+    # TASK-4477 (epic 4445 W8.5): the network-cut job definition sets
+    # TERRAIN_COMPUTE_VERB=network-cut; the allow-list must pass it on (on epic
+    # TASK-4274 a verb missing here was one of three faults the stubs missed).
+    proc, _ = _run_entrypoint(tmp_path, process_id=None, aws_fails=False,
+                              extra_env={"TERRAIN_COMPUTE_VERB": "network-cut"})
+    assert proc.returncode == 0, proc.stderr
+    assert "stub merge ['network-cut'," in proc.stdout
+
+
 def test_verb_unknown_exits_2_before_any_download(tmp_path):
     proc, cap = _run_entrypoint(tmp_path, process_id=None, aws_fails=False,
                                 extra_env={"TERRAIN_COMPUTE_VERB": "rm -rf"})
